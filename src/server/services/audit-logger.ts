@@ -35,7 +35,14 @@ export type AuditEventType =
   | "override_flow_entered"
   | "flow_reset"
   | "camera_initialized"
-  | "camera_failure";
+  | "camera_failure"
+  // Source: src/docs/specs/resident-approval-flow.md — Feature 1 audit events.
+  // The approval-service emits one of these on every state transition;
+  // together they reconstruct the full decision history per request.
+  | "approval_requested"
+  | "approval_approved"
+  | "approval_denied"
+  | "approval_expired";
 
 export interface AuditEvent {
   /** Unique immutable event ID */
