@@ -9,6 +9,10 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // Server tests live under src/server and have their own vitest config
+    // (vitest.server.config.ts) because they require node env + a database.
+    // Excluding them keeps `npm test` focused on the frontend suite.
+    exclude: ["node_modules/**", "dist/**", "src/server/**"],
   },
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
