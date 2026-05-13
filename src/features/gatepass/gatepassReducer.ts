@@ -738,6 +738,24 @@ export function gatePassReducer(
       };
 
     case "NOTIFICATIONS_LOADED": {
+      // Atomic guard: only accept LOADED for the currently-pending
+      // approval. The controller polls every 2s, so a poll that was
+      // in flight when APPROVAL_DENIED/RESOLVED/EXPIRED landed will
+      // resolve with stale rows — those must not resurrect the slice
+      // the terminal transition just wiped. The reducer is the only
+      // place that observes state atomically, so the check has to
+      // live here. (Source: spec notifications.md §9 — terminal
+      // cleanup must be permanent.)
+      if (state.pendingApproval?.id !== action.approvalId) {
+        return {
+          ...state,
+          notifications: {
+            ...state.notifications,
+            loading: false,
+            lastError: undefined,
+          },
+        };
+      }
       const merged = mergeNotificationList(
         state.notifications.byApprovalId[action.approvalId],
         action.notifications,

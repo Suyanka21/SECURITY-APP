@@ -545,9 +545,30 @@ describe("gatePassReducer", () => {
       expect(next.notifications.byApprovalId[APPROVAL_A]).toHaveLength(1);
     });
 
+    it("NOTIFICATIONS_LOADED for a non-pending approval is rejected (no resurrection after terminal)", () => {
+      // The controller may race a late LOADED in after APPROVAL_DENIED
+      // has wiped the slice. The reducer is the atomic guard: if the
+      // pending approval isn't `action.approvalId`, the rows must not
+      // come back.
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        pendingApproval: undefined,
+        notifications: { byApprovalId: {}, loading: true },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "NOTIFICATIONS_LOADED",
+        approvalId: APPROVAL_A,
+        notifications: [makeRow()],
+      });
+      expect(next.notifications.byApprovalId[APPROVAL_A]).toBeUndefined();
+      // But the loading flag still flips off so a stuck spinner can't linger.
+      expect(next.notifications.loading).toBe(false);
+    });
+
     it("NOTIFICATIONS_LOADED replaces rows for one approval without touching others", () => {
       const seeded: GatePassState = {
         ...initialGatePassState,
+        pendingApproval: baseApproval,
         notifications: {
           byApprovalId: {
             [APPROVAL_A]: [makeRow({ id: "n-old", status: "queued" })],
@@ -578,6 +599,7 @@ describe("gatePassReducer", () => {
     it("NOTIFICATIONS_LOADED preserves retryInFlight across re-polls when attempts unchanged", () => {
       const seeded: GatePassState = {
         ...initialGatePassState,
+        pendingApproval: baseApproval,
         notifications: {
           byApprovalId: {
             [APPROVAL_A]: [
@@ -600,6 +622,7 @@ describe("gatePassReducer", () => {
     it("NOTIFICATIONS_LOADED drops retryInFlight when attempts advances (server accepted)", () => {
       const seeded: GatePassState = {
         ...initialGatePassState,
+        pendingApproval: baseApproval,
         notifications: {
           byApprovalId: {
             [APPROVAL_A]: [

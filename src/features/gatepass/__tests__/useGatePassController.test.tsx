@@ -13,12 +13,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useGatePassController } from "../useGatePassController";
 import type { GatePassApi } from "@/lib/api/gatepass";
 import type { guardApprovalApi } from "@/lib/api/approvals";
+import type { guardNotificationsApi } from "@/lib/api/notifications";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
   CreateEntryResponse,
+  NotificationsListResponse,
+  NotificationRetryResponse,
+  NotificationView,
   QrValidateResponse,
   RecognizedVisitorsResponse,
   SyncBatchResponse,
@@ -880,5 +884,392 @@ describe("useGatePassController approval polling", () => {
     }, { timeout: 1000 });
     expect(hook.result.current.state.lastError?.code).toBe("INTERNAL_ERROR");
     expect(hook.result.current.state.pendingApproval).toBeUndefined();
+  });
+});
+
+// ─── Notifications (Feature 2) ─────────────────────────────────────────
+// Source: src/docs/specs/notifications.md §5 (two-stream policy), §7
+// (HTTP surface), §9 (reducer state machine).
+
+interface MockNotificationsApi {
+  getNotifications: ReturnType<typeof vi.fn>;
+  retryNotification: ReturnType<typeof vi.fn>;
+}
+
+function makeNotificationsApi(): MockNotificationsApi {
+  return {
+    getNotifications: vi.fn(),
+    retryNotification: vi.fn(),
+  };
+}
+
+function buildControllerWithNotifications(
+  api: MockApi,
+  approvalApi: MockApprovalApi,
+  notificationsApi: MockNotificationsApi,
+  approvalPollIntervalMs = 10,
+  notificationsPollIntervalMs = 10,
+) {
+  let counter = 0;
+  const generateId = () => {
+    counter += 1;
+    return `00000000-0000-4000-8000-${counter.toString().padStart(12, "0")}`;
+  };
+  return renderHook(() =>
+    useGatePassController({
+      api,
+      approvalApi: approvalApi as unknown as typeof guardApprovalApi,
+      notificationsApi:
+        notificationsApi as unknown as typeof guardNotificationsApi,
+      now: () => new Date("2024-01-01T00:00:00Z"),
+      generateId,
+      approvalPollIntervalMs,
+      notificationsPollIntervalMs,
+    }),
+  );
+}
+
+function notificationView(
+  overrides: Partial<NotificationView> = {},
+): NotificationView {
+  return {
+    id: "nnnnnnnn-nnnn-4nnn-8nnn-nnnnnnnnnnnn",
+    approvalId: "11111111-1111-4111-8111-111111111111",
+    channel: "whatsapp",
+    status: "queued",
+    attempts: 0,
+    targetPhone: "+15551230001",
+    templateKey: "approval.magic_link",
+    lastErrorCode: null,
+    lastProviderResponseCode: null,
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
+    deliveredAt: null,
+    failedAt: null,
+    ...overrides,
+  };
+}
+
+describe("useGatePassController.requestApproval — hostPhoneE164 plumbing", () => {
+  let api: MockApi;
+  let approvalApi: MockApprovalApi;
+  let notificationsApi: MockNotificationsApi;
+
+  beforeEach(() => {
+    api = makeApi();
+    approvalApi = makeApprovalApi();
+    notificationsApi = makeNotificationsApi();
+    notificationsApi.getNotifications.mockResolvedValue(
+      ok({
+        notifications: [],
+        traceId: "trace-n",
+      } as NotificationsListResponse),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("forwards a valid E.164 phone to createApproval", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({ approval: approvalView(), traceId: "t" } as ApprovalStatusResponse),
+    );
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+15551230001");
+    });
+    expect(approvalApi.createApproval).toHaveBeenCalledTimes(1);
+    const payload = approvalApi.createApproval.mock.calls[0][0];
+    expect(payload.hostPhoneE164).toBe("+15551230001");
+  });
+
+  it("omits hostPhoneE164 when not provided (backward-compat)", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({ approval: approvalView(), traceId: "t" } as ApprovalStatusResponse),
+    );
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+    const payload = approvalApi.createApproval.mock.calls[0][0];
+    expect("hostPhoneE164" in payload).toBe(false);
+  });
+
+  it("rejects a non-E.164 phone client-side without calling the API", async () => {
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("555-123-0001");
+    });
+    expect(approvalApi.createApproval).not.toHaveBeenCalled();
+    expect(hook.result.current.state.lastError?.code).toBe(
+      "HOST_PHONE_INVALID",
+    );
+    expect(hook.result.current.state.lastError?.field).toBe("hostPhoneE164");
+  });
+});
+
+describe("useGatePassController.notifications — polling stream", () => {
+  let api: MockApi;
+  let approvalApi: MockApprovalApi;
+  let notificationsApi: MockNotificationsApi;
+
+  beforeEach(() => {
+    api = makeApi();
+    approvalApi = makeApprovalApi();
+    notificationsApi = makeNotificationsApi();
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({ approval: approvalView(), traceId: "t" } as ApprovalStatusResponse),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("polls /notifications once the approval is awaiting decision and dispatches NOTIFICATIONS_LOADED", async () => {
+    const view = notificationView({ id: "n-1", status: "queued" });
+    notificationsApi.getNotifications.mockResolvedValue(
+      ok({
+        notifications: [view],
+        traceId: "trace-n",
+      } as NotificationsListResponse),
+    );
+
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+15551230001");
+    });
+
+    await waitFor(() => {
+      expect(notificationsApi.getNotifications).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      const rows =
+        hook.result.current.state.notifications.byApprovalId[
+          CREATE_APPROVAL_OK.approvalId
+        ];
+      expect(rows).toBeDefined();
+      expect(rows).toHaveLength(1);
+      expect(rows![0].id).toBe("n-1");
+    });
+  });
+
+  it("non-transient list failure surfaces NOTIFICATIONS_FAILED without touching pendingApproval", async () => {
+    notificationsApi.getNotifications.mockResolvedValue(
+      fail(500, "INTERNAL_ERROR", "boom"),
+    );
+
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+15551230001");
+    });
+
+    await waitFor(() => {
+      expect(
+        hook.result.current.state.notifications.lastError?.code,
+      ).toBe("INTERNAL_ERROR");
+    });
+    // The approval status stream must NOT be affected by a notifications
+    // failure — pendingApproval still exists, mode still awaiting.
+    expect(hook.result.current.state.mode).toBe("awaiting-approval");
+    expect(hook.result.current.state.pendingApproval?.id).toBe(
+      CREATE_APPROVAL_OK.approvalId,
+    );
+  });
+
+  it("transient transport blip (status=0) does NOT dispatch NOTIFICATIONS_FAILED", async () => {
+    notificationsApi.getNotifications.mockResolvedValue(
+      fail(0, "NETWORK_ERROR", "offline"),
+    );
+
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+15551230001");
+    });
+
+    await waitFor(() => {
+      expect(notificationsApi.getNotifications).toHaveBeenCalled();
+    });
+    // The loading flag was set by the LOADING dispatch on each tick, but
+    // no FAILED dispatch means lastError stays undefined.
+    expect(
+      hook.result.current.state.notifications.lastError,
+    ).toBeUndefined();
+  });
+
+  it("retryNotification dispatches START → SUCCEEDED on a 202 response", async () => {
+    const initial = notificationView({ id: "n-1", attempts: 1, status: "failed" });
+    notificationsApi.getNotifications.mockResolvedValue(
+      ok({
+        notifications: [initial],
+        traceId: "t",
+      } as NotificationsListResponse),
+    );
+    const after = notificationView({ id: "n-1", attempts: 2, status: "queued" });
+    notificationsApi.retryNotification.mockResolvedValue(
+      ok({
+        notification: after,
+        traceId: "trace-retry",
+      } as NotificationRetryResponse, 202),
+    );
+
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+15551230001");
+    });
+    await waitFor(() => {
+      expect(
+        hook.result.current.state.notifications.byApprovalId[
+          CREATE_APPROVAL_OK.approvalId
+        ],
+      ).toHaveLength(1);
+    });
+
+    await act(async () => {
+      await hook.result.current.retryNotification("n-1");
+    });
+
+    const row =
+      hook.result.current.state.notifications.byApprovalId[
+        CREATE_APPROVAL_OK.approvalId
+      ]![0];
+    expect(row.attempts).toBe(2);
+    expect(row.retryInFlight).toBeUndefined();
+    expect(notificationsApi.retryNotification).toHaveBeenCalledWith(
+      "n-1",
+    );
+  });
+
+  it("retryNotification records retryError on the row when the server refuses", async () => {
+    const initial = notificationView({ id: "n-1", attempts: 1, status: "failed" });
+    notificationsApi.getNotifications.mockResolvedValue(
+      ok({
+        notifications: [initial],
+        traceId: "t",
+      } as NotificationsListResponse),
+    );
+    notificationsApi.retryNotification.mockResolvedValue(
+      fail(429, "RETRY_RATE_LIMITED", "Wait a moment"),
+    );
+
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+15551230001");
+    });
+    await waitFor(() => {
+      expect(
+        hook.result.current.state.notifications.byApprovalId[
+          CREATE_APPROVAL_OK.approvalId
+        ],
+      ).toHaveLength(1);
+    });
+
+    await act(async () => {
+      await hook.result.current.retryNotification("n-1");
+    });
+
+    const row =
+      hook.result.current.state.notifications.byApprovalId[
+        CREATE_APPROVAL_OK.approvalId
+      ]![0];
+    expect(row.retryError?.code).toBe("RETRY_RATE_LIMITED");
+    expect(row.retryInFlight).toBe(false);
+  });
+
+  it("stops polling notifications once the approval reaches a terminal state", async () => {
+    const view = notificationView({ id: "n-1", status: "queued" });
+    notificationsApi.getNotifications.mockResolvedValue(
+      ok({
+        notifications: [view],
+        traceId: "trace-n",
+      } as NotificationsListResponse),
+    );
+
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+15551230001");
+    });
+    await waitFor(() => {
+      expect(notificationsApi.getNotifications).toHaveBeenCalled();
+    });
+
+    // Server now flips approval to denied — APPROVAL_DENIED clears the
+    // pendingApproval, which deactivates this effect.
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({
+        approval: approvalView({
+          status: "denied",
+          deniedReason: "Not now",
+        }),
+        traceId: "t",
+      } as ApprovalStatusResponse),
+    );
+
+    await waitFor(() => {
+      expect(hook.result.current.state.mode).toBe("error");
+    });
+    const callsAtDenial = notificationsApi.getNotifications.mock.calls.length;
+    // Wait a few polling intervals — no new notification calls should land
+    // after the approval is denied.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(notificationsApi.getNotifications.mock.calls.length).toBe(
+      callsAtDenial,
+    );
+    // And the notifications slice for this approval has been dropped.
+    expect(
+      hook.result.current.state.notifications.byApprovalId[
+        CREATE_APPROVAL_OK.approvalId
+      ],
+    ).toBeUndefined();
   });
 });
