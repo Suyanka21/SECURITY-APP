@@ -406,8 +406,14 @@ describe("useGatePassController.syncPending", () => {
     const hook = buildController(api);
     await queueTwo(hook);
 
-    // The mock API returns server-side offlineIds we didn't generate, so
-    // rewire the queue entries to match what the mock will respond with.
+    // buildController seeds a deterministic UUID generator that issues
+    // 00000000-0000-4000-8000-00000000000N for each offline entry. The
+    // sync mock above keys its rejected result off `stub-1`/`stub-2` so
+    // we can assert which offlineId came back rejected. Rewire the two
+    // queued entries' offlineIds (via SYNC_COMPLETED with empty results
+    // — purely a state edit, no API call fires) so they match the mock's
+    // canned response when the real sync runs below. This keeps the mock
+    // independent of the test-side ID generator's exact format.
     await act(async () => {
       hook.result.current.dispatch({
         type: "SYNC_COMPLETED",

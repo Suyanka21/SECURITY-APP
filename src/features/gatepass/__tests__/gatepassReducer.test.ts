@@ -202,4 +202,106 @@ describe("gatePassReducer", () => {
     expect(state.banner.tone).toBe("warning");
     expect(state.banner.message).toContain("Rate limit");
   });
+
+  // CodeRabbit: NAVIGATE used to carry over the prior draft.method, so a
+  // qr -> walkin or override -> walkin transition could log a walk-in
+  // entry as method="qr" or method="override". The audit trail must
+  // reflect the actual channel; normalize on navigation.
+  describe("NAVIGATE normalizes draft.method against destination", () => {
+    it("resets stale qr method to walk-in when navigating to walkin", () => {
+      const fromQr: GatePassState = {
+        ...initialGatePassState,
+        mode: "qr",
+        draft: { ...initialGatePassState.draft, method: "qr" },
+      };
+      const next = gatePassReducer(fromQr, { type: "NAVIGATE", mode: "walkin" });
+      expect(next.mode).toBe("walkin");
+      expect(next.draft.method).toBe("walk-in");
+    });
+
+    it("resets stale override method to walk-in when navigating to walkin", () => {
+      const fromOverride: GatePassState = {
+        ...initialGatePassState,
+        mode: "override",
+        draft: { ...initialGatePassState.draft, method: "override" },
+      };
+      const next = gatePassReducer(fromOverride, {
+        type: "NAVIGATE",
+        mode: "walkin",
+      });
+      expect(next.draft.method).toBe("walk-in");
+    });
+
+    it("preserves the recognized method when re-navigating to walkin after SELECT_VISITOR", () => {
+      const fromRecognized: GatePassState = {
+        ...initialGatePassState,
+        mode: "walkin",
+        draft: { ...initialGatePassState.draft, method: "recognized" },
+      };
+      const next = gatePassReducer(fromRecognized, {
+        type: "NAVIGATE",
+        mode: "walkin",
+      });
+      expect(next.draft.method).toBe("recognized");
+    });
+
+    it("sets method=qr when navigating to qr regardless of prior method", () => {
+      const fromOverride: GatePassState = {
+        ...initialGatePassState,
+        draft: { ...initialGatePassState.draft, method: "override" },
+      };
+      const next = gatePassReducer(fromOverride, { type: "NAVIGATE", mode: "qr" });
+      expect(next.draft.method).toBe("qr");
+    });
+
+    it("sets method=override when navigating to override regardless of prior method", () => {
+      const fromQr: GatePassState = {
+        ...initialGatePassState,
+        draft: { ...initialGatePassState.draft, method: "qr" },
+      };
+      const next = gatePassReducer(fromQr, { type: "NAVIGATE", mode: "override" });
+      expect(next.draft.method).toBe("override");
+    });
+  });
+
+  // CodeRabbit: a stale ENTRY_FAILED or VISITORS_FAILED left lastError
+  // hanging in state after a recovery/success transition. The banner
+  // moved on but UI surfaces that read lastError directly would still
+  // see the old failure. Every success/recovery transition must clear it.
+  describe("clears lastError on recovery and success transitions", () => {
+    const erroredState: GatePassState = {
+      ...initialGatePassState,
+      mode: "error",
+      lastError: { code: "INTERNAL_ERROR", message: "stale" },
+    };
+
+    it("START_CAMERA clears stale lastError", () => {
+      const next = gatePassReducer(erroredState, { type: "START_CAMERA" });
+      expect(next.lastError).toBeUndefined();
+    });
+
+    it("SELECT_VISITOR clears stale lastError", () => {
+      const next = gatePassReducer(erroredState, {
+        type: "SELECT_VISITOR",
+        visitor: recognizedVisitors[0],
+      });
+      expect(next.lastError).toBeUndefined();
+    });
+
+    it("VISITORS_LOADED clears stale lastError", () => {
+      const next = gatePassReducer(
+        { ...erroredState, searchLoading: true },
+        { type: "VISITORS_LOADED", visitors: recognizedVisitors }
+      );
+      expect(next.lastError).toBeUndefined();
+    });
+
+    it("NAVIGATE clears stale lastError (already covered, regression guard)", () => {
+      const next = gatePassReducer(erroredState, {
+        type: "NAVIGATE",
+        mode: "home",
+      });
+      expect(next.lastError).toBeUndefined();
+    });
+  });
 });

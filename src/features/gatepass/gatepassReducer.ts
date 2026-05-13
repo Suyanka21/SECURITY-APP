@@ -13,9 +13,11 @@
 
 import type {
   EntryDraft,
+  EntryMethod,
   EntryRecord,
   GatePassAction,
   GatePassError,
+  GatePassMode,
   GatePassState,
   SyncResultView,
   Visitor,
@@ -139,6 +141,27 @@ function auditLine(entry: EntryRecord): string {
   return `${entry.status}: ${entry.id} by ${entry.guardId} (${entry.syncState})`;
 }
 
+/**
+ * Maps a navigation target to the correct draft.method.
+ *
+ * Without normalization, navigating qr -> walkin (or override -> walkin)
+ * would carry the prior method into the submission, so a walk-in entry
+ * could end up logged as method="qr" or method="override". This is
+ * exactly the kind of silent attribution bug the trustless audit warns
+ * against — the audit trail must reflect the actual entry channel.
+ */
+function resolveMethodForMode(
+  mode: GatePassMode,
+  current: EntryMethod
+): EntryMethod {
+  if (mode === "qr") return "qr";
+  if (mode === "override") return "override";
+  // SELECT_VISITOR pre-fills a recognized-visitor walk-in; preserve that
+  // so re-navigating to walk-in doesn't reset the method back to plain.
+  if (mode === "walkin" && current === "recognized") return "recognized";
+  return "walk-in";
+}
+
 function bannerForError(error: GatePassError): GatePassState["banner"] {
   // Rate limit and auth get distinctive tones to nudge the guard's next
   // action (wait vs. re-auth). Everything else surfaces as danger so
@@ -173,12 +196,11 @@ export function gatePassReducer(
 ): GatePassState {
   switch (action.type) {
     case "NAVIGATE": {
-      const method =
-        action.mode === "override"
-          ? "override"
-          : action.mode === "qr"
-            ? "qr"
-            : state.draft.method;
+      // Normalize draft.method against the destination mode so a stale
+      // "qr" or "override" method can't leak into a walk-in submission.
+      // SELECT_VISITOR sets mode="walkin" + method="recognized"; preserve
+      // that since it is a deliberate walk-in variant.
+      const method = resolveMethodForMode(action.mode, state.draft.method);
       return {
         ...state,
         mode: action.mode,
@@ -213,6 +235,7 @@ export function gatePassReducer(
         cameraState: "ready",
         qrState: "idle",
         qrToken: "",
+        lastError: undefined,
         banner: {
           tone: "info",
           message: "Camera ready. Scan one QR at a time.",
@@ -255,6 +278,7 @@ export function gatePassReducer(
           reason: "Recognized visitor",
           method: "recognized",
         },
+        lastError: undefined,
         banner: {
           tone: action.visitor.recognition === "watch" ? "warning" : "info",
           message: `${action.visitor.name} loaded. Confirm details before logging.`,
@@ -430,6 +454,7 @@ export function gatePassReducer(
       return {
         ...state,
         searchLoading: false,
+        lastError: undefined,
         recognizedVisitors: action.visitors,
       };
 

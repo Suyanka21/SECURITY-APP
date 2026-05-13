@@ -266,12 +266,17 @@ export function useGatePassController(
       // Map backend error code → reducer's qrState discriminant so the
       // UI can render the right red banner.
       const code = result.error.code;
-      const qrState: "invalid" | "replayed" | "expired" =
-        code === "QR_REPLAYED"
-          ? "replayed"
-          : code === "QR_EXPIRED"
-            ? "expired"
-            : "invalid";
+      let qrState: "invalid" | "replayed" | "expired";
+      switch (code) {
+        case "QR_REPLAYED":
+          qrState = "replayed";
+          break;
+        case "QR_EXPIRED":
+          qrState = "expired";
+          break;
+        default:
+          qrState = "invalid";
+      }
 
       dispatch({
         type: "QR_SCAN_FAILED",
