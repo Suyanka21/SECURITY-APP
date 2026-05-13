@@ -29,6 +29,8 @@ import {
   getApprovalStatus,
   decideApprovalRequest,
 } from "../services/approval-service";
+import { dispatchNotification } from "../services/notifications/notification-service";
+import { getNotificationProviders } from "../services/notifications/registry";
 import type { AuthenticatedRequest } from "../middleware/auth";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -94,12 +96,24 @@ export async function handleCreateApproval(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (req as any).db;
 
-    const { response, statusCode } = await createApprovalRequest(
-      validation.data,
-      guardId,
-      db
-    );
+    const { response, statusCode, enqueuedNotification } =
+      await createApprovalRequest(validation.data, guardId, db);
     res.status(statusCode).json(response);
+
+    // Feature 2 — fire-and-forget dispatcher kick AFTER the HTTP response.
+    // Source: src/docs/specs/notifications.md §5, B2 — delivery is
+    // best-effort; the create call MUST NOT block on provider latency.
+    // The dispatcher never throws (every outcome is persisted state),
+    // so any reject here is unexpected and only logged.
+    if (enqueuedNotification) {
+      void dispatchNotification(db, enqueuedNotification.id, {
+        providers: getNotificationProviders(),
+        systemGuardId: guardId,
+      }).catch((dispatchErr) => {
+        // eslint-disable-next-line no-console
+        console.error("[NOTIFICATION] dispatch error", dispatchErr);
+      });
+    }
   } catch (err) {
     next(err);
   }

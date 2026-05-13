@@ -112,6 +112,20 @@ export const CreateApprovalSchema = z.object({
     .string()
     .max(200, "hostContactHint must be 200 characters or fewer")
     .optional(),
+
+  /** Optional E.164 phone — drives Feature 2 delivery.
+   *  Source: src/docs/specs/notifications.md §7.1, B4.
+   *  When absent, the approval falls back to the legacy hand-copy
+   *  flow (no notification row is enqueued). When present, the
+   *  controller enqueues a WhatsApp delivery; SMS fallback fires
+   *  automatically on WA failure (spec §5).
+   */
+  hostPhoneE164: z
+    .string()
+    .trim()
+    .regex(/^\+[1-9]\d{6,14}$/, "hostPhoneE164 must be E.164 (+1234567890)")
+    .max(16)
+    .optional(),
 });
 
 export type CreateApprovalInput = z.infer<typeof CreateApprovalSchema>;

@@ -30,6 +30,10 @@ import {
   handleGetApprovalStatus,
   handleDecideApproval,
 } from "./routes/approvals";
+import {
+  handleListNotifications,
+  handleRetryNotification,
+} from "./routes/notifications";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth } from "./middleware/auth";
 
@@ -143,6 +147,15 @@ export function createApp(db: unknown) {
   app.post("/api/approvals", requireAuth, strictLimiter, handleCreateApproval);
   app.get("/api/approvals/:id/status", requireAuth, handleGetApprovalStatus);
   app.post("/api/approvals/:id/decide", strictLimiter, handleDecideApproval);
+
+  // Feature 2 — Notifications (spec §7)
+  app.get("/api/notifications", requireAuth, handleListNotifications);
+  app.post(
+    "/api/notifications/:id/retry",
+    requireAuth,
+    strictLimiter,
+    handleRetryNotification
+  );
 
   // ─── Error Handler ─────────────────────────────────────────────────
   // Must be LAST — catches all unhandled errors
