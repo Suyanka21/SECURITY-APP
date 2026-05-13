@@ -15,6 +15,13 @@
       "when": 1778712055762,
       "tag": "0002_resident_approval_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778714400000,
+      "tag": "0003_notifications",
+      "breakpoints": true
     }
   ]
 }

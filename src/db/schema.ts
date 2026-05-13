@@ -21,6 +21,7 @@ import {
   boolean,
   check,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -507,6 +508,12 @@ export const approvalRequests = pgTable(
 
     /** Server-generated trace ID for audit correlation */
     traceId: text("trace_id").notNull(),
+
+    /** Optional resident phone in E.164 form. Drives Feature 2 delivery. */
+    // Source: src/docs/specs/notifications.md §4 + §7.1
+    // Nullable so legacy approvals (no phone known) continue to work
+    // and the guard hand-copies the link.
+    hostPhoneE164: text("host_phone_e164"),
   },
   (table) => [
     // Visitor name must not be empty/whitespace (mirrors entry_records)
@@ -629,7 +636,7 @@ export const syncEventsRelations = relations(syncEvents, ({ one }) => ({
 
 export const approvalRequestsRelations = relations(
   approvalRequests,
-  ({ one }) => ({
+  ({ one, many }) => ({
     /** The guard who requested approval */
     requestedByGuard: one(guards, {
       fields: [approvalRequests.requestedByGuardId],
@@ -640,8 +647,162 @@ export const approvalRequestsRelations = relations(
       fields: [approvalRequests.entryId],
       references: [entryRecords.id],
     }),
+    /** Outbound deliveries for this approval (Feature 2). */
+    notifications: many(notifications),
   })
 );
+
+// ─── Enums: Notification Channel + Status ───────────────────────────────────
+// Source: src/docs/specs/notifications.md §4 (data model), §9 (state machine)
+//
+// notification_channel: 'whatsapp' is preferred; 'sms' is the fallback per
+// GATEPASS DEFINITION L58–60.
+//
+// notification_status lifecycle:
+//   queued → sending → delivered             (terminal success)
+//                  ↓
+//                 failed → permanently_failed (terminal failure after 3 retries)
+//
+// The server lazily flips long-stalled 'sending' rows to 'failed' on read
+// (same pattern as approval expiry — no background job).
+export const notificationChannelEnum = pgEnum("notification_channel", [
+  "whatsapp",
+  "sms",
+]);
+
+export const notificationStatusEnum = pgEnum("notification_status", [
+  "queued",
+  "sending",
+  "delivered",
+  "failed",
+  "permanently_failed",
+]);
+
+// ─── Table 8: Notifications ─────────────────────────────────────────────────
+// Source: src/docs/specs/notifications.md §4 (schema), §5 (architecture),
+//         §9 (state machine).
+//
+// One row per outbound delivery ATTEMPT (not per approval). A WhatsApp
+// failure followed by SMS fallback produces two rows. The
+// idempotency_key (sha256(approval_id || channel || attempt_no)) is
+// UNIQUE so the dispatcher can be safely enqueued twice without
+// producing duplicate provider calls.
+//
+// HARD RULES (CHECK constraints below):
+// - target_phone must not be empty/whitespace (full E.164 validated at
+//   the API boundary).
+// - attempts is non-negative and bounded at 10 (prevents runaway DB
+//   growth from a misbehaving dispatcher).
+// - provider response excerpt is capped at 200 chars (spec §3 PII rule).
+// - terminal statuses require the matching timestamp.
+//
+// Source: Security-and-Hardening — bounded retry, scrubbed response.
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    /** Server-generated unique notification ID */
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** The approval this delivery serves. CASCADE on approval delete. */
+    approvalId: uuid("approval_id")
+      .notNull()
+      .references(() => approvalRequests.id, { onDelete: "cascade" }),
+
+    /** Channel used (whatsapp | sms) */
+    channel: notificationChannelEnum("channel").notNull(),
+
+    /** Target phone in E.164 form. Validated at the API boundary. */
+    targetPhone: text("target_phone").notNull(),
+
+    /** Template key (e.g. 'approval.magic_link'). Audit reproducibility. */
+    templateKey: text("template_key").notNull(),
+
+    /**
+     * Rendered body actually sent to the provider. Stored for audit.
+     * May contain the magic-link URL; the embedded token is single-use
+     * and already lifecycle-bound by Feature 1, so persisting the
+     * rendered body does NOT extend its security exposure.
+     */
+    renderedBody: text("rendered_body").notNull(),
+
+    /** Lifecycle status — see notificationStatusEnum + state machine §9 */
+    status: notificationStatusEnum("status").notNull().default("queued"),
+
+    /** Send attempts so far (bounded 0..10 by CHECK constraint) */
+    attempts: integer("attempts").notNull().default(0),
+
+    /**
+     * sha256(approval_id || channel || attempt_no).
+     * UNIQUE — collapses duplicate dispatcher enqueues into one outbound.
+     */
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+
+    /** Last provider HTTP status code (when known) */
+    lastProviderResponseCode: integer("last_provider_response_code"),
+
+    /** Last provider response body — scrubbed, ≤ 200 chars (PII rule) */
+    lastProviderResponseExcerpt: text("last_provider_response_excerpt"),
+
+    /** Last error code from NotificationError union (e.g. PROVIDER_5XX) */
+    lastErrorCode: text("last_error_code"),
+
+    /** Server-generated creation timestamp */
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Updated on every status flip */
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Set when status becomes 'delivered' (terminal success) */
+    deliveredAt: timestamp("delivered_at", {
+      precision: 3,
+      withTimezone: true,
+    }),
+
+    /** Set when status becomes 'failed' or 'permanently_failed' */
+    failedAt: timestamp("failed_at", { precision: 3, withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "notification_target_phone_not_empty",
+      sql`length(trim(${table.targetPhone})) > 0`
+    ),
+    check(
+      "notification_attempts_bounded",
+      sql`${table.attempts} >= 0 AND ${table.attempts} <= 10`
+    ),
+    check(
+      "notification_response_excerpt_bounded",
+      sql`${table.lastProviderResponseExcerpt} IS NULL OR length(${table.lastProviderResponseExcerpt}) <= 200`
+    ),
+    check(
+      "notification_delivered_requires_ts",
+      sql`${table.status} != 'delivered' OR ${table.deliveredAt} IS NOT NULL`
+    ),
+    check(
+      "notification_failed_requires_ts",
+      sql`${table.status} NOT IN ('failed','permanently_failed') OR ${table.failedAt} IS NOT NULL`
+    ),
+    // Lookup by approval for the per-approval status panel
+    index("notifications_approval_idx").on(table.approvalId),
+    // Partial index covering the dispatcher poll + lazy-flip sweep
+    index("notifications_status_updated_idx")
+      .on(table.status, table.updatedAt)
+      .where(sql`${table.status} IN ('queued','sending','failed')`),
+  ]
+);
+
+export const notificationsRelations = relations(notifications, ({ one }) => ({
+  /** The approval this delivery serves */
+  approval: one(approvalRequests, {
+    fields: [notifications.approvalId],
+    references: [approvalRequests.id],
+  }),
+}));
 
 // ─── Enum: Audit Event Types ─────────────────────────────────────────────────
 // Source: contract §5 — Backend Event Traceability Matrix
@@ -668,6 +829,12 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "approval_approved",
   "approval_denied",
   "approval_expired",
+  // Source: src/docs/specs/notifications.md §11 — Feature 2 audit events.
+  // Each delivery attempt writes one of these; together they reconstruct
+  // the full notification timeline for any approval.
+  "notification_sent",
+  "notification_failed",
+  "notification_permanently_failed",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────
