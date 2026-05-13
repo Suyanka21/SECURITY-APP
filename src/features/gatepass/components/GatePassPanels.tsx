@@ -2,8 +2,11 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock3,
+  Copy,
+  ExternalLink,
   LayoutDashboard,
   Loader2,
+  MailCheck,
   QrCode,
   Radar,
   RefreshCw,
@@ -13,7 +16,9 @@ import {
   UserPlus,
   Wifi,
   WifiOff,
+  X as XIcon,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type {
   EntryDraft,
   GatePassAction,
@@ -34,6 +39,11 @@ export type GatePassActions = {
   syncPending: () => Promise<void> | void;
   searchVisitors: (query?: string) => Promise<void> | void;
   setNetwork: (network: "online" | "offline") => void;
+  /**
+   * Initiate a resident-approval flow for the current walk-in draft.
+   * Source: src/docs/specs/resident-approval-flow.md §7.1
+   */
+  requestApproval: () => Promise<void> | void;
 };
 
 type Props = {
@@ -227,7 +237,14 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
 }
 
 export function WalkInPanel(props: Props) {
-  return <EntryForm title="Walk-in entry" {...props} requireReason={false} />;
+  return (
+    <EntryForm
+      title="Walk-in entry"
+      {...props}
+      requireReason={false}
+      showRequestApproval
+    />
+  );
 }
 
 export function OverridePanel(props: Props) {
@@ -240,7 +257,12 @@ function EntryForm({
   dispatch,
   actions,
   requireReason,
-}: Props & { title: string; requireReason: boolean }) {
+  showRequestApproval = false,
+}: Props & {
+  title: string;
+  requireReason: boolean;
+  showRequestApproval?: boolean;
+}) {
   const fields: Array<[keyof EntryDraft, string, string]> = [
     ["visitorName", "Visitor name", "e.g. Ama Mensah"],
     ["host", "Resident / host", "e.g. J. Bello"],
@@ -288,6 +310,21 @@ function EntryForm({
         >
           {state.inFlight ? "Logging…" : "Log entry"}
         </button>
+        {showRequestApproval && (
+          <button
+            className="focus-ring flex items-center justify-center gap-2 border border-primary bg-card px-5 py-4 font-display text-base font-bold text-primary shadow-panel transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+            onClick={() => void actions.requestApproval()}
+            disabled={state.inFlight || state.network === "offline"}
+            title={
+              state.network === "offline"
+                ? "Resident approval requires a live connection \u2014 use override (with reason)"
+                : "Send a magic-link approval to the resident"
+            }
+          >
+            <MailCheck className="h-5 w-5" aria-hidden="true" />
+            Request resident approval
+          </button>
+        )}
         <button
           className="focus-ring border border-border px-5 py-4 font-semibold"
           onClick={() => dispatch({ type: "RESET_FLOW" })}
@@ -369,6 +406,185 @@ function VisitorRow({
         {visitor.recognition}
       </span>
     </button>
+  );
+}
+
+// ─── Awaiting Approval Panel (Feature 1) ──────────────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §10 (UI requirements)
+
+/**
+ * Format a millisecond delta into "M:SS".
+ */
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "0:00";
+  const totalSeconds = Math.ceil(ms / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+export function AwaitingApprovalPanel({ state, dispatch }: Props) {
+  const approval = state.pendingApproval;
+  // Tick the displayed countdown locally every second. The server is
+  // still the source of truth for expiry (lazy flip in /status), but
+  // the UI cannot wait for a poll to refresh — it must update every
+  // second so the guard sees the time draining in real time.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const [copied, setCopied] = useState(false);
+
+  if (!approval) {
+    // Defensive: the parent should only mount this when mode ===
+    // "awaiting-approval" AND pendingApproval is set, but if state
+    // gets desynced, render an explicit recovery prompt instead of a
+    // blank panel (no silent success — same rule everywhere).
+    return (
+      <section className="border border-warning bg-warning/10 p-5 shadow-panel">
+        <h2 className="font-display text-3xl font-bold">No active approval</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          The approval state is missing. Return to the walk-in form to start over.
+        </p>
+        <button
+          className="focus-ring mt-4 border border-border px-5 py-3 font-semibold"
+          onClick={() => dispatch({ type: "RESET_FLOW" })}
+        >
+          Reset
+        </button>
+      </section>
+    );
+  }
+
+  const expiresAt = new Date(approval.expiresAt).getTime();
+  const remainingMs = expiresAt - now;
+  const expired = remainingMs <= 0;
+
+  const onCopy = async () => {
+    try {
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard?.writeText
+      ) {
+        await navigator.clipboard.writeText(approval.magicLinkUrl);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch {
+      // Clipboard may be blocked (insecure context, missing permission).
+      // Failure is non-fatal — the link is visible on screen so the
+      // guard can read it. We just don't get to show the "Copied" hint.
+      setCopied(false);
+    }
+  };
+
+  return (
+    <section
+      className="border border-info bg-info/5 p-5 shadow-panel"
+      aria-live="polite"
+    >
+      <div className="flex flex-col gap-1">
+        <p className="text-xs font-bold uppercase tracking-widest text-info-foreground">
+          Awaiting resident approval
+        </p>
+        <h2 className="font-display text-3xl font-bold text-foreground">
+          {approval.draft.visitorName}
+          <span className="ml-3 text-base font-semibold text-muted-foreground">
+            → {approval.draft.host} (Unit {approval.draft.unit})
+          </span>
+        </h2>
+      </div>
+
+      <div className="mt-5 grid gap-5 md:grid-cols-[1fr_1fr]">
+        <div className="border border-border bg-card p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+            <Clock3 className="h-4 w-4" aria-hidden="true" />
+            Time remaining
+          </div>
+          <p
+            data-testid="approval-countdown"
+            className={`mt-2 font-display text-5xl font-black tabular-nums ${
+              expired
+                ? "text-destructive"
+                : remainingMs < 60_000
+                  ? "text-warning"
+                  : "text-foreground"
+            }`}
+          >
+            {formatCountdown(remainingMs)}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Expires at{" "}
+            {new Date(approval.expiresAt).toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            })}
+          </p>
+        </div>
+
+        <div className="border border-border bg-card p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+            <MailCheck className="h-4 w-4" aria-hidden="true" />
+            Magic link (single-use)
+          </div>
+          <p
+            data-testid="approval-magic-link"
+            className="mt-2 break-all font-mono text-xs text-foreground"
+          >
+            {approval.magicLinkUrl}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="focus-ring inline-flex items-center gap-1 border border-primary bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
+              onClick={() => void onCopy()}
+            >
+              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              {copied ? "Copied" : "Copy link"}
+            </button>
+            <a
+              className="focus-ring inline-flex items-center gap-1 border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground"
+              href={approval.magicLinkUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              Open
+            </a>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Share with the resident. Anyone who receives this link can
+            approve or deny once — don't post it publicly.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-center gap-3">
+        <Loader2
+          className="h-5 w-5 animate-spin text-info-foreground"
+          aria-hidden="true"
+        />
+        <p className="text-sm font-semibold text-muted-foreground">
+          {approval.status === "pending" && !expired
+            ? "Polling for the resident's decision…"
+            : approval.status === "pending" && expired
+              ? "Time expired — next poll will confirm."
+              : `Status: ${approval.status}`}
+        </p>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+        <button
+          className="focus-ring border border-border px-5 py-3 font-semibold"
+          onClick={() => dispatch({ type: "RESET_FLOW" })}
+        >
+          <XIcon className="mr-1 inline h-4 w-4" aria-hidden="true" />
+          Cancel approval
+        </button>
+      </div>
+    </section>
   );
 }
 
