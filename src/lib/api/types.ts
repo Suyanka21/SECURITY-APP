@@ -151,3 +151,73 @@ export interface RecognizedVisitorsResponse {
   };
   traceId: string;
 }
+
+// ─── Resident approval flow — contract: spec §7 ───────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §7.1, §7.2, §7.3
+//
+// The approval lifecycle is the FIRST excluded-feature being added back
+// per src/docs/remaining-features-rollout.md. The frontend reducer reacts
+// to status transitions via polling; the resident's magic-link page is
+// served by the same frontend at /approve/:id.
+
+export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
+export type ApprovalDecision = "approve" | "deny";
+
+/** Sanitized approval view — server NEVER includes tokenHash. */
+export interface ApprovalRequestView {
+  id: string;
+  offlineId: string;
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+  reason: string;
+  method: "walk-in";
+  requestedByGuardId: string;
+  status: ApprovalStatus;
+  expiresAt: string;
+  decidedAt: string | null;
+  deniedReason: string | null;
+  entryId: string | null;
+  traceId: string;
+}
+
+// POST /api/approvals — spec §7.1
+export interface CreateApprovalRequest {
+  offlineId: string;
+  draft: {
+    visitorName: string;
+    host: string;
+    unit: string;
+    plate?: string | null;
+    reason?: string;
+    method: "walk-in";
+  };
+}
+
+export interface CreateApprovalResponse {
+  approvalId: string;
+  magicLinkUrl: string;
+  expiresAt: string;
+  traceId: string;
+}
+
+// GET /api/approvals/:id/status — spec §7.2
+export interface ApprovalStatusResponse {
+  approval: ApprovalRequestView;
+  traceId: string;
+}
+
+// POST /api/approvals/:id/decide — spec §7.3
+export interface DecideApprovalRequest {
+  token: string;
+  decision: ApprovalDecision;
+  reason?: string;
+}
+
+export interface DecideApprovalResponse {
+  approval: ApprovalRequestView;
+  /** Populated only on approve — null on deny. */
+  entry: ServerEntry | null;
+  traceId: string;
+}
