@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatePassApp } from "../GatePassApp";
 import type { GatePassApi } from "@/lib/api/gatepass";
 import type { guardApprovalApi } from "@/lib/api/approvals";
+import type { guardNotificationsApi } from "@/lib/api/notifications";
+import type { NotificationView } from "@/lib/api/types";
 
 function buildApi(overrides: Partial<GatePassApi> = {}): GatePassApi {
   const stub = vi.fn(async () => ({
@@ -254,5 +256,247 @@ describe("GatePass UI", () => {
     expect(
       screen.getByRole("heading", { name: "GatePass" })
     ).toBeInTheDocument();
+  });
+
+  // ─── Notifications surface (Feature 2 slice 7) ─────────────────────
+  // Source: src/docs/specs/notifications.md §5 (PII masking), §7
+  // (HTTP surface), §10 (UI contract).
+
+  function notificationView(
+    overrides: Partial<NotificationView> = {},
+  ): NotificationView {
+    return {
+      id: "nnnn-1",
+      approvalId: "11111111-1111-4111-8111-111111111111",
+      channel: "whatsapp",
+      status: "queued",
+      attempts: 0,
+      targetPhone: "+15551230001",
+      templateKey: "approval.magic_link",
+      lastErrorCode: null,
+      lastProviderResponseCode: null,
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+      deliveredAt: null,
+      failedAt: null,
+      ...overrides,
+    };
+  }
+
+  function makeNotificationsApi(
+    rows: NotificationView[] = [],
+  ): typeof guardNotificationsApi {
+    return {
+      getNotifications: vi.fn(async () => ({
+        ok: true as const,
+        status: 200,
+        data: { notifications: rows, traceId: "trace-n" },
+      })),
+      retryNotification: vi.fn(async (id: string) => ({
+        ok: true as const,
+        status: 202,
+        data: {
+          notification: notificationView({
+            id,
+            attempts: 2,
+            status: "queued" as const,
+          }),
+          traceId: "trace-retry",
+        },
+      })),
+    } as unknown as typeof guardNotificationsApi;
+  }
+
+  it("renders the host-phone field only on the walk-in panel", () => {
+    render(<GatePassApp controller={{ api: buildApi() }} />);
+    fireEvent.click(screen.getAllByRole("button", { name: /Walk-in/i })[0]);
+    expect(screen.getByTestId("host-phone-input")).toBeInTheDocument();
+    // Override panel should NOT have it.
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /^override$/i })[0],
+    );
+    expect(screen.queryByTestId("host-phone-input")).not.toBeInTheDocument();
+  });
+
+  it("forwards the typed phone number to createApproval as hostPhoneE164", async () => {
+    const approvalApi = makeApprovalApi();
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi,
+          notificationsApi: makeNotificationsApi(),
+          now: () => new Date("2024-01-01T00:00:00Z"),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 60_000,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "+15551230001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+    await waitFor(() => {
+      expect(approvalApi.createApproval).toHaveBeenCalledTimes(1);
+    });
+    const payload = (approvalApi.createApproval as ReturnType<typeof vi.fn>)
+      .mock.calls[0][0];
+    expect(payload.hostPhoneE164).toBe("+15551230001");
+  });
+
+  it("rejects a non-E.164 phone with HOST_PHONE_INVALID and never calls createApproval", async () => {
+    const approvalApi = makeApprovalApi();
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi,
+          notificationsApi: makeNotificationsApi(),
+          now: () => new Date("2024-01-01T00:00:00Z"),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 60_000,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "555-123-0001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+    await waitFor(() => {
+      // The reducer flips to error mode on a client-side validation
+      // failure (same contract as VISITOR_NAME_REQUIRED in Feature 1 —
+      // no silent success, the guard sees the failure explicitly).
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /HOST_PHONE_INVALID/,
+      );
+    });
+    expect(approvalApi.createApproval).not.toHaveBeenCalled();
+  });
+
+  it("renders the delivery-status block with a masked phone once notifications land", async () => {
+    const approvalApi = makeApprovalApi();
+    const notificationsApi = makeNotificationsApi([
+      notificationView({ id: "n-1", status: "queued" }),
+    ]);
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi,
+          notificationsApi,
+          now: () => new Date("2024-01-01T00:00:00Z"),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 10,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "+15551230001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("delivery-status-block")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("delivery-row-n-1")).toHaveTextContent(
+      /whatsapp/i,
+    );
+    // PII discipline: full phone is NEVER on screen, only the masked form.
+    expect(screen.getByTestId("delivery-row-n-1")).not.toHaveTextContent(
+      "+15551230001",
+    );
+    expect(screen.getByTestId("delivery-row-n-1")).toHaveTextContent(
+      /••••/,
+    );
+  });
+
+  it("Resend button only appears for failed rows and calls retryNotification", async () => {
+    const approvalApi = makeApprovalApi();
+    const notificationsApi = makeNotificationsApi([
+      notificationView({
+        id: "n-1",
+        status: "failed",
+        attempts: 1,
+        lastErrorCode: "PROVIDER_5XX",
+      }),
+    ]);
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi,
+          notificationsApi,
+          now: () => new Date("2024-01-01T00:00:00Z"),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 10,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "+15551230001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("delivery-retry-n-1")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("delivery-retry-n-1"));
+    await waitFor(() => {
+      expect(notificationsApi.retryNotification).toHaveBeenCalledWith("n-1");
+    });
+  });
+
+  it("surfaces a notifications list failure WITHOUT collapsing the approval panel (two-stream isolation)", async () => {
+    const approvalApi = makeApprovalApi();
+    const notificationsApi = {
+      getNotifications: vi.fn(async () => ({
+        ok: false as const,
+        status: 500,
+        error: { code: "INTERNAL_ERROR", message: "Database unavailable" },
+      })),
+      retryNotification: vi.fn(),
+    } as unknown as typeof guardNotificationsApi;
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi,
+          notificationsApi,
+          now: () => new Date("2024-01-01T00:00:00Z"),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 10,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "+15551230001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("delivery-list-error")).toHaveTextContent(
+        /INTERNAL_ERROR/,
+      );
+    });
+    // The approval panel itself is still up — magic link still visible,
+    // countdown still ticking. A notifications transport failure must
+    // never collapse the approval surface (spec §5).
+    expect(screen.getByTestId("approval-magic-link")).toBeInTheDocument();
+    expect(screen.getByTestId("approval-countdown")).toBeInTheDocument();
   });
 });

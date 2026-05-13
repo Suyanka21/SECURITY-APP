@@ -28,6 +28,7 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     searchVisitors: controller.searchVisitors,
     setNetwork: controller.setNetwork,
     requestApproval: controller.requestApproval,
+    retryNotification: controller.retryNotification,
   };
 
   return (

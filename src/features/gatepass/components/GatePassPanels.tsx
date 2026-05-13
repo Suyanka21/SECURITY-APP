@@ -23,6 +23,7 @@ import type {
   EntryDraft,
   GatePassAction,
   GatePassState,
+  NotificationDeliveryView,
   Visitor,
 } from "../types";
 
@@ -42,8 +43,15 @@ export type GatePassActions = {
   /**
    * Initiate a resident-approval flow for the current walk-in draft.
    * Source: src/docs/specs/resident-approval-flow.md §7.1
+   * Feature 2: optional hostPhoneE164 enrolls the approval into the
+   * notifications delivery pipeline (spec notifications.md §7.1).
    */
-  requestApproval: () => Promise<void> | void;
+  requestApproval: (hostPhoneE164?: string) => Promise<void> | void;
+  /**
+   * Manually retry a failed notification delivery.
+   * Source: src/docs/specs/notifications.md §7.3
+   */
+  retryNotification: (notificationId: string) => Promise<void> | void;
 };
 
 type Props = {
@@ -270,6 +278,13 @@ function EntryForm({
     ["plate", "Plate / ID", "optional"],
   ];
   const errorField = state.lastError?.field;
+  // Feature 2 — slice 7: host phone is collected ONLY on the Walk-in
+  // panel, since approval requests are scoped to walk-ins (spec
+  // resident-approval-flow.md §3, notifications.md §7.1). It is local
+  // to this component because it's a transient pre-request input —
+  // the controller validates + persists it on its own state machine.
+  const [hostPhoneE164, setHostPhoneE164] = useState("");
+  const phoneFieldHasError = state.lastError?.field === "hostPhoneE164";
   return (
     <section className="border border-border bg-card p-5 shadow-panel">
       <h2 className="font-display text-3xl font-bold">{title}</h2>
@@ -301,6 +316,31 @@ function EntryForm({
             }
           />
         </label>
+        {showRequestApproval && (
+          <label
+            htmlFor="host-phone-e164"
+            className="grid gap-2 text-sm font-semibold text-foreground md:col-span-2"
+          >
+            Host phone (E.164, optional — enables WhatsApp/SMS delivery)
+            <input
+              id="host-phone-e164"
+              data-testid="host-phone-input"
+              type="tel"
+              inputMode="tel"
+              autoComplete="off"
+              className={`focus-ring border bg-background px-3 py-3 text-base font-medium ${phoneFieldHasError ? "border-destructive" : "border-input"}`}
+              value={hostPhoneE164}
+              placeholder="+15551230001"
+              aria-invalid={phoneFieldHasError || undefined}
+              aria-describedby={phoneFieldHasError ? "host-phone-error" : undefined}
+              onChange={(event) => setHostPhoneE164(event.target.value)}
+            />
+            <span className="text-xs font-normal text-muted-foreground">
+              Starts with +country code, no spaces or dashes. Leave blank
+              to deliver the link via the on-screen copy only.
+            </span>
+          </label>
+        )}
       </div>
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
         <button
@@ -313,12 +353,18 @@ function EntryForm({
         {showRequestApproval && (
           <button
             className="focus-ring flex items-center justify-center gap-2 border border-primary bg-card px-5 py-4 font-display text-base font-bold text-primary shadow-panel transition-transform hover:-translate-y-0.5 disabled:opacity-60"
-            onClick={() => void actions.requestApproval()}
+            onClick={() =>
+              void actions.requestApproval(
+                hostPhoneE164.trim() ? hostPhoneE164.trim() : undefined,
+              )
+            }
             disabled={state.inFlight || state.network === "offline"}
             title={
               state.network === "offline"
                 ? "Resident approval requires a live connection \u2014 use override (with reason)"
-                : "Send a magic-link approval to the resident"
+                : hostPhoneE164.trim()
+                  ? "Send a magic-link approval AND deliver it via WhatsApp/SMS"
+                  : "Send a magic-link approval to the resident"
             }
           >
             <MailCheck className="h-5 w-5" aria-hidden="true" />
@@ -333,7 +379,15 @@ function EntryForm({
         </button>
       </div>
       {state.lastError && (
-        <p className="mt-3 text-sm text-destructive" role="alert">
+        <p
+          id={
+            state.lastError.field === "hostPhoneE164"
+              ? "host-phone-error"
+              : undefined
+          }
+          className="mt-3 text-sm text-destructive"
+          role="alert"
+        >
           <span className="font-bold">{state.lastError.code}:</span>{" "}
           {state.lastError.message}
         </p>
@@ -423,7 +477,159 @@ function formatCountdown(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export function AwaitingApprovalPanel({ state, dispatch }: Props) {
+function statusBadgeClass(status: NotificationDeliveryView["status"]) {
+  switch (status) {
+    case "delivered":
+      return "border-success bg-success/10 text-success-foreground";
+    case "failed":
+      return "border-destructive bg-destructive/10 text-destructive";
+    case "sending":
+      return "border-info bg-info/10 text-info-foreground";
+    case "queued":
+    default:
+      return "border-warning bg-warning/15 text-warning-foreground";
+  }
+}
+
+function maskPhone(phone: string) {
+  // Show country + last 4 only. spec notifications.md §5 bans full PII in
+  // the audit/log surface; the same discipline applies on screen since
+  // a guard shoulder-surfing scenario is realistic.
+  if (phone.length < 6) return phone;
+  const tail = phone.slice(-4);
+  return `${phone.slice(0, 3)}••••${tail}`;
+}
+
+/**
+ * Renders the delivery rows for a single approval. Each row shows the
+ * channel, masked target, status badge, attempt count, and (when
+ * applicable) a Resend button + last-error line. Source: spec
+ * notifications.md §5, §7.2, §7.3.
+ */
+function DeliveryStatusBlock({
+  rows,
+  loading,
+  lastError,
+  onRetry,
+}: {
+  rows: NotificationDeliveryView[] | undefined;
+  loading: boolean;
+  lastError: GatePassState["notifications"]["lastError"];
+  onRetry: (id: string) => Promise<void> | void;
+}) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div
+        className="border border-border bg-card p-4"
+        aria-live="polite"
+        data-testid="delivery-status-empty"
+      >
+        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+          Delivery
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {loading
+            ? "Checking delivery status…"
+            : "No notifications enrolled. Share the link manually."}
+        </p>
+        {lastError && (
+          <p
+            className="mt-2 text-xs text-destructive"
+            role="alert"
+            data-testid="delivery-list-error"
+          >
+            <span className="font-bold">{lastError.code}:</span>{" "}
+            {lastError.message}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="border border-border bg-card p-4"
+      data-testid="delivery-status-block"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+          Delivery
+        </p>
+        {loading && (
+          <Loader2
+            className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+            aria-label="Refreshing delivery status"
+          />
+        )}
+      </div>
+      <ul className="mt-3 grid gap-2">
+        {rows.map((row) => {
+          const canRetry = row.status === "failed" && !row.retryInFlight;
+          return (
+            <li
+              key={row.id}
+              data-testid={`delivery-row-${row.id}`}
+              className="flex flex-col gap-2 border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-semibold capitalize">
+                  {row.channel}
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    → {maskPhone(row.targetPhone)}
+                  </span>
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Attempt {row.attempts}
+                  {row.lastErrorCode ? ` · ${row.lastErrorCode}` : ""}
+                </span>
+                {row.retryError && (
+                  <span
+                    className="text-xs text-destructive"
+                    role="alert"
+                    data-testid={`delivery-retry-error-${row.id}`}
+                  >
+                    <span className="font-bold">{row.retryError.code}:</span>{" "}
+                    {row.retryError.message}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`focus-ring inline-flex border px-2 py-1 text-xs font-bold uppercase ${statusBadgeClass(row.status)}`}
+                  data-testid={`delivery-status-${row.id}`}
+                >
+                  {row.status}
+                </span>
+                {canRetry && (
+                  <button
+                    type="button"
+                    data-testid={`delivery-retry-${row.id}`}
+                    className="focus-ring inline-flex items-center gap-1 border border-primary bg-card px-3 py-2 text-xs font-semibold text-primary disabled:opacity-60"
+                    onClick={() => void onRetry(row.id)}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    Resend
+                  </button>
+                )}
+                {row.retryInFlight && (
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                    data-testid={`delivery-retry-inflight-${row.id}`}
+                  >
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Resending…
+                  </span>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+export function AwaitingApprovalPanel({ state, dispatch, actions }: Props) {
   const approval = state.pendingApproval;
   // Tick the displayed countdown locally every second. The server is
   // still the source of truth for expiry (lazy flip in /status), but
@@ -573,6 +779,15 @@ export function AwaitingApprovalPanel({ state, dispatch }: Props) {
               ? "Time expired — next poll will confirm."
               : `Status: ${approval.status}`}
         </p>
+      </div>
+
+      <div className="mt-5">
+        <DeliveryStatusBlock
+          rows={state.notifications.byApprovalId[approval.id]}
+          loading={state.notifications.loading}
+          lastError={state.notifications.lastError}
+          onRetry={actions.retryNotification}
+        />
       </div>
 
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
