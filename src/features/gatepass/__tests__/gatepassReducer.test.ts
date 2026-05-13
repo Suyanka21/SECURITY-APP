@@ -304,4 +304,165 @@ describe("gatePassReducer", () => {
       expect(next.lastError).toBeUndefined();
     });
   });
+
+  // ─── Resident approval lifecycle (Feature 1) ──────────────────────────
+  // Source: src/docs/specs/resident-approval-flow.md §6, §11
+  describe("Approval lifecycle (Feature 1)", () => {
+    const baseApproval = {
+      id: "11111111-1111-4111-8111-111111111111",
+      draft: {
+        visitorName: "Maya",
+        host: "Host",
+        unit: "1A",
+        plate: "",
+        reason: "",
+        method: "walk-in" as const,
+      },
+      magicLinkUrl: "http://localhost:5173/approve/11111111-1111-4111-8111-111111111111?token=" + "a".repeat(64),
+      expiresAt: new Date("2024-01-01T00:05:00Z").toISOString(),
+      status: "pending" as const,
+      traceId: "trace-1",
+    };
+
+    it("APPROVAL_REQUEST_STARTED flips to inFlight and clears errors", () => {
+      const errored: GatePassState = {
+        ...initialGatePassState,
+        lastError: { code: "PRIOR", message: "stale" },
+      };
+      const next = gatePassReducer(errored, { type: "APPROVAL_REQUEST_STARTED" });
+      expect(next.inFlight).toBe(true);
+      expect(next.lastError).toBeUndefined();
+      expect(next.banner.tone).toBe("info");
+    });
+
+    it("APPROVAL_REQUEST_SUCCEEDED enters awaiting-approval with pendingApproval populated", () => {
+      const next = gatePassReducer(initialGatePassState, {
+        type: "APPROVAL_REQUEST_SUCCEEDED",
+        approval: baseApproval,
+      });
+      expect(next.mode).toBe("awaiting-approval");
+      expect(next.inFlight).toBe(false);
+      expect(next.pendingApproval).toEqual(baseApproval);
+      expect(next.audit[0]).toContain("approval_requested");
+      expect(next.audit[0]).toContain(baseApproval.id);
+    });
+
+    it("APPROVAL_REQUEST_FAILED flips to error and clears pendingApproval (no silent recovery)", () => {
+      const withPending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: baseApproval,
+      };
+      const next = gatePassReducer(withPending, {
+        type: "APPROVAL_REQUEST_FAILED",
+        error: { code: "SERVER_ERROR", message: "500" },
+      });
+      expect(next.mode).toBe("error");
+      expect(next.pendingApproval).toBeUndefined();
+      expect(next.lastError?.code).toBe("SERVER_ERROR");
+      expect(next.banner.tone).toBe("danger");
+    });
+
+    it("APPROVAL_POLLED updates the in-flight status without losing magic link", () => {
+      const withPending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: baseApproval,
+      };
+      const next = gatePassReducer(withPending, {
+        type: "APPROVAL_POLLED",
+        status: "pending",
+      });
+      // Status unchanged on a pending->pending poll; the magic link and
+      // expiresAt must NOT be touched (UI countdown depends on them).
+      expect(next.pendingApproval?.status).toBe("pending");
+      expect(next.pendingApproval?.magicLinkUrl).toBe(baseApproval.magicLinkUrl);
+      expect(next.pendingApproval?.expiresAt).toBe(baseApproval.expiresAt);
+    });
+
+    it("APPROVAL_POLLED is a no-op when no approval is pending (guard reset between poll and response)", () => {
+      const next = gatePassReducer(initialGatePassState, {
+        type: "APPROVAL_POLLED",
+        status: "pending",
+      });
+      expect(next).toBe(initialGatePassState);
+    });
+
+    it("APPROVAL_RESOLVED logs the entry and clears pendingApproval", () => {
+      const withPending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: baseApproval,
+      };
+      const entry = makeEntry({ visitorName: "Maya", id: "entry-1" });
+      const next = gatePassReducer(withPending, {
+        type: "APPROVAL_RESOLVED",
+        entry,
+      });
+      expect(next.mode).toBe("confirmed");
+      expect(next.pendingApproval).toBeUndefined();
+      expect(next.lastEntry?.id).toBe("entry-1");
+      expect(next.entries[0].id).toBe("entry-1");
+      expect(next.audit[0]).toContain("approval_approved");
+    });
+
+    it("APPROVAL_DENIED flips to error, sanitizes the reason, includes it in the banner", () => {
+      const withPending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: baseApproval,
+      };
+      // Resident-provided reason with control chars + extra whitespace.
+      const next = gatePassReducer(withPending, {
+        type: "APPROVAL_DENIED",
+        reason: "  Not expected today\u0007  ",
+      });
+      expect(next.mode).toBe("error");
+      expect(next.pendingApproval).toBeUndefined();
+      expect(next.lastError?.code).toBe("APPROVAL_DENIED");
+      expect(next.banner.message).toContain("Not expected today");
+      // The control char (\u0007) must be stripped.
+      expect(next.banner.message).not.toContain("\u0007");
+      expect(next.audit[0]).toContain("approval_denied");
+    });
+
+    it("APPROVAL_DENIED with empty reason still produces a useful banner", () => {
+      const withPending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: baseApproval,
+      };
+      const next = gatePassReducer(withPending, {
+        type: "APPROVAL_DENIED",
+        reason: "   ",
+      });
+      expect(next.banner.message).toBe("Resident denied entry.");
+      expect(next.lastError?.message).toBe("Resident denied entry.");
+    });
+
+    it("APPROVAL_EXPIRED flips to error with the expiry banner and clears pendingApproval", () => {
+      const withPending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: baseApproval,
+      };
+      const next = gatePassReducer(withPending, { type: "APPROVAL_EXPIRED" });
+      expect(next.mode).toBe("error");
+      expect(next.pendingApproval).toBeUndefined();
+      expect(next.lastError?.code).toBe("APPROVAL_EXPIRED");
+      expect(next.banner.tone).toBe("warning");
+      expect(next.audit[0]).toContain("approval_expired");
+    });
+
+    it("RESET_FLOW clears any in-flight approval", () => {
+      const withPending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: baseApproval,
+      };
+      const next = gatePassReducer(withPending, { type: "RESET_FLOW" });
+      expect(next.pendingApproval).toBeUndefined();
+      expect(next.mode).toBe("home");
+    });
+  });
 });

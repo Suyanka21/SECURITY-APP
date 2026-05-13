@@ -12,6 +12,7 @@ export type GatePassMode =
   | "search"
   | "admin"
   | "confirmed"
+  | "awaiting-approval"
   | "error";
 export type NetworkState = "online" | "offline";
 export type EntryMethod = "qr" | "walk-in" | "override" | "recognized";
@@ -74,6 +75,25 @@ export type SyncResultView = SyncEntryResult & {
   visitorName: string;
 };
 
+/**
+ * Active resident-approval request the guard is currently awaiting.
+ * Source: src/docs/specs/resident-approval-flow.md §6.
+ *
+ * Only one approval can be in-flight at a time (a guard cannot start a
+ * new walk-in while a previous resident approval is still pending —
+ * forces them to deal with the outstanding one first).
+ */
+export type PendingApproval = {
+  id: string;
+  draft: EntryDraft;
+  magicLinkUrl: string;
+  expiresAt: string;
+  status: "pending" | "approved" | "denied" | "expired";
+  decidedAt?: string;
+  deniedReason?: string;
+  traceId: string;
+};
+
 export type GatePassState = {
   mode: GatePassMode;
   guardId: string;
@@ -96,6 +116,13 @@ export type GatePassState = {
   searchQuery: string;
   searchLoading: boolean;
   audit: string[];
+  /**
+   * In-flight resident approval. Cleared when the approval resolves
+   * (RESOLVED), is denied (DENIED), expires (EXPIRED), or the guard
+   * explicitly resets the flow.
+   * Source: spec §6.
+   */
+  pendingApproval?: PendingApproval;
 };
 
 export type GatePassAction =
@@ -132,6 +159,23 @@ export type GatePassAction =
   | { type: "VISITORS_LOADING" }
   | { type: "VISITORS_LOADED"; visitors: Visitor[] }
   | { type: "VISITORS_FAILED"; error: GatePassError }
+  // ─── Resident approval lifecycle ─────────────────────────────────
+  // Source: src/docs/specs/resident-approval-flow.md §6.
+  | { type: "APPROVAL_REQUEST_STARTED" }
+  | {
+      type: "APPROVAL_REQUEST_SUCCEEDED";
+      approval: PendingApproval;
+    }
+  | { type: "APPROVAL_REQUEST_FAILED"; error: GatePassError }
+  | {
+      type: "APPROVAL_POLLED";
+      status: "pending" | "approved" | "denied" | "expired";
+      decidedAt?: string;
+      deniedReason?: string;
+    }
+  | { type: "APPROVAL_RESOLVED"; entry: EntryRecord }
+  | { type: "APPROVAL_DENIED"; reason: string }
+  | { type: "APPROVAL_EXPIRED" }
   | { type: "FAIL_ACTIVE_ENTRY"; reason: string }
   | { type: "RESET_FLOW" };
 

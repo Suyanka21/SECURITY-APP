@@ -19,6 +19,7 @@ import type {
   GatePassError,
   GatePassMode,
   GatePassState,
+  PendingApproval,
   SyncResultView,
   Visitor,
 } from "./types";
@@ -466,6 +467,159 @@ export function gatePassReducer(
         banner: bannerForError(action.error),
       };
 
+    // ─── Resident approval lifecycle ──────────────────────────────
+    // Source: src/docs/specs/resident-approval-flow.md §6 (reducer contract).
+    //
+    // Every async outcome of a resident-approval request gets an explicit
+    // dispatch — no silent success. The mode transitions trace exactly the
+    // state machine in §5 of the spec.
+
+    case "APPROVAL_REQUEST_STARTED":
+      return {
+        ...state,
+        inFlight: true,
+        lastError: undefined,
+        banner: {
+          tone: "info",
+          message: "Requesting resident approval\u2026",
+        },
+      };
+
+    case "APPROVAL_REQUEST_SUCCEEDED": {
+      const approval: PendingApproval = action.approval;
+      return {
+        ...state,
+        mode: "awaiting-approval",
+        inFlight: false,
+        pendingApproval: approval,
+        lastError: undefined,
+        audit: [
+          `approval_requested: ${approval.id} for ${approval.draft.visitorName} by ${state.guardId}`,
+          ...state.audit,
+        ],
+        banner: {
+          tone: "info",
+          message:
+            "Approval link sent. Waiting for resident to approve or deny.",
+        },
+      };
+    }
+
+    case "APPROVAL_REQUEST_FAILED":
+      // Note: spec §5 — 422/400/5xx all land in error and the guard's
+      // entry is BLOCKED. No fallback to a manual entry path; the guard
+      // must explicitly choose override (and provide a reason) if they
+      // want to proceed without approval.
+      return {
+        ...state,
+        mode: "error",
+        inFlight: false,
+        pendingApproval: undefined,
+        lastError: action.error,
+        banner: bannerForError(action.error),
+      };
+
+    case "APPROVAL_POLLED": {
+      // Lazy: if no pending approval, ignore the poll — the guard may
+      // have reset the flow between the poll request and its response.
+      if (!state.pendingApproval) return state;
+      // The poll only updates the in-flight approval's status/decidedAt/
+      // deniedReason. Terminal transitions (approved/denied/expired) are
+      // surfaced via the dedicated RESOLVED/DENIED/EXPIRED actions which
+      // also adjust mode + banner; this action is the polling pulse only.
+      return {
+        ...state,
+        pendingApproval: {
+          ...state.pendingApproval,
+          status: action.status,
+          ...(action.decidedAt !== undefined && {
+            decidedAt: action.decidedAt,
+          }),
+          ...(action.deniedReason !== undefined && {
+            deniedReason: action.deniedReason,
+          }),
+        },
+      };
+    }
+
+    case "APPROVAL_RESOLVED": {
+      // Approve path: backend has already inserted the entry inside the
+      // approve transaction (spec §7.3). Mirror ENTRY_SUCCEEDED so the
+      // entries list + audit reflect the canonical server record.
+      const entry = action.entry;
+      return {
+        ...state,
+        mode: "confirmed",
+        inFlight: false,
+        pendingApproval: undefined,
+        lastEntry: entry,
+        lastError: undefined,
+        entries: [entry, ...state.entries],
+        audit: [
+          `approval_approved: ${entry.id} by ${entry.guardId}`,
+          auditLine(entry),
+          ...state.audit,
+        ],
+        banner: {
+          tone: "success",
+          message: "Resident approved. Entry logged.",
+        },
+      };
+    }
+
+    case "APPROVAL_DENIED": {
+      // Sanitize the resident-provided reason before surfacing in the
+      // banner: trim, cap at 200, strip control chars. The server already
+      // sanitizes, but defense in depth costs nothing.
+      const cleanReason = action.reason
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .trim()
+        .slice(0, 200);
+      const approvalId = state.pendingApproval?.id ?? "unknown";
+      return {
+        ...state,
+        mode: "error",
+        inFlight: false,
+        pendingApproval: undefined,
+        lastError: {
+          code: "APPROVAL_DENIED",
+          message: cleanReason || "Resident denied entry.",
+        },
+        audit: [
+          `approval_denied: ${approvalId} reason="${cleanReason}" by ${state.guardId}`,
+          ...state.audit,
+        ],
+        banner: {
+          tone: "danger",
+          message: `Resident denied entry${cleanReason ? `: ${cleanReason}` : "."}`,
+        },
+      };
+    }
+
+    case "APPROVAL_EXPIRED": {
+      const approvalId = state.pendingApproval?.id ?? "unknown";
+      return {
+        ...state,
+        mode: "error",
+        inFlight: false,
+        pendingApproval: undefined,
+        lastError: {
+          code: "APPROVAL_EXPIRED",
+          message:
+            "Approval request expired before the resident responded.",
+        },
+        audit: [
+          `approval_expired: ${approvalId} by ${state.guardId}`,
+          ...state.audit,
+        ],
+        banner: {
+          tone: "warning",
+          message:
+            "Approval expired \u2014 re-request or use override (with reason).",
+        },
+      };
+    }
+
     case "FAIL_ACTIVE_ENTRY":
       return {
         ...state,
@@ -476,6 +630,10 @@ export function gatePassReducer(
       };
 
     case "RESET_FLOW":
+      // RESET_FLOW also clears any in-flight approval. Spec §6: only one
+      // approval can be active at a time; resetting cancels the local
+      // view of it (the backend keeps the row — a late resident decision
+      // will still produce an audit row).
       return {
         ...state,
         mode: "home",
@@ -485,6 +643,7 @@ export function gatePassReducer(
         qrToken: "",
         inFlight: false,
         lastError: undefined,
+        pendingApproval: undefined,
         banner: { tone: "info", message: "Ready for next arrival." },
       };
 
