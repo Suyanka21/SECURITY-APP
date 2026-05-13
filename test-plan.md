@@ -63,6 +63,29 @@ Pass criteria:
 
 A broken implementation that quietly dropped failed entries (or silently said "sync complete") would show `Pending sync: 0` or a green success banner. The plan distinguishes both visibly.
 
+## Feature 1 — Resident approval flow (added in PR #2)
+
+Source: `src/docs/specs/resident-approval-flow.md`. The audit must prove
+the no-silent-success contract holds across the new approval lifecycle.
+
+| # | Scenario | What it proves |
+|---|---|---|
+| S4 | Approval → approved + entry created | Happy path: poll observes pending → approved; controller synthesizes an EntryRecord with `entryId` and the guard sees "Entry recorded". |
+| S5 | Approval → denied with reason | Poll observes pending → denied; UI shows the denial reason; no entry is created. |
+| S6 | Approval → expired (lazy server flip) | Server's lazy expiry: status returns `expired` without any background job; UI surfaces the expired state explicitly. |
+| S7 | createApproval → 409 duplicate | UI never enters awaiting-approval mode; the 409 is rendered with the backend code. |
+| S8 | Polling → transient network blip | First poll returns `status=0` (transport error). The poll loop keeps trying; UI does not silently resolve. After the blip, polling resumes and shows the real state. |
+
+### Pass criteria summary
+
+- **S4**: After scenario picker → click Walk-in → fill draft → **Request resident approval** → awaiting-approval panel mounts with countdown + magic link. After ~3s (two poll cycles at 1500 ms), the page flips to the success banner with the approved entry. The counter `Entries logged` increments to 1.
+- **S5**: Same flow as S4, but the page lands on the denial banner. `Entries logged` stays at 0. The denial reason "Not expected today" is visible.
+- **S6**: Awaiting panel mounts; on first poll the server returns `expired`. The page surfaces the expired state explicitly. `Entries logged` stays at 0.
+- **S7**: Clicking **Request resident approval** surfaces `APPROVAL_DUPLICATE` immediately. The guard remains on the walk-in form (not the awaiting panel). No silent fallthrough.
+- **S8**: Awaiting panel mounts; first poll fails with `NETWORK_ERROR` (status=0). The countdown keeps ticking and the polling indicator stays visible. The second poll succeeds and shows the pending state. The UI never claims success during the blip.
+
+These scenarios extend the same `controller.api` + `controller.approvalApi` injection seam used by S1–S3, so the reducer + controller + UI paths under test are identical to production.
+
 ## Out of scope
 
 - Real backend round-trips: backend has no `dev:server` script and requires a Postgres DB + seeded guard + signed JWT. Out of scope for a deterministic audit. Unit + integration tests against the real Express server (133 server tests) already cover the backend side.

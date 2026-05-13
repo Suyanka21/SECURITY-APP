@@ -11,8 +11,12 @@ import { useState } from "react";
 import "@/index.css";
 import { GatePassApp } from "@/features/gatepass/GatePassApp";
 import type { GatePassApi } from "@/lib/api/gatepass";
+import type { guardApprovalApi } from "@/lib/api/approvals";
 import type {
   ApiResult,
+  ApprovalRequestView,
+  ApprovalStatusResponse,
+  CreateApprovalResponse,
   RecognizedVisitorsResponse,
 } from "@/lib/api/types";
 
@@ -140,10 +144,121 @@ function makeScenarioApi(scenario: string): GatePassApi {
   };
 }
 
+// ─── Resident approval scenarios (Feature 1) ──────────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §5 (state machine)
+
+const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
+const TOKEN = "a".repeat(64);
+const MAGIC_URL = `${location.origin}/approve/${APPROVAL_ID}?token=${TOKEN}`;
+
+function baseApproval(
+  overrides: Partial<ApprovalRequestView> = {}
+): ApprovalRequestView {
+  return {
+    id: APPROVAL_ID,
+    offlineId: "00000000-0000-4000-8000-000000000001",
+    visitorName: "Maya Chen",
+    host: "A. Okafor",
+    unit: "18B",
+    plate: null,
+    reason: "",
+    method: "walk-in" as const,
+    requestedByGuardId: "guard-west-04",
+    status: "pending" as const,
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    decidedAt: null,
+    deniedReason: null,
+    entryId: null,
+    traceId: "trace-status",
+    ...overrides,
+  };
+}
+
+function makeApprovalApi(scenario: string): typeof guardApprovalApi {
+  const createApproval = async (): Promise<ApiResult<CreateApprovalResponse>> => {
+    if (scenario === "approval-create-409") {
+      return fail(409, "APPROVAL_DUPLICATE", "An approval is already pending for this entry");
+    }
+    return ok(
+      {
+        approvalId: APPROVAL_ID,
+        magicLinkUrl: MAGIC_URL,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+        traceId: "trace-create",
+      },
+      201
+    );
+  };
+
+  // Status responses are scripted per-scenario. We sequence them so the
+  // first poll returns "pending" and the second poll returns the
+  // terminal state — proves the polling loop observes the transition.
+  let callCount = 0;
+  const getApprovalStatus = async (): Promise<ApiResult<ApprovalStatusResponse>> => {
+    callCount += 1;
+    if (scenario === "approval-approved") {
+      if (callCount === 1) {
+        return ok({ approval: baseApproval(), traceId: "t1" });
+      }
+      return ok({
+        approval: baseApproval({
+          status: "approved",
+          decidedAt: new Date().toISOString(),
+          entryId: "server-from-approval",
+        }),
+        traceId: "t2",
+      });
+    }
+    if (scenario === "approval-denied") {
+      if (callCount === 1) {
+        return ok({ approval: baseApproval(), traceId: "t1" });
+      }
+      return ok({
+        approval: baseApproval({
+          status: "denied",
+          decidedAt: new Date().toISOString(),
+          deniedReason: "Not expected today",
+        }),
+        traceId: "t2",
+      });
+    }
+    if (scenario === "approval-expired") {
+      // Server lazy-flips on read.
+      return ok({ approval: baseApproval({ status: "expired" }), traceId: "t" });
+    }
+    if (scenario === "approval-poll-blip") {
+      // First poll: transient transport error. Subsequent polls: still
+      // pending. The controller must keep the poll alive and never
+      // silently resolve. Demonstrates the no-silent-success contract
+      // even under intermittent connectivity.
+      if (callCount === 1) {
+        return {
+          ok: false as const,
+          status: 0,
+          error: {
+            code: "NETWORK_ERROR",
+            message: "transient",
+            traceId: "trace-blip",
+          },
+        };
+      }
+      return ok({ approval: baseApproval(), traceId: "t-pending" });
+    }
+    return ok({ approval: baseApproval(), traceId: "t" });
+  };
+
+  return { createApproval, getApprovalStatus } as unknown as typeof guardApprovalApi;
+}
+
 const SCENARIOS = [
   { id: "submit-500", label: "S1 · POST /entries → 500" },
   { id: "submit-422-unit", label: "S2 · POST /entries → 422 (field=unit)" },
   { id: "sync-207-partial", label: "S3 · POST /sync → 207 partial" },
+  { id: "approval-approved", label: "S4 · Approval → approved+entry (Feature 1)" },
+  { id: "approval-denied", label: "S5 · Approval → denied with reason (Feature 1)" },
+  { id: "approval-expired", label: "S6 · Approval → expired (lazy, Feature 1)" },
+  { id: "approval-create-409", label: "S7 · Approval create → 409 duplicate (Feature 1)" },
+  { id: "approval-poll-blip", label: "S8 · Approval poll → transient network blip (Feature 1)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
@@ -152,6 +267,7 @@ function Harness() {
     new URLSearchParams(location.search).get("scenario") ?? "submit-500";
   const [scenario, setScenario] = useState(initial);
   const api = makeScenarioApi(scenario);
+  const approvalApi = makeApprovalApi(scenario);
 
   return (
     <div>
@@ -188,7 +304,10 @@ function Harness() {
           ))}
         </select>
       </div>
-      <GatePassApp key={scenario} controller={{ api }} />
+      <GatePassApp
+        key={scenario}
+        controller={{ api, approvalApi, approvalPollIntervalMs: 1500 }}
+      />
     </div>
   );
 }
