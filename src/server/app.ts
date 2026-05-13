@@ -1,0 +1,136 @@
+/**
+ * GatePass — Express Application
+ *
+ * Source: TRUSTLESS-AUDIT-REPORT [C2] — CORS, helmet, rate limiting
+ * Source: TRUSTLESS-AUDIT-REPORT [C1] — authentication middleware
+ * Source: Security-and-Hardening skill — OWASP protections
+ *
+ * Middleware execution order (defense-in-depth):
+ * 1. Security headers (helmet)
+ * 2. CORS (origin allowlist)
+ * 3. Body size limit (JSON)
+ * 4. Rate limiting (global + endpoint-specific)
+ * 5. DB attachment
+ * 6. Authentication (JWT)
+ * 7. Routes
+ * 8. Error handler
+ */
+
+import express from "express";
+import helmet from "helmet";
+import cors from "cors";
+import rateLimit from "express-rate-limit";
+import { entriesRouter } from "./routes/entries";
+import { qrRouter } from "./routes/qr";
+import { syncRouter } from "./routes/sync";
+import { visitorsRouter } from "./routes/visitors";
+import { auditRouter } from "./routes/audit";
+import { errorHandler } from "./middleware/error-handler";
+import { requireAuth } from "./middleware/auth";
+
+// ─── Configuration ───────────────────────────────────────────────────────────
+
+/**
+ * Allowed origins for CORS.
+ * Source: Security-and-Hardening — "No wildcard origins"
+ *
+ * In production, set ALLOWED_ORIGINS env var (comma-separated).
+ * Falls back to localhost for development.
+ */
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+  : ["http://localhost:8080", "http://localhost:3000", "http://localhost:5173"];
+
+/**
+ * Rate limit configuration.
+ * Source: TRUSTLESS-AUDIT-REPORT [C2] — "Without rate limiting: an attacker
+ * can brute-force QR tokens or flood the entry endpoint"
+ */
+const GLOBAL_RATE_LIMIT = {
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300,                  // 300 requests per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: "RATE_LIMIT_EXCEEDED",
+      message: "Too many requests. Please wait before retrying.",
+      traceId: "rate-limited",
+    },
+  },
+};
+
+const STRICT_RATE_LIMIT = {
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 60,                   // 60 requests per window per IP (stricter)
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: "RATE_LIMIT_EXCEEDED",
+      message: "Too many entry submissions. Please wait before retrying.",
+      traceId: "rate-limited",
+    },
+  },
+};
+
+// ─── App Factory ─────────────────────────────────────────────────────────────
+
+export function createApp(db: unknown) {
+  const app = express();
+
+  // ─── Layer 1: Security Headers ───────────────────────────────────────
+  // [C2 FIX] Helmet sets 15+ security headers (CSP, HSTS, X-Frame-Options, etc.)
+  // Source: OWASP — "Set security headers on all responses"
+  app.use(helmet());
+
+  // ─── Layer 2: CORS ───────────────────────────────────────────────────
+  // [C2 FIX] Explicit origin allowlist — no wildcard
+  // Source: TRUSTLESS-AUDIT-REPORT [C2] — "Without CORS: any website can make API calls"
+  app.use(cors({
+    origin: ALLOWED_ORIGINS,
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+    maxAge: 600, // Cache preflight for 10 minutes
+  }));
+
+  // ─── Layer 3: Body Size Limit ────────────────────────────────────────
+  // Source: TRUSTLESS-AUDIT-REPORT Gate 1 — "No input size limit on request body"
+  app.use(express.json({ limit: "100kb" }));
+
+  // ─── Layer 4: Global Rate Limiter ────────────────────────────────────
+  // [C2 FIX] Prevents flood attacks across all endpoints
+  app.use(rateLimit(GLOBAL_RATE_LIMIT));
+
+  // ─── Layer 5: DB Attachment ──────────────────────────────────────────
+  app.use((req, _res, next) => {
+    (req as any).db = db;
+    next();
+  });
+
+  // ─── Public Routes (no auth required) ──────────────────────────────
+
+  // Health check — must be accessible without authentication
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // ─── Layer 6: Stricter Rate Limiters (endpoint-specific) ───────────
+  // Source: TRUSTLESS-AUDIT-REPORT [C2] — "brute-force QR tokens or flood the entry endpoint"
+  const strictLimiter = rateLimit(STRICT_RATE_LIMIT);
+
+  // ─── Protected Routes ──────────────────────────────────────────────
+  // Auth + stricter rate limits on mutation endpoints
+  app.use("/api/entries/qr/validate", requireAuth, strictLimiter, qrRouter);
+  app.use("/api/entries/sync", requireAuth, strictLimiter, syncRouter);
+  app.use("/api/entries", requireAuth, strictLimiter, entriesRouter);
+  app.use("/api/visitors", requireAuth, visitorsRouter);
+  app.use("/api/audit", requireAuth, auditRouter);
+
+  // ─── Error Handler ─────────────────────────────────────────────────
+  // Must be LAST — catches all unhandled errors
+  app.use(errorHandler);
+
+  return app;
+}
