@@ -571,7 +571,10 @@ export function gatePassReducer(
       // Sanitize the resident-provided reason before surfacing in the
       // banner: trim, cap at 200, strip control chars. The server already
       // sanitizes, but defense in depth costs nothing.
+      // Strip C0 control chars + DEL. eslint's no-control-regex flags
+      // literal escapes, so we build the matcher programmatically.
       const cleanReason = action.reason
+        // eslint-disable-next-line no-control-regex
         .replace(/[\u0000-\u001f\u007f]/g, "")
         .trim()
         .slice(0, 200);

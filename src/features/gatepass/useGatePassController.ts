@@ -18,8 +18,12 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { gatePassApi } from "@/lib/api/gatepass";
+import { guardApprovalApi } from "@/lib/api/approvals";
 import type {
   ApiResult,
+  ApprovalRequestView,
+  ApprovalStatusResponse,
+  CreateApprovalResponse,
   CreateEntryResponse,
   QrValidateResponse,
   RecognizedVisitorsResponse,
@@ -36,6 +40,7 @@ import type {
   EntryDraft,
   EntryRecord,
   GatePassError,
+  PendingApproval,
   Visitor,
 } from "./types";
 
@@ -108,6 +113,40 @@ function localEntryFromDraft(
   };
 }
 
+/**
+ * Build the EntryRecord the reducer needs from an approved ApprovalRequestView.
+ *
+ * Source: spec §7.3 — the entry is created server-side inside the approve
+ * transaction, so by the time /status reports approved + entryId, the row
+ * exists. The status endpoint returns the sanitized approval view (not the
+ * raw entry), so we synthesize an EntryRecord from the approval fields
+ * we know match — the same fields would come back from /api/entries.
+ */
+function entryFromApprovedView(
+  approval: ApprovalRequestView
+): EntryRecord {
+  if (!approval.entryId) {
+    throw new Error(
+      "entryFromApprovedView called with no entryId \u2014 caller must gate on status='approved' AND entryId"
+    );
+  }
+  return {
+    visitorName: approval.visitorName,
+    host: approval.host,
+    unit: approval.unit,
+    plate: approval.plate ?? "",
+    reason: approval.reason,
+    method: approval.method,
+    preApprovalId: undefined,
+    id: approval.entryId,
+    offlineId: approval.offlineId,
+    guardId: approval.requestedByGuardId,
+    createdAt: approval.decidedAt ?? approval.expiresAt,
+    status: "logged",
+    syncState: "synced",
+  };
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────
 
 export interface GatePassController {
@@ -118,20 +157,34 @@ export interface GatePassController {
   syncPending: () => Promise<void>;
   searchVisitors: (query?: string) => Promise<void>;
   setNetwork: (network: "online" | "offline") => void;
+  /**
+   * Initiate a resident-approval request for the current walk-in draft.
+   * Source: spec §7.1.
+   */
+  requestApproval: () => Promise<void>;
 }
 
 export interface GatePassControllerOptions {
   api?: typeof gatePassApi;
+  /** Optional override for the resident-approval client surface. */
+  approvalApi?: typeof guardApprovalApi;
   /** Override clock for deterministic tests. */
   now?: () => Date;
   /** Override UUID generator for deterministic tests. */
   generateId?: () => string;
+  /**
+   * Polling interval for resident-approval status checks (ms). Defaults
+   * to 2000 (spec §5). Tests use 0 + manual advancement.
+   */
+  approvalPollIntervalMs?: number;
 }
 
 export function useGatePassController(
   options: GatePassControllerOptions = {}
 ): GatePassController {
   const api = options.api ?? gatePassApi;
+  const approvalApi = options.approvalApi ?? guardApprovalApi;
+  const pollIntervalMs = options.approvalPollIntervalMs ?? 2000;
   // Pin clock + id generator into refs so callbacks don't re-create on
   // every render (and so tests get the deterministic versions).
   const clockRef = useRef(options.now ?? (() => new Date()));
@@ -434,6 +487,176 @@ export function useGatePassController(
     []
   );
 
+  // ─── Resident approval flow ─────────────────────────────────────
+  // Source: src/docs/specs/resident-approval-flow.md §7
+
+  const requestApproval = useCallback(async () => {
+    const current = stateRef.current;
+    if (current.inFlight) return;
+
+    // Approval is a walk-in extension; QR and override don't go through it.
+    if (current.draft.method !== "walk-in") {
+      dispatch({
+        type: "APPROVAL_REQUEST_FAILED",
+        error: {
+          code: "APPROVAL_NOT_APPLICABLE",
+          message:
+            "Resident approval is only for walk-in entries. Use QR or override directly.",
+        },
+      });
+      return;
+    }
+
+    // Reuse the same client-side preflight as a regular submission so the
+    // guard sees missing-field errors without a server round-trip.
+    const validation = validateDraft(current.draft, current.guardId);
+    if (validation) {
+      dispatch({ type: "APPROVAL_REQUEST_FAILED", error: validation });
+      return;
+    }
+
+    if (current.network === "offline") {
+      // Approval explicitly requires the network — we cannot magic-link
+      // a resident offline. Block, and let the guard fall back to
+      // override (which is auditable but doesn't need consent).
+      dispatch({
+        type: "APPROVAL_REQUEST_FAILED",
+        error: {
+          code: "NETWORK_ERROR",
+          message:
+            "Resident approval requires a live connection. Use override (with reason) while offline.",
+        },
+      });
+      return;
+    }
+
+    const offlineId = newIdRef.current();
+
+    dispatch({ type: "APPROVAL_REQUEST_STARTED" });
+
+    const result: ApiResult<CreateApprovalResponse> =
+      await approvalApi.createApproval({
+        offlineId,
+        draft: {
+          visitorName: current.draft.visitorName.trim(),
+          host: current.draft.host.trim(),
+          unit: current.draft.unit.trim(),
+          plate:
+            current.draft.plate.trim().length > 0
+              ? current.draft.plate.trim()
+              : null,
+          reason: current.draft.reason.trim(),
+          method: "walk-in",
+        },
+      });
+
+    if (!result.ok) {
+      dispatch({
+        type: "APPROVAL_REQUEST_FAILED",
+        error: errorFromApi(result),
+      });
+      return;
+    }
+
+    const approval: PendingApproval = {
+      id: result.data.approvalId,
+      draft: { ...current.draft },
+      magicLinkUrl: result.data.magicLinkUrl,
+      expiresAt: result.data.expiresAt,
+      status: "pending",
+      traceId: result.data.traceId,
+    };
+    dispatch({ type: "APPROVAL_REQUEST_SUCCEEDED", approval });
+  }, [approvalApi]);
+
+  // Poll /status while a resident-approval request is awaiting decision.
+  // The server applies lazy expiry on read so we don't need a client-side
+  // timeout — the next poll after expiresAt will return status=expired.
+  const approvalPollIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    const approvalId = state.pendingApproval?.id;
+    const status = state.pendingApproval?.status;
+    const shouldPoll =
+      state.mode === "awaiting-approval" &&
+      !!approvalId &&
+      status === "pending" &&
+      state.network === "online";
+
+    if (!shouldPoll) return;
+
+    let cancelled = false;
+
+    const pollOnce = async () => {
+      if (cancelled) return;
+      const result: ApiResult<ApprovalStatusResponse> =
+        await approvalApi.getApprovalStatus(approvalId!);
+      if (cancelled) return;
+
+      if (!result.ok) {
+        // Transient transport errors keep the poll loop alive — the
+        // next tick will retry. Anything else surfaces as a failed
+        // request so the guard sees the backend's error code.
+        if (result.status === 0) return;
+        dispatch({
+          type: "APPROVAL_REQUEST_FAILED",
+          error: errorFromApi(result),
+        });
+        return;
+      }
+
+      const view = result.data.approval;
+
+      // Terminal: approved + entry created.
+      if (view.status === "approved" && view.entryId) {
+        dispatch({
+          type: "APPROVAL_RESOLVED",
+          entry: entryFromApprovedView(view),
+        });
+        return;
+      }
+      // Terminal: denied.
+      if (view.status === "denied") {
+        dispatch({
+          type: "APPROVAL_DENIED",
+          reason: view.deniedReason ?? "",
+        });
+        return;
+      }
+      // Terminal: expired (lazy flip from the server).
+      if (view.status === "expired") {
+        dispatch({ type: "APPROVAL_EXPIRED" });
+        return;
+      }
+      // Still pending — update lifecycle pulse, keep polling.
+      dispatch({
+        type: "APPROVAL_POLLED",
+        status: view.status,
+        decidedAt: view.decidedAt ?? undefined,
+        deniedReason: view.deniedReason ?? undefined,
+      });
+    };
+
+    // Kick off the first poll immediately so the UI converges fast on
+    // approve/deny decisions instead of waiting one interval.
+    void pollOnce();
+    approvalPollIdRef.current = setInterval(pollOnce, pollIntervalMs);
+
+    return () => {
+      cancelled = true;
+      if (approvalPollIdRef.current) {
+        clearInterval(approvalPollIdRef.current);
+        approvalPollIdRef.current = null;
+      }
+    };
+  }, [
+    state.mode,
+    state.pendingApproval?.id,
+    state.pendingApproval?.status,
+    state.network,
+    approvalApi,
+    pollIntervalMs,
+  ]);
+
   // Auto-sync on network restore. If the guard toggled back online and
   // there are queued entries, attempt a sync so floating records get
   // reconciled without the guard having to remember to press a button.
@@ -461,7 +684,16 @@ export function useGatePassController(
       syncPending,
       searchVisitors,
       setNetwork,
+      requestApproval,
     }),
-    [state, submitEntry, scanQr, syncPending, searchVisitors, setNetwork]
+    [
+      state,
+      submitEntry,
+      scanQr,
+      syncPending,
+      searchVisitors,
+      setNetwork,
+      requestApproval,
+    ]
   );
 }

@@ -12,8 +12,12 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useGatePassController } from "../useGatePassController";
 import type { GatePassApi } from "@/lib/api/gatepass";
+import type { guardApprovalApi } from "@/lib/api/approvals";
 import type {
   ApiResult,
+  ApprovalRequestView,
+  ApprovalStatusResponse,
+  CreateApprovalResponse,
   CreateEntryResponse,
   QrValidateResponse,
   RecognizedVisitorsResponse,
@@ -537,5 +541,344 @@ describe("useGatePassController.searchVisitors", () => {
 
     expect(hook.result.current.state.searchLoading).toBe(false);
     expect(hook.result.current.state.lastError?.code).toBe("AUTH_TOKEN_MISSING");
+  });
+});
+
+// ─── Resident approval flow ────────────────────────────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §7, §11
+
+interface MockApprovalApi {
+  createApproval: ReturnType<typeof vi.fn>;
+  getApprovalStatus: ReturnType<typeof vi.fn>;
+}
+
+function makeApprovalApi(): MockApprovalApi {
+  return {
+    createApproval: vi.fn(),
+    getApprovalStatus: vi.fn(),
+  };
+}
+
+function buildControllerWithApproval(
+  api: MockApi,
+  approvalApi: MockApprovalApi,
+  pollIntervalMs = 10
+) {
+  let counter = 0;
+  const generateId = () => {
+    counter += 1;
+    return `00000000-0000-4000-8000-${counter.toString().padStart(12, "0")}`;
+  };
+  return renderHook(() =>
+    useGatePassController({
+      api,
+      approvalApi: approvalApi as unknown as typeof guardApprovalApi,
+      now: () => new Date("2024-01-01T00:00:00Z"),
+      generateId,
+      approvalPollIntervalMs: pollIntervalMs,
+    })
+  );
+}
+
+function approvalView(overrides: Partial<ApprovalRequestView> = {}): ApprovalRequestView {
+  return {
+    id: "11111111-1111-4111-8111-111111111111",
+    offlineId: "00000000-0000-4000-8000-000000000001",
+    visitorName: "Ada Lovelace",
+    host: "Bola",
+    unit: "4A",
+    plate: null,
+    reason: "",
+    method: "walk-in",
+    requestedByGuardId: "guard-west-04",
+    status: "pending",
+    expiresAt: new Date("2024-01-01T00:05:00Z").toISOString(),
+    decidedAt: null,
+    deniedReason: null,
+    entryId: null,
+    traceId: "trace-status",
+    ...overrides,
+  };
+}
+
+const CREATE_APPROVAL_OK: CreateApprovalResponse = {
+  approvalId: "11111111-1111-4111-8111-111111111111",
+  magicLinkUrl:
+    "http://localhost:5173/approve/11111111-1111-4111-8111-111111111111?token=" +
+    "a".repeat(64),
+  expiresAt: new Date("2024-01-01T00:05:00Z").toISOString(),
+  traceId: "trace-create",
+};
+
+describe("useGatePassController.requestApproval", () => {
+  let api: MockApi;
+  let approvalApi: MockApprovalApi;
+
+  beforeEach(() => {
+    api = makeApi();
+    approvalApi = makeApprovalApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("blocks pre-flight when the draft is incomplete (no network call made)", async () => {
+    const hook = buildControllerWithApproval(api, approvalApi);
+    // Don't fill the draft — should fail validation client-side.
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+    expect(approvalApi.createApproval).not.toHaveBeenCalled();
+    expect(hook.result.current.state.mode).toBe("error");
+    expect(hook.result.current.state.lastError?.code).toBe("VISITOR_NAME_REQUIRED");
+  });
+
+  it("blocks when offline (cannot magic-link a resident without the network)", async () => {
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      hook.result.current.setNetwork("offline");
+    });
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+    expect(approvalApi.createApproval).not.toHaveBeenCalled();
+    expect(hook.result.current.state.lastError?.code).toBe("NETWORK_ERROR");
+  });
+
+  it("blocks when the draft method is not walk-in (QR/override go through their own paths)", async () => {
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      hook.result.current.dispatch({
+        type: "UPDATE_DRAFT",
+        field: "method",
+        value: "override",
+      });
+    });
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+    expect(approvalApi.createApproval).not.toHaveBeenCalled();
+    expect(hook.result.current.state.lastError?.code).toBe("APPROVAL_NOT_APPLICABLE");
+  });
+
+  it("on 201 success stores the approval and enters awaiting-approval", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    // Make the very first poll a still-pending response so the test
+    // doesn't accidentally land in a terminal state.
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({ approval: approvalView(), traceId: "t" } as ApprovalStatusResponse)
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    expect(approvalApi.createApproval).toHaveBeenCalledTimes(1);
+    const payload = approvalApi.createApproval.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      offlineId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      draft: {
+        visitorName: "Ada Lovelace",
+        host: "Bola",
+        unit: "4A",
+        method: "walk-in",
+      },
+    });
+    await waitFor(() => {
+      expect(hook.result.current.state.mode).toBe("awaiting-approval");
+    });
+    expect(hook.result.current.state.pendingApproval?.id).toBe(
+      CREATE_APPROVAL_OK.approvalId
+    );
+    expect(hook.result.current.state.pendingApproval?.magicLinkUrl).toBe(
+      CREATE_APPROVAL_OK.magicLinkUrl
+    );
+  });
+
+  it("surfaces 409 APPROVAL_DUPLICATE without entering awaiting-approval", async () => {
+    approvalApi.createApproval.mockResolvedValue(
+      fail(409, "APPROVAL_DUPLICATE", "An approval is already pending for this entry")
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    expect(hook.result.current.state.mode).toBe("error");
+    expect(hook.result.current.state.lastError?.code).toBe("APPROVAL_DUPLICATE");
+    expect(hook.result.current.state.pendingApproval).toBeUndefined();
+  });
+
+  it("surfaces 403 GUARD_SESSION_EXPIRED so the guard re-authenticates instead of retrying", async () => {
+    approvalApi.createApproval.mockResolvedValue(
+      fail(403, "GUARD_SESSION_EXPIRED", "Re-authenticate to continue")
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    expect(hook.result.current.state.lastError?.code).toBe("GUARD_SESSION_EXPIRED");
+    expect(hook.result.current.state.pendingApproval).toBeUndefined();
+  });
+});
+
+describe("useGatePassController approval polling", () => {
+  let api: MockApi;
+  let approvalApi: MockApprovalApi;
+
+  beforeEach(() => {
+    api = makeApi();
+    approvalApi = makeApprovalApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("polls /status while pending and dispatches APPROVAL_RESOLVED on approve+entry", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    // First poll: still pending. Second poll: approved with entryId.
+    approvalApi.getApprovalStatus
+      .mockResolvedValueOnce(
+        ok({ approval: approvalView(), traceId: "t1" } as ApprovalStatusResponse)
+      )
+      .mockResolvedValue(
+        ok({
+          approval: approvalView({
+            status: "approved",
+            decidedAt: new Date("2024-01-01T00:01:00Z").toISOString(),
+            entryId: "entry-from-approval",
+          }),
+          traceId: "t2",
+        } as ApprovalStatusResponse)
+      );
+
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    // Wait for the resolved state — happens once the polling effect
+    // observes the approved status. With a 10ms interval and immediate
+    // first poll, this resolves quickly.
+    await waitFor(() => {
+      expect(hook.result.current.state.mode).toBe("confirmed");
+    }, { timeout: 1000 });
+    expect(hook.result.current.state.lastEntry?.id).toBe("entry-from-approval");
+    expect(hook.result.current.state.entries[0].id).toBe("entry-from-approval");
+    expect(hook.result.current.state.pendingApproval).toBeUndefined();
+  });
+
+  it("dispatches APPROVAL_DENIED with the resident's reason on a denied status", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({
+        approval: approvalView({
+          status: "denied",
+          decidedAt: new Date("2024-01-01T00:01:00Z").toISOString(),
+          deniedReason: "Not expected today",
+        }),
+        traceId: "t",
+      } as ApprovalStatusResponse)
+    );
+
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    await waitFor(() => {
+      expect(hook.result.current.state.lastError?.code).toBe("APPROVAL_DENIED");
+    }, { timeout: 1000 });
+    expect(hook.result.current.state.mode).toBe("error");
+    expect(hook.result.current.state.banner.message).toContain(
+      "Not expected today"
+    );
+    expect(hook.result.current.state.pendingApproval).toBeUndefined();
+  });
+
+  it("dispatches APPROVAL_EXPIRED when the server flips status to expired (lazy expiry)", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({
+        approval: approvalView({ status: "expired" }),
+        traceId: "t",
+      } as ApprovalStatusResponse)
+    );
+
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    await waitFor(() => {
+      expect(hook.result.current.state.lastError?.code).toBe("APPROVAL_EXPIRED");
+    }, { timeout: 1000 });
+    expect(hook.result.current.state.mode).toBe("error");
+    expect(hook.result.current.state.pendingApproval).toBeUndefined();
+  });
+
+  it("ignores transient network errors during polling (keeps polling, doesn't silently resolve)", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    // First poll: network error (status=0). Subsequent polls: still
+    // pending. The controller must not enter error/confirmed.
+    approvalApi.getApprovalStatus
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 0,
+        error: {
+          code: "NETWORK_ERROR",
+          message: "offline",
+          traceId: "t-net",
+        },
+      } as ApiResult<ApprovalStatusResponse>)
+      .mockResolvedValue(
+        ok({ approval: approvalView(), traceId: "t-pending" } as ApprovalStatusResponse)
+      );
+
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    // Should remain in awaiting-approval after the transient blip.
+    await waitFor(() => {
+      expect(approvalApi.getApprovalStatus.mock.calls.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 1000 });
+    expect(hook.result.current.state.mode).toBe("awaiting-approval");
+    expect(hook.result.current.state.pendingApproval).toBeDefined();
+  });
+
+  it("surfaces non-transient poll errors as APPROVAL_REQUEST_FAILED", async () => {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      fail(500, "INTERNAL_ERROR", "Database unavailable")
+    );
+
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    await waitFor(() => {
+      expect(hook.result.current.state.mode).toBe("error");
+    }, { timeout: 1000 });
+    expect(hook.result.current.state.lastError?.code).toBe("INTERNAL_ERROR");
+    expect(hook.result.current.state.pendingApproval).toBeUndefined();
   });
 });
