@@ -48,6 +48,7 @@ import {
   renderApprovalMagicLinkBody,
   TEMPLATE_KEYS,
 } from "./notifications/notification-service";
+import { evaluate as evaluateAutoApprovalRule } from "./auto-approval-service";
 
 // Re-exported so route handlers keep a single import surface.
 export { ServiceError };
@@ -242,13 +243,54 @@ export async function createApprovalRequest(
     );
   }
 
+  // Step 2.5: evaluate the auto-approval rules.
+  //
+  // Source: src/docs/specs/auto-approval.md §5 (state machine) + §6 (eval).
+  //
+  // Default-deny contract: evaluate() never throws — it wraps every
+  // failure path (incomplete input, no rule, expired, inactive, plate
+  // mismatch, evaluator exception) in a structured non-match decision.
+  // We MUST treat any non-match as fall-through to the manual flow.
+  // Silent bypass on EVALUATOR_ERROR is the highest-risk failure mode
+  // and is explicitly impossible here: match=false → manual path.
+  //
+  // Trace continuity: the audit row for auto_approval_matched (emitted
+  // inside the transaction below) and the existing approval_requested
+  // audit (NOT emitted on the auto path) share the same traceId so an
+  // auditor reading the log can correlate the original request to the
+  // synchronous entry.
+  // Capture a single timestamp for the rest of this request so the
+  // auto-approval evaluator and the manual-flow expiresAt math agree.
+  const nowMs = clock.now();
+
+  const autoDecision = await evaluateAutoApprovalRule(
+    {
+      visitorName: input.draft.visitorName,
+      host: input.draft.host,
+      unit: input.draft.unit,
+      plate: input.draft.plate ?? null,
+    },
+    db,
+    () => new Date(nowMs),
+  );
+
+  if (autoDecision.match) {
+    return await runAutoApprovalShortCircuit({
+      autoDecision,
+      input,
+      guardId,
+      db,
+      nowMs,
+      traceId,
+    });
+  }
+
   // Step 3: generate token + compute hash. The raw token is only ever held
   // in this function's stack; nothing logs it, nothing stores it.
   const rawToken = generateRawToken();
   const tokenHash = hashToken(rawToken);
 
   const approvalId = randomUUID();
-  const nowMs = clock.now();
   const expiresAt = new Date(nowMs + resolveApprovalTimeoutSeconds() * 1000);
 
   // Step 4: INSERT pending row + enqueue WhatsApp notification atomically.
@@ -657,4 +699,175 @@ export async function decideApprovalRequest(
 
 function generateTraceId(): string {
   return `trace-${randomUUID()}`;
+}
+
+/**
+ * Auto-approval short-circuit path for createApprovalRequest.
+ *
+ * Source: src/docs/specs/auto-approval.md §5 (state machine) + §6 (eval).
+ *
+ * Hard contract:
+ *   - Runs ONLY after evaluate() returned match=true. Caller must NOT
+ *     invoke this on EVALUATOR_ERROR or any non-match — default-deny
+ *     means non-match flows down the manual path.
+ *   - Single transaction commits BOTH writes (approval_requests row in
+ *     'approved' state + entry_records row). Either both land or
+ *     neither does. The approval row never appears in 'pending' state
+ *     for an auto-approved entry.
+ *   - Paired audit rows (auto_approval_matched + approval_approved +
+ *     entry_created) all share the request traceId. An auditor reading
+ *     the log can correlate the rule that fired, the approval that
+ *     short-circuited, and the entry that was logged — without any of
+ *     these the trail breaks the louder-audit promise of §3.
+ *   - Token math: a hashed token is still written (single-use, never
+ *     observable) so the row schema's NOT NULL constraint holds. The
+ *     raw token is discarded — we return a moot magicLinkUrl pointed
+ *     at the approved row so old callers that prefetch it 404 cleanly
+ *     on the resident page (auto-approved → not pending → /decide
+ *     refuses with APPROVAL_NOT_PENDING).
+ */
+async function runAutoApprovalShortCircuit(args: {
+  autoDecision: { match: true; rule: AutoApprovalRuleRow; reason: null };
+  input: CreateApprovalInput;
+  guardId: string;
+  db: DrizzleDB;
+  nowMs: number;
+  traceId: string;
+}): Promise<{
+  response: CreateApprovalResponse;
+  statusCode: number;
+  enqueuedNotification: { id: string; channel: "whatsapp" } | null;
+}> {
+  const { autoDecision, input, guardId, db, nowMs, traceId } = args;
+  const rule = autoDecision.rule;
+
+  const approvalId = randomUUID();
+  const entryId = randomUUID();
+  const decidedAt = new Date(nowMs);
+  const expiresAt = new Date(nowMs + resolveApprovalTimeoutSeconds() * 1000);
+
+  // Token is still hashed-and-stored even on the auto path so the column
+  // remains NOT NULL — but it is never returned, never logged, never
+  // dispatched. The /decide endpoint refuses to act on a non-pending
+  // approval, so an attacker who somehow learned the raw token could
+  // not use it to flip the row again.
+  const rawToken = generateRawToken();
+  const tokenHash = hashToken(rawToken);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (db as any).transaction(async (tx: DrizzleDB) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (tx as any).insert(entryRecords).values({
+      id: entryId,
+      visitorName: input.draft.visitorName,
+      host: input.draft.host,
+      unit: input.draft.unit,
+      plate: input.draft.plate ?? null,
+      reason: input.draft.reason ?? "",
+      // Spec §3: auto-approved entries are logged with method='auto'
+      // so the shift log and audit can distinguish them from manual
+      // walk-ins and override entries.
+      method: "auto",
+      guardId,
+      status: "logged",
+      syncState: "synced",
+      offlineId: input.offlineId,
+      preApprovalId: null,
+      deviceCreatedAt: decidedAt,
+      createdAt: decidedAt,
+      traceId,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (tx as any).insert(approvalRequests).values({
+      id: approvalId,
+      offlineId: input.offlineId,
+      visitorName: input.draft.visitorName,
+      host: input.draft.host,
+      unit: input.draft.unit,
+      plate: input.draft.plate ?? null,
+      reason: input.draft.reason ?? "",
+      method: input.draft.method,
+      requestedByGuardId: guardId,
+      tokenHash,
+      status: "approved",
+      decidedAt,
+      entryId,
+      expiresAt,
+      createdAt: decidedAt,
+      traceId,
+      hostPhoneE164: input.hostPhoneE164 ?? null,
+    });
+  });
+
+  // Louder audit (spec §3): three rows, paired and immutable, all on
+  // the same traceId. emitAuditEvent is best-effort by design (the
+  // implementation swallows DB errors so an audit outage cannot block
+  // the entry decision). The transaction has already committed —
+  // these rows live in the audit trail next to it.
+  await emitAuditEvent("auto_approval_matched", guardId, traceId, {
+    approvalId,
+    offlineId: input.offlineId,
+    ruleId: rule.id,
+    unit: input.draft.unit,
+  });
+  await emitAuditEvent("approval_approved", guardId, traceId, {
+    approvalId,
+    offlineId: input.offlineId,
+    entryId,
+    autoApproved: true,
+    ruleId: rule.id,
+  });
+  await emitAuditEvent("entry_created", guardId, traceId, {
+    entryId,
+    offlineId: input.offlineId,
+    method: "auto",
+    ruleId: rule.id,
+  });
+
+  // Magic-link URL is included for shape parity with the manual flow
+  // but is moot for an auto-approved row: /decide will refuse on
+  // status != 'pending'. The reducer (slice 5) dispatches
+  // APPROVAL_AUTO_APPROVED on this branch and never navigates to it.
+  const magicLinkUrl = `${resolvePublicOrigin()}/approve/${approvalId}?token=${rawToken}`;
+
+  const response: CreateApprovalResponse = {
+    approvalId,
+    magicLinkUrl,
+    expiresAt: expiresAt.toISOString(),
+    traceId,
+    autoApproved: true,
+    entry: {
+      id: entryId,
+      visitorName: input.draft.visitorName,
+      host: input.draft.host,
+      unit: input.draft.unit,
+      plate: input.draft.plate ?? null,
+      reason: input.draft.reason ?? "",
+      method: "auto",
+      guardId,
+      createdAt: decidedAt.toISOString(),
+      status: "logged",
+      syncState: "synced",
+    },
+    matchedRule: {
+      id: rule.id,
+      visitorName: rule.visitorName,
+      host: rule.host,
+      unit: rule.unit,
+    },
+  };
+
+  return {
+    response,
+    // 201 mirrors the manual flow (resource created). Auto vs manual
+    // is signaled by autoApproved=true in the body, never by status.
+    statusCode: 201,
+    // Auto-approved entries never enqueue a notification — the entry
+    // is already logged; there is no resident decision to deliver.
+    // The route handler must skip the dispatcher kick when this is null
+    // AND autoApproved=true (otherwise it would try to deliver a
+    // non-existent notification).
+    enqueuedNotification: null,
+  };
 }

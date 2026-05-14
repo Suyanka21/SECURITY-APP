@@ -209,6 +209,46 @@ export interface CreateApprovalResponse {
   /** ISO 8601 */
   expiresAt: string;
   traceId: string;
+  /**
+   * Set when an auto-approval rule short-circuited this request and
+   * an entry was created synchronously (no resident decision needed).
+   *
+   * Source: src/docs/specs/auto-approval.md §5 (state machine extension).
+   * Additive — pre-Feature-3 callers default-read as `false` via `?? false`.
+   * When true, `magicLinkUrl` is still returned but is moot — the entry
+   * is already logged. The reducer dispatches APPROVAL_AUTO_APPROVED
+   * instead of APPROVAL_AWAITING.
+   */
+  autoApproved?: boolean;
+  /**
+   * The entry record produced when autoApproved=true. Null otherwise.
+   * Shape mirrors POST /api/entries so the reducer can plug it into
+   * the existing recordedEntries list without translation. The
+   * method field is `"auto"` here (vs `"walk-in"` on /decide).
+   */
+  entry?: {
+    id: string;
+    visitorName: string;
+    host: string;
+    unit: string;
+    plate: string | null;
+    reason: string;
+    method: "auto";
+    guardId: string;
+    createdAt: string;
+    status: "logged";
+    syncState: "synced";
+  } | null;
+  /**
+   * The rule view that fired. Useful for UI surfacing ("auto-approved
+   * by rule visitor=… host=… unit=…"). Null when autoApproved=false.
+   */
+  matchedRule?: {
+    id: string;
+    visitorName: string;
+    host: string;
+    unit: string;
+  } | null;
 }
 
 /**
