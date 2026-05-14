@@ -828,14 +828,60 @@ export function AwaitingApprovalPanel({ state, dispatch, actions }: Props) {
 
 export function ConfirmationPanel({ state, dispatch }: Props) {
   const entry = state.lastEntry;
+  // Source: src/docs/specs/auto-approval.md §6 (UI surface) — when an
+  // entry was logged via the auto-approval short-circuit, the
+  // confirmation panel MUST visually distinguish it from a manual
+  // walk-in / override / QR / resident-approved entry. The pill +
+  // accent border + rule line are the only places this distinction
+  // surfaces in the live UI; the audit log mirrors it in text.
+  const isAuto = entry?.method === "auto";
+  // The matched rule that fired lives at the head of the audit log
+  // (the reducer prepends it inside the same dispatch as the entry).
+  // We surface a human-readable subset here without parsing — the
+  // audit string is authoritative; the panel quotes it.
+  const matchedRuleAuditLine = isAuto
+    ? state.audit.find((line) => line.startsWith("auto_approval_matched"))
+    : undefined;
   return (
-    <section className="border border-success bg-success/10 p-6 shadow-panel">
+    <section
+      className={
+        isAuto
+          ? "border-2 border-primary bg-success/10 p-6 shadow-panel"
+          : "border border-success bg-success/10 p-6 shadow-panel"
+      }
+      data-testid="confirmation-panel"
+      data-auto-approved={isAuto ? "true" : "false"}
+    >
       <CheckCircle2 className="h-12 w-12 text-success-foreground" />
-      <h2 className="mt-4 font-display text-4xl font-black">Entry recorded</h2>
+      <div className="mt-4 flex items-center gap-3">
+        <h2 className="font-display text-4xl font-black">
+          {isAuto ? "Entry auto-approved" : "Entry recorded"}
+        </h2>
+        {isAuto && (
+          <span
+            className="inline-flex items-center border-2 border-primary bg-primary/15 px-2 py-1 text-xs font-bold uppercase tracking-widest text-primary"
+            data-testid="auto-pill"
+            aria-label="Auto-approved by rule"
+          >
+            AUTO
+          </span>
+        )}
+      </div>
       <p className="mt-2 text-muted-foreground">
         {entry?.visitorName} · {entry?.method} · {entry?.guardId} ·{" "}
         {entry?.syncState}
       </p>
+      {isAuto && matchedRuleAuditLine && (
+        <p
+          className="mt-3 border-l-2 border-primary bg-card/50 px-3 py-2 text-xs text-foreground"
+          data-testid="auto-rule-line"
+        >
+          <span className="font-semibold uppercase tracking-widest text-primary">
+            Rule:
+          </span>{" "}
+          {matchedRuleAuditLine.replace(/^auto_approval_matched: /, "")}
+        </p>
+      )}
       {entry?.syncState === "queued" && (
         <p className="mt-3 text-sm text-warning-foreground">
           Queued offline. Reconcile when the network is restored.
@@ -967,18 +1013,25 @@ function AuditPanel({
 }
 
 export function AdminShell({ state }: { state: GatePassState }) {
+  // Source: src/docs/specs/auto-approval.md §6 — auto-approvals are
+  // counted alongside override flags in admin so an admin scanning the
+  // shell can see the auto-vs-manual mix at a glance.
   return (
     <section className="border border-border bg-card p-5 shadow-panel">
       <h2 className="font-display text-3xl font-bold">Admin shell</h2>
       <p className="mt-2 text-sm text-muted-foreground">
         Operational counts and the rolling guard audit log.
       </p>
-      <div className="mt-5 grid gap-3 md:grid-cols-3">
+      <div className="mt-5 grid gap-3 md:grid-cols-4">
         <Stat label="Entries logged" value={state.entries.length} />
         <Stat label="Pending sync" value={state.pendingSync.length} />
         <Stat
           label="Override flags"
           value={state.entries.filter((entry) => entry.method === "override").length}
+        />
+        <Stat
+          label="Auto-approved"
+          value={state.entries.filter((entry) => entry.method === "auto").length}
         />
       </div>
       <div className="mt-5">
