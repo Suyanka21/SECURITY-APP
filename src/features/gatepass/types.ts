@@ -130,6 +130,14 @@ export type NotificationDeliveryView = {
   retryInFlight?: boolean;
   /** Reducer-local: surfaces the most recent retry-side error to the UI. */
   retryError?: GatePassError;
+  /**
+   * Reducer-local: epoch ms until which Resend is disabled. Set by
+   * NOTIFICATIONS_RETRY_SUCCEEDED to enforce the 30s cooldown (spec
+   * notifications.md §6 — per-approval cap = 1 user-triggered retry,
+   * which we soften to a cooldown so the UI doesn't silently swallow
+   * a second click).
+   */
+  retryCooldownUntilMs?: number;
 };
 
 /**
@@ -256,6 +264,11 @@ export type GatePassAction =
       type: "NOTIFICATIONS_RETRY_SUCCEEDED";
       approvalId: string;
       notification: NotificationDeliveryView;
+      /**
+       * Epoch ms at which the cooldown expires. Injected by the
+       * controller (which owns the clock) so the reducer stays pure.
+       */
+      cooldownUntilMs: number;
     }
   | {
       type: "NOTIFICATIONS_RETRY_FAILED";

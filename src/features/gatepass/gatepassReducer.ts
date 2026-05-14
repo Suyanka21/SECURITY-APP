@@ -805,7 +805,14 @@ export function gatePassReducer(
 
     case "NOTIFICATIONS_RETRY_SUCCEEDED": {
       // The server returned the fresh row. Overwrite by id, drop the
-      // retryInFlight flag, drop any retryError.
+      // retryInFlight flag, drop any retryError, and stamp the
+      // cooldown so the UI disables Resend for ~30s (spec §6).
+      const fresh: NotificationDeliveryView = {
+        ...action.notification,
+        retryInFlight: undefined,
+        retryError: undefined,
+        retryCooldownUntilMs: action.cooldownUntilMs,
+      };
       const existing = state.notifications.byApprovalId[action.approvalId];
       if (!existing) {
         return {
@@ -814,13 +821,13 @@ export function gatePassReducer(
             ...state.notifications,
             byApprovalId: {
               ...state.notifications.byApprovalId,
-              [action.approvalId]: [action.notification],
+              [action.approvalId]: [fresh],
             },
           },
         };
       }
       const replaced = existing.map((row) =>
-        row.id === action.notification.id ? action.notification : row,
+        row.id === fresh.id ? fresh : row,
       );
       return {
         ...state,

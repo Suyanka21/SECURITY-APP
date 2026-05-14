@@ -458,6 +458,122 @@ describe("GatePass UI", () => {
     });
   });
 
+  it("disables Resend during the 30s cooldown after a successful retry (slice 8)", async () => {
+    // Inject a clock pinned to real wall-clock now so the controller's
+    // cooldown stamp (now + 30s) lands in the AwaitingApprovalPanel's
+    // future. The panel ticks its own clock off real Date.now(), so
+    // anchoring the controller to the same wall-clock is what makes
+    // the countdown visible.
+    const wallNow = new Date();
+    const approvalApi = makeApprovalApi();
+    // Server returns a STILL-FAILED row from the retry so we can verify
+    // the cooldown is the gate (not the row status). This isolates the
+    // spec §6 contract: even when the next status is failed, the user
+    // cannot mash Resend a second time inside 30s.
+    const failedRetryRow = {
+      id: "n-1",
+      attempts: 2,
+      status: "failed" as const,
+      lastErrorCode: "PROVIDER_5XX" as const,
+      approvalId: "11111111-1111-4111-8111-111111111111",
+      channel: "whatsapp" as const,
+      targetPhone: "+15559990001",
+      attemptsMax: 3,
+      providerMessageId: null,
+      providerErrorRaw: null,
+      lastErrorAt: "2024-01-01T00:00:00.000Z",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+      enqueuedAt: "2024-01-01T00:00:00.000Z",
+      attemptedAt: "2024-01-01T00:00:00.000Z",
+      deliveredAt: null,
+      failedAt: "2024-01-01T00:00:00.000Z",
+    };
+    const initialRow = { ...failedRetryRow, attempts: 1 };
+    const notificationsApi = {
+      getNotifications: vi.fn(async () => ({
+        ok: true as const,
+        status: 200,
+        data: { notifications: [initialRow], traceId: "trace-n" },
+      })),
+      retryNotification: vi.fn(async () => ({
+        ok: true as const,
+        status: 202,
+        data: { notification: failedRetryRow, traceId: "trace-retry" },
+      })),
+    } as unknown as typeof guardNotificationsApi;
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi,
+          notificationsApi,
+          now: () => new Date(wallNow.getTime()),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 60_000,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "+15551230001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("delivery-retry-n-1")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("delivery-retry-n-1"));
+    await waitFor(() => {
+      expect(notificationsApi.retryNotification).toHaveBeenCalledTimes(1);
+    });
+    // Spec §6: after a successful retry, the Resend button vanishes and
+    // a cooldown counter takes its place. Controller clock + 30s lands
+    // ~30s ahead of the panel's wall-clock tick, so the UI shows
+    // "Resend in 30s" (allow 29-30s for the 1s setInterval drift).
+    await waitFor(() => {
+      expect(screen.getByTestId("delivery-cooldown-n-1")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("delivery-cooldown-n-1")).toHaveTextContent(
+      /Resend in (29|30)s/,
+    );
+    // The Resend button is gone — a second click cannot fire.
+    expect(screen.queryByTestId("delivery-retry-n-1")).not.toBeInTheDocument();
+  });
+
+  it("accepts a human-formatted phone (slice 8 sanitization) and forwards the canonical E.164", async () => {
+    const approvalApi = makeApprovalApi();
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi,
+          notificationsApi: makeNotificationsApi(),
+          now: () => new Date("2024-01-01T00:00:00Z"),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 60_000,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "+1 (555) 123-0001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+    await waitFor(() => {
+      expect(approvalApi.createApproval).toHaveBeenCalledTimes(1);
+    });
+    const payload = (approvalApi.createApproval as ReturnType<typeof vi.fn>)
+      .mock.calls[0][0];
+    // Server never sees the formatted form — sanitizer normalizes to
+    // E.164 client-side (spec §7.1 + slice 8).
+    expect(payload.hostPhoneE164).toBe("+15551230001");
+  });
+
   it("surfaces a notifications list failure WITHOUT collapsing the approval panel (two-stream isolation)", async () => {
     const approvalApi = makeApprovalApi();
     const notificationsApi = {

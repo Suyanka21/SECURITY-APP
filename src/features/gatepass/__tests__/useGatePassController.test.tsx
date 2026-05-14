@@ -10,7 +10,10 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useGatePassController } from "../useGatePassController";
+import {
+  sanitizePhoneInput,
+  useGatePassController,
+} from "../useGatePassController";
 import type { GatePassApi } from "@/lib/api/gatepass";
 import type { guardApprovalApi } from "@/lib/api/approvals";
 import type { guardNotificationsApi } from "@/lib/api/notifications";
@@ -1178,6 +1181,12 @@ describe("useGatePassController.notifications — polling stream", () => {
     expect(notificationsApi.retryNotification).toHaveBeenCalledWith(
       "n-1",
     );
+    // Slice 8: the controller stamps a cooldown using its injected
+    // clock so the UI can disable Resend for ~30s. The fixture clock
+    // returns 2024-01-01T00:00:00Z, so cooldown = +30_000ms.
+    expect(row.retryCooldownUntilMs).toBe(
+      new Date("2024-01-01T00:00:00Z").getTime() + 30_000,
+    );
   });
 
   it("retryNotification records retryError on the row when the server refuses", async () => {
@@ -1271,5 +1280,111 @@ describe("useGatePassController.notifications — polling stream", () => {
         CREATE_APPROVAL_OK.approvalId
       ],
     ).toBeUndefined();
+  });
+});
+
+// ─── Slice 8: phone sanitization + cooldown plumbing ────────────────
+// Source: spec notifications.md §6 (retry rate-limit) + §7.1
+// (hostPhoneE164 wire) + §11 (resident-facing hints, "guards type
+// what they see in their phone's contact list").
+
+describe("sanitizePhoneInput", () => {
+  it("strips spaces, hyphens, parens, and dots from common human formats", () => {
+    expect(sanitizePhoneInput("+1 (555) 123-0001")).toBe("+15551230001");
+    expect(sanitizePhoneInput("+1.555.123.0001")).toBe("+15551230001");
+    expect(sanitizePhoneInput("+1-555-123-0001")).toBe("+15551230001");
+    expect(sanitizePhoneInput("  +15551230001  ")).toBe("+15551230001");
+  });
+
+  it("does NOT add digits or a leading '+'", () => {
+    // The downstream regex requires "+<country>...". Sanitizer leaves
+    // a missing "+" alone so the validator rejects it instead of the
+    // sanitizer silently mangling a typo into a passing-looking value.
+    expect(sanitizePhoneInput("15551230001")).toBe("15551230001");
+    expect(sanitizePhoneInput("(555) 123-0001")).toBe("5551230001");
+  });
+
+  it("leaves an empty string and a single '+' alone", () => {
+    expect(sanitizePhoneInput("")).toBe("");
+    expect(sanitizePhoneInput("+")).toBe("+");
+  });
+});
+
+describe("useGatePassController.requestApproval — slice 8 sanitization", () => {
+  let api: MockApi;
+  let approvalApi: MockApprovalApi;
+  let notificationsApi: MockNotificationsApi;
+  beforeEach(() => {
+    api = makeApi();
+    approvalApi = makeApprovalApi();
+    notificationsApi = makeNotificationsApi();
+    approvalApi.createApproval.mockResolvedValue(
+      ok(CREATE_APPROVAL_OK, 201),
+    );
+    // The polling effect starts as soon as the controller enters
+    // awaiting-approval. Without a default resolved value, the
+    // setInterval callback would throw on `result.ok`. Pin both
+    // streams to safe defaults so the slice-8 sanitization tests
+    // can focus on createApproval payload assertions.
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({
+        approval: {
+          id: CREATE_APPROVAL_OK.approvalId,
+          offlineId: "00000000-0000-4000-8000-000000000001",
+          visitorName: "Ada",
+          host: "Bola",
+          unit: "4A",
+          plate: null,
+          reason: "",
+          method: "walk-in" as const,
+          requestedByGuardId: "guard-west-04",
+          status: "pending" as const,
+          expiresAt: "2024-01-01T00:05:00.000Z",
+          decidedAt: null,
+          deniedReason: null,
+          entryId: null,
+          traceId: "t",
+        },
+        traceId: "t",
+      } as ApprovalStatusResponse),
+    );
+    notificationsApi.getNotifications.mockResolvedValue(
+      ok({ notifications: [], traceId: "t" } as NotificationsListResponse),
+    );
+  });
+
+  it("accepts a phone with spaces and parens by sanitizing before validation", async () => {
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval("+1 (555) 123-0001");
+    });
+    expect(approvalApi.createApproval).toHaveBeenCalledTimes(1);
+    const payload = approvalApi.createApproval.mock.calls[0][0];
+    // Sanitization happens client-side BEFORE the wire — server never
+    // sees the human-readable form.
+    expect(payload.hostPhoneE164).toBe("+15551230001");
+  });
+
+  it("still rejects a value that is invalid AFTER sanitization (no silent rewrite)", async () => {
+    const hook = buildControllerWithNotifications(
+      api,
+      approvalApi,
+      notificationsApi,
+    );
+    await fillValidDraft(hook);
+    await act(async () => {
+      // Missing the leading "+" — sanitizer doesn't add one. The
+      // regex rejects the result.
+      await hook.result.current.requestApproval("(555) 123-0001");
+    });
+    expect(approvalApi.createApproval).not.toHaveBeenCalled();
+    expect(hook.result.current.state.lastError?.code).toBe(
+      "HOST_PHONE_INVALID",
+    );
   });
 });

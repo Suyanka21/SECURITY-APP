@@ -511,11 +511,18 @@ function DeliveryStatusBlock({
   loading,
   lastError,
   onRetry,
+  nowMs,
 }: {
   rows: NotificationDeliveryView[] | undefined;
   loading: boolean;
   lastError: GatePassState["notifications"]["lastError"];
   onRetry: (id: string) => Promise<void> | void;
+  /**
+   * Current epoch ms. Passed in so the parent (which already runs a
+   * 1Hz tick for the approval countdown) drives the cooldown
+   * countdown too, without spawning a second interval.
+   */
+  nowMs: number;
 }) {
   if (!rows || rows.length === 0) {
     return (
@@ -564,7 +571,13 @@ function DeliveryStatusBlock({
       </div>
       <ul className="mt-3 grid gap-2">
         {rows.map((row) => {
-          const canRetry = row.status === "failed" && !row.retryInFlight;
+          const cooldownRemainingMs =
+            row.retryCooldownUntilMs && row.retryCooldownUntilMs > nowMs
+              ? row.retryCooldownUntilMs - nowMs
+              : 0;
+          const inCooldown = cooldownRemainingMs > 0;
+          const canRetry =
+            row.status === "failed" && !row.retryInFlight && !inCooldown;
           return (
             <li
               key={row.id}
@@ -618,6 +631,15 @@ function DeliveryStatusBlock({
                   >
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     Resending…
+                  </span>
+                )}
+                {inCooldown && !row.retryInFlight && (
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                    data-testid={`delivery-cooldown-${row.id}`}
+                    aria-live="polite"
+                  >
+                    Resend in {Math.ceil(cooldownRemainingMs / 1000)}s
                   </span>
                 )}
               </div>
@@ -787,6 +809,7 @@ export function AwaitingApprovalPanel({ state, dispatch, actions }: Props) {
           loading={state.notifications.loading}
           lastError={state.notifications.lastError}
           onRetry={actions.retryNotification}
+          nowMs={now}
         />
       </div>
 

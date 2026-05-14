@@ -67,6 +67,33 @@ function generateId(): string {
   return out;
 }
 
+/**
+ * Manual-retry cooldown window. Source: notifications.md §6 — per-
+ * approval cap is 1 user-triggered retry. The UI surfaces it as a
+ * 30s window so a double-click is absorbed locally instead of
+ * counting as a real second click against the server limiter.
+ */
+const RETRY_COOLDOWN_MS = 30_000;
+
+/**
+ * Sanitize a user-typed phone field to a candidate E.164 string.
+ *
+ * Strips spaces, tabs, hyphens, parens, and dots — the formats a guard
+ * is most likely to type given how phone numbers appear in messaging
+ * apps and contact cards ("+1 (555) 123-0001", "+1.555.123.0001",
+ * "+1-555-123-0001"). Anything else is left alone so the downstream
+ * E.164 regex can reject it explicitly rather than the sanitizer
+ * silently mangling a typo into a passing-looking number.
+ *
+ * Source: spec notifications.md §7.1, §11. Sanitizer is intentionally
+ * conservative — it never inserts a leading "+", never reinterprets
+ * country codes, and never strips digits. If the result fails E.164
+ * validation, that's a real failure the guard needs to see.
+ */
+export function sanitizePhoneInput(raw: string): string {
+  return raw.replace(/[\s\-().]/g, "");
+}
+
 function errorFromApi(result: Extract<ApiResult<unknown>, { ok: false }>): GatePassError {
   return {
     code: result.error.code,
@@ -564,9 +591,16 @@ export function useGatePassController(
     // Feature 2 §7.1: hostPhoneE164 is OPTIONAL on the wire and is only
     // included when the guard typed one. An invalid E.164 here would be
     // rejected by the backend (zod), so we do a defensive client-side
-    // check too — if the trimmed value doesn't match, drop the field
+    // check too — if the sanitized value doesn't match, drop the field
     // and surface a validation error (don't silently strip).
-    const trimmedPhone = hostPhoneE164?.trim();
+    //
+    // Slice 8: sanitize common human formats before validating (spaces,
+    // dashes, parens, dots). The sanitizer is conservative — it never
+    // adds digits or a leading "+", so an invalid input still surfaces
+    // a real failure rather than passing on a mangled rewrite.
+    const trimmedPhone = hostPhoneE164
+      ? sanitizePhoneInput(hostPhoneE164.trim())
+      : undefined;
     if (trimmedPhone && !/^\+[1-9]\d{6,14}$/.test(trimmedPhone)) {
       dispatch({
         type: "APPROVAL_REQUEST_FAILED",
@@ -818,10 +852,18 @@ export function useGatePassController(
         return;
       }
       const row = result.data.notification as NotificationDeliveryView;
+      // 30s cooldown so the UI disables Resend immediately after a
+      // successful re-queue. The server still enforces its own
+      // RATE_LIMITED check (spec §6) — this is just the local UI
+      // guard against a guard double-clicking and the second click
+      // racing through before the server-side limiter trips.
+      const cooldownUntilMs =
+        clockRef.current().getTime() + RETRY_COOLDOWN_MS;
       dispatch({
         type: "NOTIFICATIONS_RETRY_SUCCEEDED",
         approvalId: row.approvalId,
         notification: row,
+        cooldownUntilMs,
       });
     },
     [notificationsApi],

@@ -700,11 +700,15 @@ describe("gatePassReducer", () => {
         type: "NOTIFICATIONS_RETRY_SUCCEEDED",
         approvalId: APPROVAL_A,
         notification: makeRow({ id: "n-1", attempts: 2, status: "queued" }),
+        cooldownUntilMs: 1_000_000,
       });
       const row = next.notifications.byApprovalId[APPROVAL_A][0];
       expect(row.attempts).toBe(2);
       expect(row.retryInFlight).toBeUndefined();
       expect(row.retryError).toBeUndefined();
+      // Slice 8: cooldown is stamped on the row so the UI can disable
+      // Resend for ~30s (spec §6 user-triggered retry cap).
+      expect(row.retryCooldownUntilMs).toBe(1_000_000);
     });
 
     it("NOTIFICATIONS_RETRY_FAILED records retryError + drops retryInFlight on that row", () => {
