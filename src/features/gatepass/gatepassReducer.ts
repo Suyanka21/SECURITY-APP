@@ -690,6 +690,44 @@ export function gatePassReducer(
       };
     }
 
+    case "APPROVAL_AUTO_APPROVED": {
+      // Source: src/docs/specs/auto-approval.md §5 (state machine).
+      //
+      // Backend already wrote the entry inside the createApproval
+      // transaction; we land directly in 'confirmed' WITHOUT touching
+      // pendingApproval (there is no awaiting state to clear because
+      // we never entered it) and prepend the entry into state.entries
+      // for list-shape parity with ENTRY_SUCCEEDED / APPROVAL_RESOLVED.
+      //
+      // Louder audit (spec §3): emit TWO lines — one naming the rule
+      // that fired, one for the entry itself — so an auditor reading
+      // the local audit log can distinguish auto-approval entries
+      // from manual walk-ins at a glance. The server emits three
+      // matching audit_event_type rows on the same traceId; the
+      // frontend audit is a UI mirror, not the source of truth.
+      const entry = action.entry;
+      const rule = action.rule;
+      return {
+        ...state,
+        mode: "confirmed",
+        inFlight: false,
+        // Defensive: if a stale awaiting state somehow exists, clear it.
+        pendingApproval: undefined,
+        lastEntry: entry,
+        lastError: undefined,
+        entries: [entry, ...state.entries],
+        audit: [
+          `auto_approval_matched: rule=${rule.id} visitor="${rule.visitorName}" host="${rule.host}" unit="${rule.unit}" by ${state.guardId}`,
+          auditLine(entry),
+          ...state.audit,
+        ],
+        banner: {
+          tone: "success",
+          message: `Auto-approved by rule \u2014 entry logged for ${entry.visitorName}.`,
+        },
+      };
+    }
+
     case "FAIL_ACTIVE_ENTRY":
       return {
         ...state,

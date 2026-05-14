@@ -466,6 +466,132 @@ describe("gatePassReducer", () => {
     });
   });
 
+  // ─── Feature 3 — Auto-approval short-circuit ───────────────────────
+  // Source: src/docs/specs/auto-approval.md §5 (state machine extension).
+  describe("Auto-approval lifecycle (Feature 3)", () => {
+    const autoRule = {
+      id: "rule-11111111-1111-4111-8111-111111111111",
+      visitorName: "Maya Chen",
+      host: "A. Okafor",
+      unit: "18B",
+    };
+
+    it("APPROVAL_AUTO_APPROVED lands in 'confirmed' WITHOUT awaiting-approval", () => {
+      const entry = makeEntry({
+        visitorName: "Maya Chen",
+        id: "entry-auto-1",
+        method: "auto",
+      });
+      const next = gatePassReducer(initialGatePassState, {
+        type: "APPROVAL_AUTO_APPROVED",
+        entry,
+        rule: autoRule,
+      });
+
+      expect(next.mode).toBe("confirmed");
+      expect(next.inFlight).toBe(false);
+      expect(next.pendingApproval).toBeUndefined();
+      expect(next.lastError).toBeUndefined();
+      expect(next.lastEntry?.id).toBe("entry-auto-1");
+      expect(next.lastEntry?.method).toBe("auto");
+      expect(next.entries[0].id).toBe("entry-auto-1");
+      expect(next.banner.tone).toBe("success");
+      expect(next.banner.message).toContain("Auto-approved");
+      expect(next.banner.message).toContain("Maya Chen");
+    });
+
+    it("APPROVAL_AUTO_APPROVED emits paired audit lines (rule + entry)", () => {
+      // Spec §3 louder audit: the local audit log must surface
+      // BOTH the rule that fired AND the entry that was logged so
+      // an auditor reading the UI can tell auto from manual.
+      const entry = makeEntry({
+        visitorName: "Maya Chen",
+        id: "entry-auto-2",
+        method: "auto",
+      });
+      const next = gatePassReducer(initialGatePassState, {
+        type: "APPROVAL_AUTO_APPROVED",
+        entry,
+        rule: autoRule,
+      });
+
+      // Two new audit lines, in this order: rule first, entry second.
+      expect(next.audit[0]).toContain("auto_approval_matched");
+      expect(next.audit[0]).toContain(autoRule.id);
+      expect(next.audit[0]).toContain('visitor="Maya Chen"');
+      expect(next.audit[0]).toContain('host="A. Okafor"');
+      expect(next.audit[0]).toContain('unit="18B"');
+      // The second audit line is the entry-level line (auditLine()).
+      expect(next.audit[1]).toContain("entry-auto-2");
+    });
+
+    it("APPROVAL_AUTO_APPROVED clears stale lastError + stale awaiting state", () => {
+      // Defense in depth: if the reducer is asked to short-circuit
+      // while a leftover pending approval still exists in state (e.g.
+      // the user navigated back into a stale walk-in form), the auto
+      // path MUST overwrite — not silently merge — that state.
+      const stalePending: GatePassState = {
+        ...initialGatePassState,
+        mode: "awaiting-approval",
+        pendingApproval: {
+          id: "stale-approval-id",
+          draft: {
+            visitorName: "Stale",
+            host: "Stale",
+            unit: "Stale",
+            plate: "",
+            reason: "",
+            method: "walk-in",
+          },
+          magicLinkUrl: "http://example.com/approve/stale",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          status: "pending",
+          traceId: "trace-stale",
+        },
+        lastError: { code: "ANYTHING_OLD", message: "stale" },
+      };
+      const entry = makeEntry({
+        visitorName: "Maya Chen",
+        id: "entry-auto-3",
+        method: "auto",
+      });
+      const next = gatePassReducer(stalePending, {
+        type: "APPROVAL_AUTO_APPROVED",
+        entry,
+        rule: autoRule,
+      });
+
+      expect(next.mode).toBe("confirmed");
+      expect(next.pendingApproval).toBeUndefined();
+      expect(next.lastError).toBeUndefined();
+    });
+
+    it("APPROVAL_AUTO_APPROVED prepends to entries — never mutates the existing list", () => {
+      const existing = makeEntry({ id: "existing-1" });
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        entries: [existing],
+      };
+      const newEntry = makeEntry({
+        id: "entry-auto-4",
+        visitorName: "Maya Chen",
+        method: "auto",
+      });
+      const next = gatePassReducer(seeded, {
+        type: "APPROVAL_AUTO_APPROVED",
+        entry: newEntry,
+        rule: autoRule,
+      });
+
+      expect(next.entries).toHaveLength(2);
+      expect(next.entries[0].id).toBe("entry-auto-4");
+      expect(next.entries[1].id).toBe("existing-1");
+      // Immutability: the original entries array reference is not
+      // reused — required so React renders pick up the change.
+      expect(next.entries).not.toBe(seeded.entries);
+    });
+  });
+
   // ─── Feature 2 — Notifications lifecycle ────────────────────────────
   // Source: src/docs/specs/notifications.md §9.
   describe("Notifications lifecycle (Feature 2)", () => {
