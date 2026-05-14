@@ -93,4 +93,17 @@ CREATE INDEX "auto_approval_rules_guard_idx" ON "auto_approval_rules" USING btre
 -- Drizzle's unique() helper cannot express functional indices, so this
 -- runs as raw SQL. The lower() expressions make the constraint
 -- case-insensitive without needing a generated column.
-CREATE UNIQUE INDEX "auto_approval_rules_active_triple_uniq" ON "auto_approval_rules" (lower("visitor_name"), lower("host"), lower("unit")) WHERE "active" = true;
+CREATE UNIQUE INDEX "auto_approval_rules_active_triple_uniq" ON "auto_approval_rules" (lower("visitor_name"), lower("host"), lower("unit")) WHERE "active" = true;--> statement-breakpoint
+
+-- Step 7: Role column on guards table.
+--
+-- Source: src/docs/specs/auto-approval.md §8 (security).
+-- Auto-approval rule seed/list/deactivate endpoints require an admin
+-- role. The default value 'guard' keeps existing rows valid; admins
+-- must be promoted explicitly. The CHECK enforces the closed set of
+-- allowed values at the DB layer (never trust application alone).
+--
+-- This is additive: any code that doesn't read the column continues
+-- to work. The auth middleware reads it via getActiveGuard().
+ALTER TABLE "guards" ADD COLUMN "role" text NOT NULL DEFAULT 'guard';--> statement-breakpoint
+ALTER TABLE "guards" ADD CONSTRAINT "guards_role_check" CHECK ("role" IN ('guard', 'senior-guard', 'admin'));

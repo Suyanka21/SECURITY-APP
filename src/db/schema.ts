@@ -101,6 +101,17 @@ export const guards = pgTable("guards", {
   // Source: contract — "must resolve to active guard session"
   isActive: boolean("is_active").notNull().default(true),
 
+  /**
+   * Authorization role for admin-only endpoints.
+   *
+   * Source: src/docs/specs/auto-approval.md §8 — admin-only seed of
+   * auto-approval rules. Closed set: 'guard' | 'senior-guard' | 'admin'.
+   * DB CHECK constraint enforces the values (see migration 0004).
+   *
+   * Default 'guard' keeps every pre-Feature-3 row valid without a backfill.
+   */
+  role: text("role").notNull().default("guard"),
+
   /** Server-generated creation timestamp */
   createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
     .notNull()

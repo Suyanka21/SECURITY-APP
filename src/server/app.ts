@@ -34,8 +34,13 @@ import {
   handleListNotifications,
   handleRetryNotification,
 } from "./routes/notifications";
+import {
+  handleSeedAutoApprovalRule,
+  handleListAutoApprovalRules,
+  handleDeactivateAutoApprovalRule,
+} from "./routes/auto-approval";
 import { errorHandler } from "./middleware/error-handler";
-import { requireAuth } from "./middleware/auth";
+import { requireAuth, requireRole } from "./middleware/auth";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -155,6 +160,30 @@ export function createApp(db: unknown) {
     requireAuth,
     strictLimiter,
     handleRetryNotification
+  );
+
+  // Feature 3 — Auto-approval rules (spec §7).
+  // Admin-only seeding + deactivation; senior-guards can also list.
+  // The role check runs AFTER requireAuth so guardId is available.
+  app.post(
+    "/api/auto-approval-rules",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin"),
+    handleSeedAutoApprovalRule
+  );
+  app.get(
+    "/api/auto-approval-rules",
+    requireAuth,
+    requireRole("admin", "senior-guard"),
+    handleListAutoApprovalRules
+  );
+  app.post(
+    "/api/auto-approval-rules/:id/deactivate",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin"),
+    handleDeactivateAutoApprovalRule
   );
 
   // ─── Error Handler ─────────────────────────────────────────────────
