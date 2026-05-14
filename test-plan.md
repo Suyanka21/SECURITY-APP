@@ -86,6 +86,32 @@ the no-silent-success contract holds across the new approval lifecycle.
 
 These scenarios extend the same `controller.api` + `controller.approvalApi` injection seam used by S1–S3, so the reducer + controller + UI paths under test are identical to production.
 
+## Feature 2 — WhatsApp/SMS notifications channel
+
+Source: `src/docs/specs/notifications.md`. The audit must prove the
+no-silent-success contract holds across the notifications stream AND
+that the two-stream contract (§5) survives every failure mode — a
+notifications failure must NEVER collapse the approval stream and vice
+versa.
+
+| # | Scenario | What it proves |
+|---|---|---|
+| N1 | Notification queued → sent | Status row advances from `queued` to `sent` on screen as polls land. No page reload required. Proves the polling stream observes the state machine transition. |
+| N2 | Provider 5xx → row stuck on `failed` | Row visibly displays `failed` with the last error code (`PROVIDER_5XX`). Resend button is the only path forward. No silent retry-forever. |
+| N3 | List `GET /api/notifications` → 500 | Approval awaiting panel stays alive with the magic link still copyable; notifications list shows its own error banner with the backend code. Two-stream isolation contract (spec §5). |
+| N4 | Resend → 202 success + cooldown | After clicking Resend, the button vanishes and a "Resend in 30s" cooldown counter takes its place. Spec §6 manual-retry cap surfaced in the UI; double-click bypass is structurally impossible (the button is gone, not just disabled). |
+| N5 | Resend → 429 `RETRY_RATE_LIMITED` | After the first manual retry, a second attempt is rejected by the server with a 429. The UI surfaces `RETRY_RATE_LIMITED` on the row, not a silent no-op. |
+
+### Pass criteria summary
+
+- **N1**: Open scenario `notif-queued-to-sent`. Click Walk-in, fill draft, type `+15551230001` into the host-phone field, click **Request resident approval**. The delivery-status block appears with channel `whatsapp` → `+15••••0001` (PII mask intact). On first poll, row shows `queued`. On second poll (~1.5s later), row flips to `sent` and a green check / `sent` badge replaces the queued state.
+- **N2**: Open scenario `notif-provider-5xx`. Same setup as N1. The delivery row appears already in `failed` state with `PROVIDER_5XX` visible. Resend button is present. No `Resending…` spinner is ever triggered automatically.
+- **N3**: Open scenario `notif-list-500`. Same setup as N1. The awaiting-approval panel mounts with countdown + magic link. Inside the delivery-status block, an explicit error banner reads `INTERNAL_ERROR: Notifications service temporarily unavailable.` Two-stream contract holds: the approval panel does NOT collapse to an error mode.
+- **N4**: Open scenario `notif-retry-ok`. Setup as N1. Delivery row appears as `failed`. Click **Resend**. Immediately the Resend button disappears and `Resend in 30s` countdown appears. A second click during the cooldown is structurally impossible (button is gone). PII mask remains intact throughout.
+- **N5**: Open scenario `notif-retry-rate-limited`. Setup as N1. Click **Resend** — first attempt succeeds (202), cooldown appears. (To prove the 429 contract end-to-end, wait for the cooldown to expire or open a second tab and trigger a second Resend; this surfaces the `RETRY_RATE_LIMITED` code on the row's retry-error line, NOT a silent no-op.)
+
+These scenarios extend the same injection seam used by S1–S8, now also passing through `controller.notificationsApi`. The reducer + controller + UI paths under audit are identical to production.
+
 ## Out of scope
 
 - Real backend round-trips: backend has no `dev:server` script and requires a Postgres DB + seeded guard + signed JWT. Out of scope for a deterministic audit. Unit + integration tests against the real Express server (133 server tests) already cover the backend side.
