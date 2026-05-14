@@ -47,7 +47,7 @@ algorithmic recognition tag; it never silently overrides it.
   - `softDeleteVisitorProfile(id, by, db)` → 204; sets `deleted_at`.
   - `restoreVisitorProfile(id, db)` → 200; clears `deleted_at`.
 - CRUD routes mounted at `/api/visitor-profiles` (REST style).
-- RBAC: `admin` and `resident` may create / update / soft-delete /
+- RBAC: `admin` and `senior-guard` may create / update / soft-delete /
   restore. `guard` may **only read** (list + get). The same
   `requireRole` middleware introduced in Feature 3 is reused.
 - Audit events for every mutation
@@ -129,14 +129,14 @@ Visitor profiles have a simple, explicit lifecycle:
 
 ```
        [not exists]
-            │ POST /api/visitor-profiles (admin/resident only)
+            │ POST /api/visitor-profiles (admin/senior-guard only)
             ▼
-        ┌────────┐  PATCH (admin/resident)   ┌────────┐
+        ┌────────┐  PATCH (admin/senior-guard)   ┌────────┐
         │ active │ ◄───────────────────────► │ active │
         └────────┘                           └────────┘
-            │ DELETE (admin/resident)
+            │ DELETE (admin/senior-guard)
             ▼
-       ┌──────────┐   POST /restore (admin/resident)
+       ┌──────────┐   POST /restore (admin/senior-guard)
        │ deleted  │ ────────────────────────────────► active
        └──────────┘
             │ (no hard delete; soft-deleted forever)
@@ -155,7 +155,7 @@ role.
 
 ### Create — `POST /api/visitor-profiles`
 
-Role: `admin` or `resident`. Body:
+Role: `admin` or `senior-guard`. Body:
 
 ```json
 {
@@ -201,7 +201,7 @@ Role: any authenticated. Returns `200 { profile, traceId }` or
 
 ### Update — `PATCH /api/visitor-profiles/:id`
 
-Role: `admin` or `resident`. Body: any subset of the create fields. The
+Role: `admin` or `senior-guard`. Body: any subset of the create fields. The
 service applies the patch, bumps `updated_at`, and emits a
 `visitor_profile_updated` audit event with the diff in the payload.
 
@@ -210,7 +210,7 @@ active profile), `422`, `403`, `401`, `500`.
 
 ### Soft-delete — `DELETE /api/visitor-profiles/:id`
 
-Role: `admin` or `resident`. Idempotent: deleting an already-deleted
+Role: `admin` or `senior-guard`. Idempotent: deleting an already-deleted
 profile returns `204` without writing a second audit event. Sets
 `deleted_at = now()` and `deleted_by_guard_id`.
 
@@ -218,7 +218,7 @@ profile returns `204` without writing a second audit event. Sets
 
 ### Restore — `POST /api/visitor-profiles/:id/restore`
 
-Role: `admin` or `resident`. Clears `deleted_at` and `deleted_by_guard_id`.
+Role: `admin` or `senior-guard`. Clears `deleted_at` and `deleted_by_guard_id`.
 Fails with `409 PROFILE_RESTORE_CONFLICT` if an active profile with the
 same identity now exists (caller must rename it first or merge —
 out of scope).
