@@ -20,6 +20,8 @@ import {
   validateDraft,
 } from "../gatepassReducer";
 import type { EntryRecord, GatePassState } from "../types";
+import { VISITOR_PROFILE_NEW_KEY } from "../types";
+import type { VisitorProfileView } from "@/lib/api/types";
 
 function makeEntry(
   overrides: Partial<EntryRecord> = {}
@@ -944,6 +946,297 @@ describe("gatePassReducer", () => {
       };
       const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
       expect(next.notifications).toEqual({ byApprovalId: {}, loading: false });
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Feature 4 — Visitor profile CRUD reducer (spec §8).
+  //
+  // The slice is admin-only. RESET_FLOW must NOT touch it.
+  // No silent success is tolerated: every MUTATION_STARTED has to land
+  // on exactly one of UPSERTED / REMOVED / RESTORED / MUTATION_FAILED.
+  // ---------------------------------------------------------------
+  describe("visitor profile CRUD lifecycle", () => {
+    const PROFILE_A_ID = "00000000-0000-4000-8000-0000000000a1";
+    const PROFILE_B_ID = "00000000-0000-4000-8000-0000000000b2";
+
+    function makeProfile(
+      overrides: Partial<VisitorProfileView> = {},
+    ): VisitorProfileView {
+      return {
+        id: PROFILE_A_ID,
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+        plate: "LND-482",
+        phoneE164: "+254700000001",
+        notes: null,
+        watchFlag: false,
+        createdAt: "2024-01-01T00:00:00.000Z",
+        updatedAt: "2024-01-01T00:00:00.000Z",
+        deletedAt: null,
+        ...overrides,
+      };
+    }
+
+    function seededState(
+      overrides: Partial<GatePassState["visitorProfiles"]> = {},
+    ): GatePassState {
+      return {
+        ...initialGatePassState,
+        visitorProfiles: {
+          ...initialGatePassState.visitorProfiles,
+          ...overrides,
+        },
+      };
+    }
+
+    it("LIST_STARTED sets loading and clears any stale lastError", () => {
+      const seeded = seededState({
+        lastError: { code: "INTERNAL_ERROR", message: "oops" },
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILES_LIST_STARTED",
+      });
+      expect(next.visitorProfiles.loading).toBe(true);
+      expect(next.visitorProfiles.lastError).toBeUndefined();
+    });
+
+    it("LIST_LOADED replaces byId/order/pagination atomically", () => {
+      const p1 = makeProfile();
+      const p2 = makeProfile({
+        id: PROFILE_B_ID,
+        visitorName: "Dario Miles",
+        host: "N. Patel",
+        unit: "07C",
+      });
+      const next = gatePassReducer(
+        seededState({ loading: true }),
+        {
+          type: "VISITOR_PROFILES_LIST_LOADED",
+          profiles: [p1, p2],
+          pagination: { page: 1, pageSize: 25, totalItems: 2, totalPages: 1 },
+        },
+      );
+      expect(next.visitorProfiles.byId).toEqual({
+        [PROFILE_A_ID]: p1,
+        [PROFILE_B_ID]: p2,
+      });
+      expect(next.visitorProfiles.order).toEqual([PROFILE_A_ID, PROFILE_B_ID]);
+      expect(next.visitorProfiles.pagination).toEqual({
+        page: 1,
+        pageSize: 25,
+        totalItems: 2,
+        totalPages: 1,
+      });
+      expect(next.visitorProfiles.loading).toBe(false);
+      expect(next.visitorProfiles.lastError).toBeUndefined();
+    });
+
+    it("LIST_FAILED preserves cached rows and surfaces the error", () => {
+      const seeded = seededState({
+        byId: { [PROFILE_A_ID]: makeProfile() },
+        order: [PROFILE_A_ID],
+        loading: true,
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILES_LIST_FAILED",
+        error: { code: "INTERNAL_ERROR", message: "boom" },
+      });
+      expect(next.visitorProfiles.loading).toBe(false);
+      expect(next.visitorProfiles.lastError).toEqual({
+        code: "INTERNAL_ERROR",
+        message: "boom",
+      });
+      // Cached rows survive a transient failure.
+      expect(next.visitorProfiles.order).toEqual([PROFILE_A_ID]);
+      expect(next.visitorProfiles.byId[PROFILE_A_ID]).toBeDefined();
+    });
+
+    it("MUTATION_STARTED flips in-flight and clears any prior per-row error", () => {
+      const seeded = seededState({
+        mutationErrors: {
+          [PROFILE_A_ID]: { code: "INTERNAL_ERROR", message: "old" },
+        },
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILE_MUTATION_STARTED",
+        profileId: PROFILE_A_ID,
+      });
+      expect(next.visitorProfiles.mutationInFlight[PROFILE_A_ID]).toBe(true);
+      expect(
+        next.visitorProfiles.mutationErrors[PROFILE_A_ID],
+      ).toBeUndefined();
+    });
+
+    it("UPSERTED on create prepends to order and clears __new__ in-flight", () => {
+      // Simulates: dispatch MUTATION_STARTED("__new__") then UPSERTED with
+      // mutationKey="__new__" once the server returns the new profile.
+      const started = gatePassReducer(initialGatePassState, {
+        type: "VISITOR_PROFILE_MUTATION_STARTED",
+        profileId: VISITOR_PROFILE_NEW_KEY,
+      });
+      expect(
+        started.visitorProfiles.mutationInFlight[VISITOR_PROFILE_NEW_KEY],
+      ).toBe(true);
+      const fresh = makeProfile({ id: PROFILE_B_ID });
+      const next = gatePassReducer(started, {
+        type: "VISITOR_PROFILE_UPSERTED",
+        profile: fresh,
+        mutationKey: VISITOR_PROFILE_NEW_KEY,
+      });
+      expect(next.visitorProfiles.byId[PROFILE_B_ID]).toEqual(fresh);
+      expect(next.visitorProfiles.order).toEqual([PROFILE_B_ID]);
+      expect(
+        next.visitorProfiles.mutationInFlight[VISITOR_PROFILE_NEW_KEY],
+      ).toBeUndefined();
+    });
+
+    it("UPSERTED on update replaces byId in place and does NOT reorder", () => {
+      const original = makeProfile();
+      const seeded = seededState({
+        byId: {
+          [PROFILE_A_ID]: original,
+          [PROFILE_B_ID]: makeProfile({ id: PROFILE_B_ID }),
+        },
+        order: [PROFILE_A_ID, PROFILE_B_ID],
+        mutationInFlight: { [PROFILE_A_ID]: true },
+      });
+      const patched = makeProfile({
+        watchFlag: true,
+        updatedAt: "2024-02-01T00:00:00.000Z",
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILE_UPSERTED",
+        profile: patched,
+      });
+      expect(next.visitorProfiles.byId[PROFILE_A_ID]).toEqual(patched);
+      // Scroll position preserved — no reorder on update.
+      expect(next.visitorProfiles.order).toEqual([PROFILE_A_ID, PROFILE_B_ID]);
+      expect(
+        next.visitorProfiles.mutationInFlight[PROFILE_A_ID],
+      ).toBeUndefined();
+    });
+
+    it("REMOVED drops from order when includeDeleted=false but keeps the row in byId", () => {
+      const seeded = seededState({
+        byId: { [PROFILE_A_ID]: makeProfile() },
+        order: [PROFILE_A_ID],
+        mutationInFlight: { [PROFILE_A_ID]: true },
+        includeDeleted: false,
+      });
+      const tombstoned = makeProfile({
+        deletedAt: "2024-02-01T00:00:00.000Z",
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILE_REMOVED",
+        profile: tombstoned,
+      });
+      expect(next.visitorProfiles.order).toEqual([]);
+      expect(next.visitorProfiles.byId[PROFILE_A_ID]).toEqual(tombstoned);
+      expect(
+        next.visitorProfiles.mutationInFlight[PROFILE_A_ID],
+      ).toBeUndefined();
+    });
+
+    it("REMOVED keeps the row in order when includeDeleted=true so the admin sees the tombstone", () => {
+      const seeded = seededState({
+        byId: { [PROFILE_A_ID]: makeProfile() },
+        order: [PROFILE_A_ID],
+        includeDeleted: true,
+      });
+      const tombstoned = makeProfile({
+        deletedAt: "2024-02-01T00:00:00.000Z",
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILE_REMOVED",
+        profile: tombstoned,
+      });
+      expect(next.visitorProfiles.order).toEqual([PROFILE_A_ID]);
+      expect(next.visitorProfiles.byId[PROFILE_A_ID].deletedAt).toBe(
+        "2024-02-01T00:00:00.000Z",
+      );
+    });
+
+    it("RESTORED clears deletedAt and re-adds the row to order if missing", () => {
+      // Soft-deleted row was dropped from `order` by an earlier REMOVED.
+      const tombstoned = makeProfile({
+        deletedAt: "2024-02-01T00:00:00.000Z",
+      });
+      const seeded = seededState({
+        byId: { [PROFILE_A_ID]: tombstoned },
+        order: [],
+      });
+      const restored = makeProfile({ deletedAt: null });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILE_RESTORED",
+        profile: restored,
+      });
+      expect(next.visitorProfiles.byId[PROFILE_A_ID].deletedAt).toBeNull();
+      expect(next.visitorProfiles.order).toEqual([PROFILE_A_ID]);
+    });
+
+    it("MUTATION_FAILED records the per-row error and clears in-flight (no silent success)", () => {
+      const seeded = seededState({
+        byId: { [PROFILE_A_ID]: makeProfile() },
+        order: [PROFILE_A_ID],
+        mutationInFlight: { [PROFILE_A_ID]: true },
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILE_MUTATION_FAILED",
+        profileId: PROFILE_A_ID,
+        error: {
+          code: "AUTH_FORBIDDEN",
+          message: "Guard tokens cannot mutate profiles.",
+          traceId: "trace-1",
+        },
+      });
+      expect(
+        next.visitorProfiles.mutationInFlight[PROFILE_A_ID],
+      ).toBeUndefined();
+      expect(next.visitorProfiles.mutationErrors[PROFILE_A_ID]).toEqual({
+        code: "AUTH_FORBIDDEN",
+        message: "Guard tokens cannot mutate profiles.",
+        traceId: "trace-1",
+      });
+      // The row in byId is NOT mutated — the failed write must not
+      // appear to have succeeded.
+      expect(next.visitorProfiles.byId[PROFILE_A_ID].watchFlag).toBe(false);
+    });
+
+    it("TOGGLE_INCLUDE_DELETED flips the flag and clears stale list error", () => {
+      const seeded = seededState({
+        includeDeleted: false,
+        lastError: { code: "INTERNAL_ERROR", message: "stale" },
+      });
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED",
+      });
+      expect(next.visitorProfiles.includeDeleted).toBe(true);
+      expect(next.visitorProfiles.lastError).toBeUndefined();
+      const back = gatePassReducer(next, {
+        type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED",
+      });
+      expect(back.visitorProfiles.includeDeleted).toBe(false);
+    });
+
+    it("RESET_FLOW leaves the admin slice untouched (it belongs to a different lifecycle)", () => {
+      const seeded = seededState({
+        byId: { [PROFILE_A_ID]: makeProfile() },
+        order: [PROFILE_A_ID],
+        pagination: { page: 1, pageSize: 25, totalItems: 1, totalPages: 1 },
+        includeDeleted: true,
+      });
+      const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
+      expect(next.visitorProfiles.order).toEqual([PROFILE_A_ID]);
+      expect(next.visitorProfiles.byId[PROFILE_A_ID]).toBeDefined();
+      expect(next.visitorProfiles.includeDeleted).toBe(true);
+      expect(next.visitorProfiles.pagination).toEqual({
+        page: 1,
+        pageSize: 25,
+        totalItems: 1,
+        totalPages: 1,
+      });
     });
   });
 });

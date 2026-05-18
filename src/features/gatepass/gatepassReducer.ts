@@ -24,7 +24,9 @@ import type {
   PendingApproval,
   SyncResultView,
   Visitor,
+  VisitorProfilesState,
 } from "./types";
+import type { VisitorProfileView } from "@/lib/api/types";
 
 const emptyDraft: EntryDraft = {
   visitorName: "",
@@ -93,6 +95,14 @@ export const initialGatePassState: GatePassState = {
   searchLoading: false,
   audit: [`Session opened by ${DEFAULT_GUARD_ID}`],
   notifications: { byApprovalId: {}, loading: false },
+  visitorProfiles: {
+    byId: {},
+    order: [],
+    loading: false,
+    mutationInFlight: {},
+    mutationErrors: {},
+    includeDeleted: false,
+  },
 };
 
 /**
@@ -216,6 +226,101 @@ function resolveMethodForMode(
   // so re-navigating to walk-in doesn't reset the method back to plain.
   if (mode === "walkin" && current === "recognized") return "recognized";
   return "walk-in";
+}
+
+/**
+ * Visitor-profile helpers (Feature 4). All operate on the slice without
+ * touching the rest of the GatePassState — the admin slice is
+ * orthogonal to the per-walk-in lifecycle.
+ *
+ * Source: src/docs/specs/visitor-profiles.md §8.
+ */
+
+function clearMutationInFlight(
+  slice: VisitorProfilesState,
+  key: string,
+): VisitorProfilesState {
+  if (!(key in slice.mutationInFlight)) return slice;
+  const nextInFlight = { ...slice.mutationInFlight };
+  delete nextInFlight[key];
+  return { ...slice, mutationInFlight: nextInFlight };
+}
+
+function clearMutationError(
+  slice: VisitorProfilesState,
+  key: string,
+): VisitorProfilesState {
+  if (!(key in slice.mutationErrors)) return slice;
+  const nextErrors = { ...slice.mutationErrors };
+  delete nextErrors[key];
+  return { ...slice, mutationErrors: nextErrors };
+}
+
+function upsertProfile(
+  slice: VisitorProfilesState,
+  profile: VisitorProfileView,
+  mutationKey: string,
+): VisitorProfilesState {
+  const isCreate = !(profile.id in slice.byId);
+  // Prepend on create so the newest row shows up at the top of the
+  // table; replace-in-place on update so the user's scroll position
+  // isn't disturbed by a no-op patch.
+  const nextOrder = isCreate ? [profile.id, ...slice.order] : slice.order;
+  let nextSlice: VisitorProfilesState = {
+    ...slice,
+    byId: { ...slice.byId, [profile.id]: profile },
+    order: nextOrder,
+  };
+  nextSlice = clearMutationInFlight(nextSlice, mutationKey);
+  nextSlice = clearMutationError(nextSlice, mutationKey);
+  // For create, the mutation started under VISITOR_PROFILE_NEW_KEY but
+  // the server-assigned id is what we'll mutate next time. Make sure
+  // we don't leave a stale per-row error under the new id either.
+  if (mutationKey !== profile.id) {
+    nextSlice = clearMutationError(nextSlice, profile.id);
+    nextSlice = clearMutationInFlight(nextSlice, profile.id);
+  }
+  return nextSlice;
+}
+
+function softDeleteProfile(
+  slice: VisitorProfilesState,
+  profile: VisitorProfileView,
+): VisitorProfilesState {
+  // The server returns the profile with deletedAt set; replace by id.
+  // Drop from `order` unless the admin is currently showing deleted
+  // rows — then the row stays in view but visually marked deleted.
+  const nextOrder = slice.includeDeleted
+    ? slice.order
+    : slice.order.filter((id) => id !== profile.id);
+  let nextSlice: VisitorProfilesState = {
+    ...slice,
+    byId: { ...slice.byId, [profile.id]: profile },
+    order: nextOrder,
+  };
+  nextSlice = clearMutationInFlight(nextSlice, profile.id);
+  nextSlice = clearMutationError(nextSlice, profile.id);
+  return nextSlice;
+}
+
+function restoreProfileInSlice(
+  slice: VisitorProfilesState,
+  profile: VisitorProfileView,
+): VisitorProfilesState {
+  // Re-add to `order` if missing (e.g. previously dropped by a
+  // soft-delete under includeDeleted=false). Move to the top to
+  // surface the action; replace byId so deletedAt is now null.
+  const nextOrder = slice.order.includes(profile.id)
+    ? slice.order
+    : [profile.id, ...slice.order];
+  let nextSlice: VisitorProfilesState = {
+    ...slice,
+    byId: { ...slice.byId, [profile.id]: profile },
+    order: nextOrder,
+  };
+  nextSlice = clearMutationInFlight(nextSlice, profile.id);
+  nextSlice = clearMutationError(nextSlice, profile.id);
+  return nextSlice;
 }
 
 function bannerForError(error: GatePassError): GatePassState["banner"] {
@@ -895,6 +1000,130 @@ export function gatePassReducer(
         notifications: { ...state.notifications, byApprovalId: next },
       };
     }
+
+    // ─── Visitor profile CRUD lifecycle (Feature 4) ────────────────
+    // Source: src/docs/specs/visitor-profiles.md §8.
+
+    case "VISITOR_PROFILES_LIST_STARTED":
+      // The list call is in flight. We keep the existing `byId` so the
+      // table doesn't blank between pages — same pattern as the
+      // notifications poll (see NOTIFICATIONS_LOADING above).
+      return {
+        ...state,
+        visitorProfiles: {
+          ...state.visitorProfiles,
+          loading: true,
+          lastError: undefined,
+        },
+      };
+
+    case "VISITOR_PROFILES_LIST_LOADED": {
+      const nextById: Record<string, VisitorProfileView> = {};
+      const nextOrder: string[] = [];
+      for (const profile of action.profiles) {
+        nextById[profile.id] = profile;
+        nextOrder.push(profile.id);
+      }
+      return {
+        ...state,
+        visitorProfiles: {
+          ...state.visitorProfiles,
+          byId: nextById,
+          order: nextOrder,
+          pagination: action.pagination,
+          loading: false,
+          lastError: undefined,
+        },
+      };
+    }
+
+    case "VISITOR_PROFILES_LIST_FAILED":
+      // List failure leaves byId/order untouched — a transient blip
+      // must not blank the admin's working set. The banner surfaces
+      // the error so the failure cannot go silent.
+      return {
+        ...state,
+        visitorProfiles: {
+          ...state.visitorProfiles,
+          loading: false,
+          lastError: action.error,
+        },
+      };
+
+    case "VISITOR_PROFILE_MUTATION_STARTED": {
+      const key = action.profileId;
+      // Flip the in-flight flag and drop any prior per-row error so
+      // the UI's inline error clears the moment the user retries.
+      let next = {
+        ...state.visitorProfiles,
+        mutationInFlight: {
+          ...state.visitorProfiles.mutationInFlight,
+          [key]: true,
+        },
+      };
+      next = clearMutationError(next, key);
+      return { ...state, visitorProfiles: next };
+    }
+
+    case "VISITOR_PROFILE_UPSERTED": {
+      const mutationKey = action.mutationKey ?? action.profile.id;
+      return {
+        ...state,
+        visitorProfiles: upsertProfile(
+          state.visitorProfiles,
+          action.profile,
+          mutationKey,
+        ),
+      };
+    }
+
+    case "VISITOR_PROFILE_REMOVED":
+      return {
+        ...state,
+        visitorProfiles: softDeleteProfile(
+          state.visitorProfiles,
+          action.profile,
+        ),
+      };
+
+    case "VISITOR_PROFILE_RESTORED":
+      return {
+        ...state,
+        visitorProfiles: restoreProfileInSlice(
+          state.visitorProfiles,
+          action.profile,
+        ),
+      };
+
+    case "VISITOR_PROFILE_MUTATION_FAILED": {
+      // No silent success: per-row error is surfaced inline. The
+      // in-flight flag drops so the action button (Save / Delete /
+      // Restore) becomes clickable again.
+      let next = clearMutationInFlight(
+        state.visitorProfiles,
+        action.profileId,
+      );
+      next = {
+        ...next,
+        mutationErrors: {
+          ...next.mutationErrors,
+          [action.profileId]: action.error,
+        },
+      };
+      return { ...state, visitorProfiles: next };
+    }
+
+    case "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED":
+      // Pure toggle. Clearing lastError avoids carrying a stale list
+      // error across the toggle — the next list call will refresh it.
+      return {
+        ...state,
+        visitorProfiles: {
+          ...state.visitorProfiles,
+          includeDeleted: !state.visitorProfiles.includeDeleted,
+          lastError: undefined,
+        },
+      };
 
     default:
       return state;
