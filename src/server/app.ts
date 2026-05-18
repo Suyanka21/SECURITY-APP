@@ -25,6 +25,15 @@ import { qrRouter } from "./routes/qr";
 import { syncRouter } from "./routes/sync";
 import { visitorsRouter } from "./routes/visitors";
 import { auditRouter } from "./routes/audit";
+import {
+  handleCreateApproval,
+  handleGetApprovalStatus,
+  handleDecideApproval,
+} from "./routes/approvals";
+import {
+  handleListNotifications,
+  handleRetryNotification,
+} from "./routes/notifications";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth } from "./middleware/auth";
 
@@ -127,6 +136,26 @@ export function createApp(db: unknown) {
   app.use("/api/entries", requireAuth, strictLimiter, entriesRouter);
   app.use("/api/visitors", requireAuth, visitorsRouter);
   app.use("/api/audit", requireAuth, auditRouter);
+
+  // ─── Resident Approval Routes ──────────────────────────────────────
+  // Source: src/docs/specs/resident-approval-flow.md §7.
+  //
+  // Three routes, three middleware stacks. Registered as discrete handlers
+  // (not via a sub-router) so each route gets exactly the middleware it
+  // needs — the /decide endpoint must NOT see requireAuth because the
+  // resident has no JWT; the 256-bit token in the body IS the auth.
+  app.post("/api/approvals", requireAuth, strictLimiter, handleCreateApproval);
+  app.get("/api/approvals/:id/status", requireAuth, handleGetApprovalStatus);
+  app.post("/api/approvals/:id/decide", strictLimiter, handleDecideApproval);
+
+  // Feature 2 — Notifications (spec §7)
+  app.get("/api/notifications", requireAuth, handleListNotifications);
+  app.post(
+    "/api/notifications/:id/retry",
+    requireAuth,
+    strictLimiter,
+    handleRetryNotification
+  );
 
   // ─── Error Handler ─────────────────────────────────────────────────
   // Must be LAST — catches all unhandled errors

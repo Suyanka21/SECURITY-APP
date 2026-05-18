@@ -2,8 +2,11 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock3,
+  Copy,
+  ExternalLink,
   LayoutDashboard,
   Loader2,
+  MailCheck,
   QrCode,
   Radar,
   RefreshCw,
@@ -13,11 +16,14 @@ import {
   UserPlus,
   Wifi,
   WifiOff,
+  X as XIcon,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type {
   EntryDraft,
   GatePassAction,
   GatePassState,
+  NotificationDeliveryView,
   Visitor,
 } from "../types";
 
@@ -34,6 +40,18 @@ export type GatePassActions = {
   syncPending: () => Promise<void> | void;
   searchVisitors: (query?: string) => Promise<void> | void;
   setNetwork: (network: "online" | "offline") => void;
+  /**
+   * Initiate a resident-approval flow for the current walk-in draft.
+   * Source: src/docs/specs/resident-approval-flow.md §7.1
+   * Feature 2: optional hostPhoneE164 enrolls the approval into the
+   * notifications delivery pipeline (spec notifications.md §7.1).
+   */
+  requestApproval: (hostPhoneE164?: string) => Promise<void> | void;
+  /**
+   * Manually retry a failed notification delivery.
+   * Source: src/docs/specs/notifications.md §7.3
+   */
+  retryNotification: (notificationId: string) => Promise<void> | void;
 };
 
 type Props = {
@@ -227,7 +245,14 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
 }
 
 export function WalkInPanel(props: Props) {
-  return <EntryForm title="Walk-in entry" {...props} requireReason={false} />;
+  return (
+    <EntryForm
+      title="Walk-in entry"
+      {...props}
+      requireReason={false}
+      showRequestApproval
+    />
+  );
 }
 
 export function OverridePanel(props: Props) {
@@ -240,7 +265,12 @@ function EntryForm({
   dispatch,
   actions,
   requireReason,
-}: Props & { title: string; requireReason: boolean }) {
+  showRequestApproval = false,
+}: Props & {
+  title: string;
+  requireReason: boolean;
+  showRequestApproval?: boolean;
+}) {
   const fields: Array<[keyof EntryDraft, string, string]> = [
     ["visitorName", "Visitor name", "e.g. Ama Mensah"],
     ["host", "Resident / host", "e.g. J. Bello"],
@@ -248,6 +278,13 @@ function EntryForm({
     ["plate", "Plate / ID", "optional"],
   ];
   const errorField = state.lastError?.field;
+  // Feature 2 — slice 7: host phone is collected ONLY on the Walk-in
+  // panel, since approval requests are scoped to walk-ins (spec
+  // resident-approval-flow.md §3, notifications.md §7.1). It is local
+  // to this component because it's a transient pre-request input —
+  // the controller validates + persists it on its own state machine.
+  const [hostPhoneE164, setHostPhoneE164] = useState("");
+  const phoneFieldHasError = state.lastError?.field === "hostPhoneE164";
   return (
     <section className="border border-border bg-card p-5 shadow-panel">
       <h2 className="font-display text-3xl font-bold">{title}</h2>
@@ -279,6 +316,31 @@ function EntryForm({
             }
           />
         </label>
+        {showRequestApproval && (
+          <label
+            htmlFor="host-phone-e164"
+            className="grid gap-2 text-sm font-semibold text-foreground md:col-span-2"
+          >
+            Host phone (E.164, optional — enables WhatsApp/SMS delivery)
+            <input
+              id="host-phone-e164"
+              data-testid="host-phone-input"
+              type="tel"
+              inputMode="tel"
+              autoComplete="off"
+              className={`focus-ring border bg-background px-3 py-3 text-base font-medium ${phoneFieldHasError ? "border-destructive" : "border-input"}`}
+              value={hostPhoneE164}
+              placeholder="+15551230001"
+              aria-invalid={phoneFieldHasError || undefined}
+              aria-describedby={phoneFieldHasError ? "host-phone-error" : undefined}
+              onChange={(event) => setHostPhoneE164(event.target.value)}
+            />
+            <span className="text-xs font-normal text-muted-foreground">
+              Starts with +country code, no spaces or dashes. Leave blank
+              to deliver the link via the on-screen copy only.
+            </span>
+          </label>
+        )}
       </div>
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
         <button
@@ -288,6 +350,27 @@ function EntryForm({
         >
           {state.inFlight ? "Logging…" : "Log entry"}
         </button>
+        {showRequestApproval && (
+          <button
+            className="focus-ring flex items-center justify-center gap-2 border border-primary bg-card px-5 py-4 font-display text-base font-bold text-primary shadow-panel transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+            onClick={() =>
+              void actions.requestApproval(
+                hostPhoneE164.trim() ? hostPhoneE164.trim() : undefined,
+              )
+            }
+            disabled={state.inFlight || state.network === "offline"}
+            title={
+              state.network === "offline"
+                ? "Resident approval requires a live connection \u2014 use override (with reason)"
+                : hostPhoneE164.trim()
+                  ? "Send a magic-link approval AND deliver it via WhatsApp/SMS"
+                  : "Send a magic-link approval to the resident"
+            }
+          >
+            <MailCheck className="h-5 w-5" aria-hidden="true" />
+            Request resident approval
+          </button>
+        )}
         <button
           className="focus-ring border border-border px-5 py-4 font-semibold"
           onClick={() => dispatch({ type: "RESET_FLOW" })}
@@ -296,7 +379,15 @@ function EntryForm({
         </button>
       </div>
       {state.lastError && (
-        <p className="mt-3 text-sm text-destructive" role="alert">
+        <p
+          id={
+            state.lastError.field === "hostPhoneE164"
+              ? "host-phone-error"
+              : undefined
+          }
+          className="mt-3 text-sm text-destructive"
+          role="alert"
+        >
           <span className="font-bold">{state.lastError.code}:</span>{" "}
           {state.lastError.message}
         </p>
@@ -369,6 +460,369 @@ function VisitorRow({
         {visitor.recognition}
       </span>
     </button>
+  );
+}
+
+// ─── Awaiting Approval Panel (Feature 1) ──────────────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §10 (UI requirements)
+
+/**
+ * Format a millisecond delta into "M:SS".
+ */
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "0:00";
+  const totalSeconds = Math.ceil(ms / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function statusBadgeClass(status: NotificationDeliveryView["status"]) {
+  switch (status) {
+    case "delivered":
+      return "border-success bg-success/10 text-success-foreground";
+    case "failed":
+      return "border-destructive bg-destructive/10 text-destructive";
+    case "sending":
+      return "border-info bg-info/10 text-info-foreground";
+    case "queued":
+    default:
+      return "border-warning bg-warning/15 text-warning-foreground";
+  }
+}
+
+function maskPhone(phone: string) {
+  // Show country + last 4 only. spec notifications.md §5 bans full PII in
+  // the audit/log surface; the same discipline applies on screen since
+  // a guard shoulder-surfing scenario is realistic.
+  if (phone.length < 6) return phone;
+  const tail = phone.slice(-4);
+  return `${phone.slice(0, 3)}••••${tail}`;
+}
+
+/**
+ * Renders the delivery rows for a single approval. Each row shows the
+ * channel, masked target, status badge, attempt count, and (when
+ * applicable) a Resend button + last-error line. Source: spec
+ * notifications.md §5, §7.2, §7.3.
+ */
+function DeliveryStatusBlock({
+  rows,
+  loading,
+  lastError,
+  onRetry,
+  nowMs,
+}: {
+  rows: NotificationDeliveryView[] | undefined;
+  loading: boolean;
+  lastError: GatePassState["notifications"]["lastError"];
+  onRetry: (id: string) => Promise<void> | void;
+  /**
+   * Current epoch ms. Passed in so the parent (which already runs a
+   * 1Hz tick for the approval countdown) drives the cooldown
+   * countdown too, without spawning a second interval.
+   */
+  nowMs: number;
+}) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div
+        className="border border-border bg-card p-4"
+        aria-live="polite"
+        data-testid="delivery-status-empty"
+      >
+        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+          Delivery
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {loading
+            ? "Checking delivery status…"
+            : "No notifications enrolled. Share the link manually."}
+        </p>
+        {lastError && (
+          <p
+            className="mt-2 text-xs text-destructive"
+            role="alert"
+            data-testid="delivery-list-error"
+          >
+            <span className="font-bold">{lastError.code}:</span>{" "}
+            {lastError.message}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="border border-border bg-card p-4"
+      data-testid="delivery-status-block"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+          Delivery
+        </p>
+        {loading && (
+          <Loader2
+            className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+            aria-label="Refreshing delivery status"
+          />
+        )}
+      </div>
+      <ul className="mt-3 grid gap-2">
+        {rows.map((row) => {
+          const cooldownRemainingMs =
+            row.retryCooldownUntilMs && row.retryCooldownUntilMs > nowMs
+              ? row.retryCooldownUntilMs - nowMs
+              : 0;
+          const inCooldown = cooldownRemainingMs > 0;
+          const canRetry =
+            row.status === "failed" && !row.retryInFlight && !inCooldown;
+          return (
+            <li
+              key={row.id}
+              data-testid={`delivery-row-${row.id}`}
+              className="flex flex-col gap-2 border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-semibold capitalize">
+                  {row.channel}
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    → {maskPhone(row.targetPhone)}
+                  </span>
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Attempt {row.attempts}
+                  {row.lastErrorCode ? ` · ${row.lastErrorCode}` : ""}
+                </span>
+                {row.retryError && (
+                  <span
+                    className="text-xs text-destructive"
+                    role="alert"
+                    data-testid={`delivery-retry-error-${row.id}`}
+                  >
+                    <span className="font-bold">{row.retryError.code}:</span>{" "}
+                    {row.retryError.message}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`focus-ring inline-flex border px-2 py-1 text-xs font-bold uppercase ${statusBadgeClass(row.status)}`}
+                  data-testid={`delivery-status-${row.id}`}
+                >
+                  {row.status}
+                </span>
+                {canRetry && (
+                  <button
+                    type="button"
+                    data-testid={`delivery-retry-${row.id}`}
+                    className="focus-ring inline-flex items-center gap-1 border border-primary bg-card px-3 py-2 text-xs font-semibold text-primary disabled:opacity-60"
+                    onClick={() => void onRetry(row.id)}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    Resend
+                  </button>
+                )}
+                {row.retryInFlight && (
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                    data-testid={`delivery-retry-inflight-${row.id}`}
+                  >
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Resending…
+                  </span>
+                )}
+                {inCooldown && !row.retryInFlight && (
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                    data-testid={`delivery-cooldown-${row.id}`}
+                    aria-live="polite"
+                  >
+                    Resend in {Math.ceil(cooldownRemainingMs / 1000)}s
+                  </span>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+export function AwaitingApprovalPanel({ state, dispatch, actions }: Props) {
+  const approval = state.pendingApproval;
+  // Tick the displayed countdown locally every second. The server is
+  // still the source of truth for expiry (lazy flip in /status), but
+  // the UI cannot wait for a poll to refresh — it must update every
+  // second so the guard sees the time draining in real time.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const [copied, setCopied] = useState(false);
+
+  if (!approval) {
+    // Defensive: the parent should only mount this when mode ===
+    // "awaiting-approval" AND pendingApproval is set, but if state
+    // gets desynced, render an explicit recovery prompt instead of a
+    // blank panel (no silent success — same rule everywhere).
+    return (
+      <section className="border border-warning bg-warning/10 p-5 shadow-panel">
+        <h2 className="font-display text-3xl font-bold">No active approval</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          The approval state is missing. Return to the walk-in form to start over.
+        </p>
+        <button
+          className="focus-ring mt-4 border border-border px-5 py-3 font-semibold"
+          onClick={() => dispatch({ type: "RESET_FLOW" })}
+        >
+          Reset
+        </button>
+      </section>
+    );
+  }
+
+  const expiresAt = new Date(approval.expiresAt).getTime();
+  const remainingMs = expiresAt - now;
+  const expired = remainingMs <= 0;
+
+  const onCopy = async () => {
+    try {
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard?.writeText
+      ) {
+        await navigator.clipboard.writeText(approval.magicLinkUrl);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch {
+      // Clipboard may be blocked (insecure context, missing permission).
+      // Failure is non-fatal — the link is visible on screen so the
+      // guard can read it. We just don't get to show the "Copied" hint.
+      setCopied(false);
+    }
+  };
+
+  return (
+    <section
+      className="border border-info bg-info/5 p-5 shadow-panel"
+      aria-live="polite"
+    >
+      <div className="flex flex-col gap-1">
+        <p className="text-xs font-bold uppercase tracking-widest text-info-foreground">
+          Awaiting resident approval
+        </p>
+        <h2 className="font-display text-3xl font-bold text-foreground">
+          {approval.draft.visitorName}
+          <span className="ml-3 text-base font-semibold text-muted-foreground">
+            → {approval.draft.host} (Unit {approval.draft.unit})
+          </span>
+        </h2>
+      </div>
+
+      <div className="mt-5 grid gap-5 md:grid-cols-[1fr_1fr]">
+        <div className="border border-border bg-card p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+            <Clock3 className="h-4 w-4" aria-hidden="true" />
+            Time remaining
+          </div>
+          <p
+            data-testid="approval-countdown"
+            className={`mt-2 font-display text-5xl font-black tabular-nums ${
+              expired
+                ? "text-destructive"
+                : remainingMs < 60_000
+                  ? "text-warning"
+                  : "text-foreground"
+            }`}
+          >
+            {formatCountdown(remainingMs)}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Expires at{" "}
+            {new Date(approval.expiresAt).toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            })}
+          </p>
+        </div>
+
+        <div className="border border-border bg-card p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+            <MailCheck className="h-4 w-4" aria-hidden="true" />
+            Magic link (single-use)
+          </div>
+          <p
+            data-testid="approval-magic-link"
+            className="mt-2 break-all font-mono text-xs text-foreground"
+          >
+            {approval.magicLinkUrl}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="focus-ring inline-flex items-center gap-1 border border-primary bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
+              onClick={() => void onCopy()}
+            >
+              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              {copied ? "Copied" : "Copy link"}
+            </button>
+            <a
+              className="focus-ring inline-flex items-center gap-1 border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground"
+              href={approval.magicLinkUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              Open
+            </a>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Share with the resident. Anyone who receives this link can
+            approve or deny once — don't post it publicly.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-center gap-3">
+        <Loader2
+          className="h-5 w-5 animate-spin text-info-foreground"
+          aria-hidden="true"
+        />
+        <p className="text-sm font-semibold text-muted-foreground">
+          {approval.status === "pending" && !expired
+            ? "Polling for the resident's decision…"
+            : approval.status === "pending" && expired
+              ? "Time expired — next poll will confirm."
+              : `Status: ${approval.status}`}
+        </p>
+      </div>
+
+      <div className="mt-5">
+        <DeliveryStatusBlock
+          rows={state.notifications.byApprovalId[approval.id]}
+          loading={state.notifications.loading}
+          lastError={state.notifications.lastError}
+          onRetry={actions.retryNotification}
+          nowMs={now}
+        />
+      </div>
+
+      <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+        <button
+          className="focus-ring border border-border px-5 py-3 font-semibold"
+          onClick={() => dispatch({ type: "RESET_FLOW" })}
+        >
+          <XIcon className="mr-1 inline h-4 w-4" aria-hidden="true" />
+          Cancel approval
+        </button>
+      </div>
+    </section>
   );
 }
 

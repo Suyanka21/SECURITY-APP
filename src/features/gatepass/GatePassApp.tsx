@@ -1,5 +1,6 @@
 import {
   AdminShell,
+  AwaitingApprovalPanel,
   ConfirmationPanel,
   ErrorPanel,
   GuardHome,
@@ -26,6 +27,8 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     syncPending: controller.syncPending,
     searchVisitors: controller.searchVisitors,
     setNetwork: controller.setNetwork,
+    requestApproval: controller.requestApproval,
+    retryNotification: controller.retryNotification,
   };
 
   return (
@@ -77,6 +80,13 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
         )}
         {state.mode === "search" && (
           <SearchPanel state={state} dispatch={dispatch} actions={actions} />
+        )}
+        {state.mode === "awaiting-approval" && (
+          <AwaitingApprovalPanel
+            state={state}
+            dispatch={dispatch}
+            actions={actions}
+          />
         )}
         {state.mode === "confirmed" && (
           <ConfirmationPanel state={state} dispatch={dispatch} actions={actions} />

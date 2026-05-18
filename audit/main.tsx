@@ -11,8 +11,16 @@ import { useState } from "react";
 import "@/index.css";
 import { GatePassApp } from "@/features/gatepass/GatePassApp";
 import type { GatePassApi } from "@/lib/api/gatepass";
+import type { guardApprovalApi } from "@/lib/api/approvals";
+import type { guardNotificationsApi } from "@/lib/api/notifications";
 import type {
   ApiResult,
+  ApprovalRequestView,
+  ApprovalStatusResponse,
+  CreateApprovalResponse,
+  NotificationRetryResponse,
+  NotificationView,
+  NotificationsListResponse,
   RecognizedVisitorsResponse,
 } from "@/lib/api/types";
 
@@ -140,10 +148,282 @@ function makeScenarioApi(scenario: string): GatePassApi {
   };
 }
 
+// ─── Resident approval scenarios (Feature 1) ──────────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §5 (state machine)
+
+const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
+const TOKEN = "a".repeat(64);
+const MAGIC_URL = `${location.origin}/approve/${APPROVAL_ID}?token=${TOKEN}`;
+
+function baseApproval(
+  overrides: Partial<ApprovalRequestView> = {}
+): ApprovalRequestView {
+  return {
+    id: APPROVAL_ID,
+    offlineId: "00000000-0000-4000-8000-000000000001",
+    visitorName: "Maya Chen",
+    host: "A. Okafor",
+    unit: "18B",
+    plate: null,
+    reason: "",
+    method: "walk-in" as const,
+    requestedByGuardId: "guard-west-04",
+    status: "pending" as const,
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    decidedAt: null,
+    deniedReason: null,
+    entryId: null,
+    traceId: "trace-status",
+    ...overrides,
+  };
+}
+
+function makeApprovalApi(scenario: string): typeof guardApprovalApi {
+  const createApproval = async (): Promise<ApiResult<CreateApprovalResponse>> => {
+    if (scenario === "approval-create-409") {
+      return fail(409, "APPROVAL_DUPLICATE", "An approval is already pending for this entry");
+    }
+    return ok(
+      {
+        approvalId: APPROVAL_ID,
+        magicLinkUrl: MAGIC_URL,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+        traceId: "trace-create",
+      },
+      201
+    );
+  };
+
+  // Status responses are scripted per-scenario. We sequence them so the
+  // first poll returns "pending" and the second poll returns the
+  // terminal state — proves the polling loop observes the transition.
+  let callCount = 0;
+  const getApprovalStatus = async (): Promise<ApiResult<ApprovalStatusResponse>> => {
+    callCount += 1;
+    if (scenario === "approval-approved") {
+      if (callCount === 1) {
+        return ok({ approval: baseApproval(), traceId: "t1" });
+      }
+      return ok({
+        approval: baseApproval({
+          status: "approved",
+          decidedAt: new Date().toISOString(),
+          entryId: "server-from-approval",
+        }),
+        traceId: "t2",
+      });
+    }
+    if (scenario === "approval-denied") {
+      if (callCount === 1) {
+        return ok({ approval: baseApproval(), traceId: "t1" });
+      }
+      return ok({
+        approval: baseApproval({
+          status: "denied",
+          decidedAt: new Date().toISOString(),
+          deniedReason: "Not expected today",
+        }),
+        traceId: "t2",
+      });
+    }
+    if (scenario === "approval-expired") {
+      // Server lazy-flips on read.
+      return ok({ approval: baseApproval({ status: "expired" }), traceId: "t" });
+    }
+    if (scenario === "approval-poll-blip") {
+      // First poll: transient transport error. Subsequent polls: still
+      // pending. The controller must keep the poll alive and never
+      // silently resolve. Demonstrates the no-silent-success contract
+      // even under intermittent connectivity.
+      if (callCount === 1) {
+        return {
+          ok: false as const,
+          status: 0,
+          error: {
+            code: "NETWORK_ERROR",
+            message: "transient",
+            traceId: "trace-blip",
+          },
+        };
+      }
+      return ok({ approval: baseApproval(), traceId: "t-pending" });
+    }
+    return ok({ approval: baseApproval(), traceId: "t" });
+  };
+
+  return { createApproval, getApprovalStatus } as unknown as typeof guardApprovalApi;
+}
+
+// ─── Notifications scenarios (Feature 2) ─────────────────────────────
+// Source: src/docs/specs/notifications.md §5 (state machine) + §7
+// (boundary) + §10 (failure scenarios)
+
+function baseNotification(
+  overrides: Partial<NotificationView> = {},
+): NotificationView {
+  return {
+    id: "nn-1",
+    approvalId: APPROVAL_ID,
+    channel: "whatsapp",
+    status: "queued",
+    attempts: 0,
+    targetPhone: "+15551230001",
+    templateKey: "approval.request.v1",
+    lastErrorCode: null,
+    lastProviderResponseCode: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    deliveredAt: null,
+    failedAt: null,
+    ...overrides,
+  };
+}
+
+function makeNotificationsApi(
+  scenario: string,
+): typeof guardNotificationsApi {
+  let listCount = 0;
+  let retryCount = 0;
+  const getNotifications = async (): Promise<
+    ApiResult<NotificationsListResponse>
+  > => {
+    listCount += 1;
+    // N1: queued → sent. Two polls — proves the row's status advances
+    // on screen without a page reload (no silent stalling).
+    if (scenario === "notif-queued-to-sent") {
+      if (listCount === 1) {
+        return ok({
+          notifications: [baseNotification({ status: "queued", attempts: 0 })],
+          traceId: "tn1",
+        });
+      }
+      return ok({
+        notifications: [
+          baseNotification({
+            status: "sent",
+            attempts: 1,
+            deliveredAt: new Date().toISOString(),
+          }),
+        ],
+        traceId: "tn2",
+      });
+    }
+    // N2: provider 5xx → row goes failed and the Resend button is the
+    // only path forward. Spec §10.A — guard sees the failure, the UI
+    // doesn't silently retry forever.
+    if (scenario === "notif-provider-5xx") {
+      return ok({
+        notifications: [
+          baseNotification({
+            status: "failed",
+            attempts: 3,
+            lastErrorCode: "PROVIDER_5XX",
+            lastProviderResponseCode: 503,
+            failedAt: new Date().toISOString(),
+          }),
+        ],
+        traceId: "tn",
+      });
+    }
+    // N3: list 500 — the notifications stream surfaces its own error
+    // banner WITHOUT collapsing the approval awaiting panel (spec §5
+    // two-stream isolation). The audit must show the approval panel
+    // still alive and the resident magic-link still copyable.
+    if (scenario === "notif-list-500") {
+      return fail(
+        500,
+        "INTERNAL_ERROR",
+        "Notifications service temporarily unavailable.",
+      );
+    }
+    // N4 + N5 — successful retry flow + RATE_LIMITED on second click.
+    // First poll returns a failed row; after the user clicks Resend
+    // the row stays queued (we simulate the dispatcher hasn't run yet)
+    // so the cooldown is the only thing gating a double-retry.
+    if (
+      scenario === "notif-retry-ok" ||
+      scenario === "notif-retry-rate-limited"
+    ) {
+      return ok({
+        notifications: [
+          baseNotification({
+            status: "failed",
+            attempts: 2,
+            lastErrorCode: "PROVIDER_5XX",
+            lastProviderResponseCode: 503,
+            failedAt: new Date().toISOString(),
+          }),
+        ],
+        traceId: "tn",
+      });
+    }
+    // Happy path / fallback for other scenarios — no notifications at
+    // all (matches the legacy "no host phone" approval flow).
+    return ok({ notifications: [], traceId: "tn-empty" });
+  };
+
+  const retryNotification = async (
+    id: string,
+  ): Promise<ApiResult<NotificationRetryResponse>> => {
+    retryCount += 1;
+    if (scenario === "notif-retry-rate-limited") {
+      // Spec §6 RATE_LIMITED — the first manual retry succeeds, any
+      // additional attempt inside the per-approval window is rejected
+      // with a 429 so the guard sees the cap, not a silent no-op.
+      if (retryCount === 1) {
+        return ok(
+          {
+            notification: baseNotification({
+              id,
+              status: "queued",
+              attempts: 3,
+            }),
+            traceId: "trace-retry",
+          },
+          202,
+        );
+      }
+      return fail(
+        429,
+        "RETRY_RATE_LIMITED",
+        "Per-approval manual retry already used. Wait for the next window.",
+      );
+    }
+    if (scenario === "notif-retry-ok") {
+      return ok(
+        {
+          notification: baseNotification({
+            id,
+            status: "queued",
+            attempts: 3,
+          }),
+          traceId: "trace-retry",
+        },
+        202,
+      );
+    }
+    // Other scenarios don't expose Resend; this branch is unreachable
+    // in practice but defaults to a safe failure.
+    return fail(500, "INTERNAL_ERROR", "Retry not configured for scenario.");
+  };
+
+  return { getNotifications, retryNotification } as unknown as typeof guardNotificationsApi;
+}
+
 const SCENARIOS = [
   { id: "submit-500", label: "S1 · POST /entries → 500" },
   { id: "submit-422-unit", label: "S2 · POST /entries → 422 (field=unit)" },
   { id: "sync-207-partial", label: "S3 · POST /sync → 207 partial" },
+  { id: "approval-approved", label: "S4 · Approval → approved+entry (Feature 1)" },
+  { id: "approval-denied", label: "S5 · Approval → denied with reason (Feature 1)" },
+  { id: "approval-expired", label: "S6 · Approval → expired (lazy, Feature 1)" },
+  { id: "approval-create-409", label: "S7 · Approval create → 409 duplicate (Feature 1)" },
+  { id: "approval-poll-blip", label: "S8 · Approval poll → transient network blip (Feature 1)" },
+  { id: "notif-queued-to-sent", label: "N1 · Notification queued → sent (Feature 2)" },
+  { id: "notif-provider-5xx", label: "N2 · Notification provider 5xx (Feature 2)" },
+  { id: "notif-list-500", label: "N3 · Notification list 500 — approval still alive (Feature 2)" },
+  { id: "notif-retry-ok", label: "N4 · Resend → 202 + cooldown (Feature 2)" },
+  { id: "notif-retry-rate-limited", label: "N5 · Resend → 429 RATE_LIMITED (Feature 2)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
@@ -152,6 +432,8 @@ function Harness() {
     new URLSearchParams(location.search).get("scenario") ?? "submit-500";
   const [scenario, setScenario] = useState(initial);
   const api = makeScenarioApi(scenario);
+  const approvalApi = makeApprovalApi(scenario);
+  const notificationsApi = makeNotificationsApi(scenario);
 
   return (
     <div>
@@ -188,7 +470,16 @@ function Harness() {
           ))}
         </select>
       </div>
-      <GatePassApp key={scenario} controller={{ api }} />
+      <GatePassApp
+        key={scenario}
+        controller={{
+          api,
+          approvalApi,
+          notificationsApi,
+          approvalPollIntervalMs: 1500,
+          notificationsPollIntervalMs: 1500,
+        }}
+      />
     </div>
   );
 }

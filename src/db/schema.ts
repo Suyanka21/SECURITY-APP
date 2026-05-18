@@ -20,6 +20,8 @@ import { relations, sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -400,6 +402,164 @@ export const syncEvents = pgTable(
   ]
 );
 
+// ─── Enum: Approval Request Status ──────────────────────────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §5 — state machine terminals
+// Source: src/docs/specs/resident-approval-flow.md §8 — DB migration shape
+//
+// Lifecycle (server-enforced):
+//   pending  → approved | denied | expired
+//   approved | denied | expired are terminal — no further transitions
+//
+// The server lazily flips pending → expired on every read of an approval
+// whose expires_at has passed, so clients can never observe a stale
+// pending row past the deadline.
+export const approvalStatusEnum = pgEnum("approval_status", [
+  "pending",
+  "approved",
+  "denied",
+  "expired",
+]);
+
+// ─── Table 6: Approval Requests ─────────────────────────────────────────────
+// Source: src/docs/specs/resident-approval-flow.md §7–§9
+// Source: GATEPASS DEFINITION.md §USER FLOW.2.B — "request approval"
+//
+// Captures resident approval decisions for walk-ins that aren't pre-approved.
+// The magic-link token (32 random bytes) is shown to the resident ONCE in the
+// URL; only its SHA-256 hash is stored. After a successful decision the hash
+// is wiped, making the token strictly single-use.
+//
+// HARD RULES (enforced by CHECK constraints below):
+// - approved rows MUST link to entry_id (no "approved but no entry")
+// - denied rows MUST record denied_reason (audit trail, not just a flag)
+// - decided rows (any terminal status) MUST record decided_at
+//
+// Source: Security-and-Hardening — single-use, hashed-at-rest tokens
+
+export const approvalRequests = pgTable(
+  "approval_requests",
+  {
+    /** Server-generated canonical approval ID */
+    // Source: spec §7.1 response — approvalId
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** Client offline ID — ties this approval to the deferred entry */
+    // Source: spec §7.1 request — offlineId
+    // UNIQUE: one approval per pending walk-in, no double-requests
+    offlineId: uuid("offline_id").notNull().unique(),
+
+    /** Visitor full name (from the walk-in draft) */
+    visitorName: text("visitor_name").notNull(),
+
+    /** Host/resident being visited */
+    host: text("host").notNull(),
+
+    /** Property unit */
+    unit: text("unit").notNull(),
+
+    /** Vehicle plate — optional */
+    plate: text("plate"),
+
+    /** Walk-in reason — optional */
+    reason: text("reason").notNull().default(""),
+
+    /** Entry method — always 'walk-in' in v1 (override/qr take other paths) */
+    method: entryMethodEnum("method").notNull(),
+
+    /** Guard who requested approval — set from JWT, never from request body */
+    // Source: spec §9 — "Approval bound to wrong guard" mitigation
+    requestedByGuardId: uuid("requested_by_guard_id")
+      .notNull()
+      .references(() => guards.id),
+
+    /** SHA-256 hash of the magic-link token — NEVER store the raw token */
+    // Source: spec §9 — "Token leaked in logs" mitigation
+    // Nullable so it can be wiped after a successful decision (single-use)
+    tokenHash: text("token_hash").unique(),
+
+    /** Request status — see approvalStatusEnum */
+    status: approvalStatusEnum("status").notNull().default("pending"),
+
+    /** When the resident (or server expiry) decided this request */
+    decidedAt: timestamp("decided_at", {
+      precision: 3,
+      withTimezone: true,
+    }),
+
+    /** Reason supplied by the resident when denying */
+    // Sanitized at API boundary: trimmed, control chars stripped, capped at 200
+    deniedReason: text("denied_reason"),
+
+    /** The entry created on approve — null until status='approved' */
+    // ON DELETE: NO ACTION (audit trail must remain intact even if entry deleted)
+    entryId: uuid("entry_id").references(() => entryRecords.id),
+
+    /** When this request becomes invalid; pending past this point auto-expires */
+    // Source: spec §4 A2 — default 300s, configurable via APPROVAL_TIMEOUT_SECONDS
+    expiresAt: timestamp("expires_at", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+
+    /** Server-generated creation timestamp */
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Server-generated trace ID for audit correlation */
+    traceId: text("trace_id").notNull(),
+
+    /** Optional resident phone in E.164 form. Drives Feature 2 delivery. */
+    // Source: src/docs/specs/notifications.md §4 + §7.1
+    // Nullable so legacy approvals (no phone known) continue to work
+    // and the guard hand-copies the link.
+    hostPhoneE164: text("host_phone_e164"),
+  },
+  (table) => [
+    // Visitor name must not be empty/whitespace (mirrors entry_records)
+    check(
+      "approval_visitor_name_not_empty",
+      sql`length(trim(${table.visitorName})) > 0`
+    ),
+    // Host must not be empty/whitespace
+    check(
+      "approval_host_not_empty",
+      sql`length(trim(${table.host})) > 0`
+    ),
+    // Unit must not be empty/whitespace
+    check(
+      "approval_unit_not_empty",
+      sql`length(trim(${table.unit})) > 0`
+    ),
+    // Approved rows MUST link to a real entry
+    // Source: spec §8 — CHECK constraint
+    check(
+      "approval_approved_requires_entry",
+      sql`${table.status} != 'approved' OR ${table.entryId} IS NOT NULL`
+    ),
+    // Denied rows MUST record a reason
+    check(
+      "approval_denied_requires_reason",
+      sql`${table.status} != 'denied' OR ${table.deniedReason} IS NOT NULL`
+    ),
+    // Any terminal status MUST record decided_at
+    check(
+      "approval_terminal_requires_decided_at",
+      sql`${table.status} = 'pending' OR ${table.decidedAt} IS NOT NULL`
+    ),
+    // Source: spec §8 — supports the expiry sweep + pending-by-guard queries
+    // SELECT … WHERE status = 'pending' AND expires_at < now()
+    index("approval_requests_status_expires_at_idx").on(
+      table.status,
+      table.expiresAt
+    ),
+    // Supports a guard's "my pending approvals" view
+    index("approval_requests_requested_by_guard_id_idx").on(
+      table.requestedByGuardId
+    ),
+  ]
+);
+
 // ─── Relations ──────────────────────────────────────────────────────────────
 // Drizzle relations are application-level abstractions for the relational query API.
 // They do NOT create database constraints — FKs above handle that.
@@ -474,6 +634,176 @@ export const syncEventsRelations = relations(syncEvents, ({ one }) => ({
   }),
 }));
 
+export const approvalRequestsRelations = relations(
+  approvalRequests,
+  ({ one, many }) => ({
+    /** The guard who requested approval */
+    requestedByGuard: one(guards, {
+      fields: [approvalRequests.requestedByGuardId],
+      references: [guards.id],
+    }),
+    /** The entry created on approve (1:1, null until status='approved') */
+    entry: one(entryRecords, {
+      fields: [approvalRequests.entryId],
+      references: [entryRecords.id],
+    }),
+    /** Outbound deliveries for this approval (Feature 2). */
+    notifications: many(notifications),
+  })
+);
+
+// ─── Enums: Notification Channel + Status ───────────────────────────────────
+// Source: src/docs/specs/notifications.md §4 (data model), §9 (state machine)
+//
+// notification_channel: 'whatsapp' is preferred; 'sms' is the fallback per
+// GATEPASS DEFINITION L58–60.
+//
+// notification_status lifecycle:
+//   queued → sending → delivered             (terminal success)
+//                  ↓
+//                 failed → permanently_failed (terminal failure after 3 retries)
+//
+// The server lazily flips long-stalled 'sending' rows to 'failed' on read
+// (same pattern as approval expiry — no background job).
+export const notificationChannelEnum = pgEnum("notification_channel", [
+  "whatsapp",
+  "sms",
+]);
+
+export const notificationStatusEnum = pgEnum("notification_status", [
+  "queued",
+  "sending",
+  "delivered",
+  "failed",
+  "permanently_failed",
+]);
+
+// ─── Table 8: Notifications ─────────────────────────────────────────────────
+// Source: src/docs/specs/notifications.md §4 (schema), §5 (architecture),
+//         §9 (state machine).
+//
+// One row per outbound delivery ATTEMPT (not per approval). A WhatsApp
+// failure followed by SMS fallback produces two rows. The
+// idempotency_key (sha256(approval_id || channel || attempt_no)) is
+// UNIQUE so the dispatcher can be safely enqueued twice without
+// producing duplicate provider calls.
+//
+// HARD RULES (CHECK constraints below):
+// - target_phone must not be empty/whitespace (full E.164 validated at
+//   the API boundary).
+// - attempts is non-negative and bounded at 10 (prevents runaway DB
+//   growth from a misbehaving dispatcher).
+// - provider response excerpt is capped at 200 chars (spec §3 PII rule).
+// - terminal statuses require the matching timestamp.
+//
+// Source: Security-and-Hardening — bounded retry, scrubbed response.
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    /** Server-generated unique notification ID */
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** The approval this delivery serves. CASCADE on approval delete. */
+    approvalId: uuid("approval_id")
+      .notNull()
+      .references(() => approvalRequests.id, { onDelete: "cascade" }),
+
+    /** Channel used (whatsapp | sms) */
+    channel: notificationChannelEnum("channel").notNull(),
+
+    /** Target phone in E.164 form. Validated at the API boundary. */
+    targetPhone: text("target_phone").notNull(),
+
+    /** Template key (e.g. 'approval.magic_link'). Audit reproducibility. */
+    templateKey: text("template_key").notNull(),
+
+    /**
+     * Rendered body actually sent to the provider. Stored for audit.
+     * May contain the magic-link URL; the embedded token is single-use
+     * and already lifecycle-bound by Feature 1, so persisting the
+     * rendered body does NOT extend its security exposure.
+     */
+    renderedBody: text("rendered_body").notNull(),
+
+    /** Lifecycle status — see notificationStatusEnum + state machine §9 */
+    status: notificationStatusEnum("status").notNull().default("queued"),
+
+    /** Send attempts so far (bounded 0..10 by CHECK constraint) */
+    attempts: integer("attempts").notNull().default(0),
+
+    /**
+     * sha256(approval_id || channel || attempt_no).
+     * UNIQUE — collapses duplicate dispatcher enqueues into one outbound.
+     */
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+
+    /** Last provider HTTP status code (when known) */
+    lastProviderResponseCode: integer("last_provider_response_code"),
+
+    /** Last provider response body — scrubbed, ≤ 200 chars (PII rule) */
+    lastProviderResponseExcerpt: text("last_provider_response_excerpt"),
+
+    /** Last error code from NotificationError union (e.g. PROVIDER_5XX) */
+    lastErrorCode: text("last_error_code"),
+
+    /** Server-generated creation timestamp */
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Updated on every status flip */
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Set when status becomes 'delivered' (terminal success) */
+    deliveredAt: timestamp("delivered_at", {
+      precision: 3,
+      withTimezone: true,
+    }),
+
+    /** Set when status becomes 'failed' or 'permanently_failed' */
+    failedAt: timestamp("failed_at", { precision: 3, withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "notification_target_phone_not_empty",
+      sql`length(trim(${table.targetPhone})) > 0`
+    ),
+    check(
+      "notification_attempts_bounded",
+      sql`${table.attempts} >= 0 AND ${table.attempts} <= 10`
+    ),
+    check(
+      "notification_response_excerpt_bounded",
+      sql`${table.lastProviderResponseExcerpt} IS NULL OR length(${table.lastProviderResponseExcerpt}) <= 200`
+    ),
+    check(
+      "notification_delivered_requires_ts",
+      sql`${table.status} != 'delivered' OR ${table.deliveredAt} IS NOT NULL`
+    ),
+    check(
+      "notification_failed_requires_ts",
+      sql`${table.status} NOT IN ('failed','permanently_failed') OR ${table.failedAt} IS NOT NULL`
+    ),
+    // Lookup by approval for the per-approval status panel
+    index("notifications_approval_idx").on(table.approvalId),
+    // Partial index covering the dispatcher poll + lazy-flip sweep
+    index("notifications_status_updated_idx")
+      .on(table.status, table.updatedAt)
+      .where(sql`${table.status} IN ('queued','sending','failed')`),
+  ]
+);
+
+export const notificationsRelations = relations(notifications, ({ one }) => ({
+  /** The approval this delivery serves */
+  approval: one(approvalRequests, {
+    fields: [notifications.approvalId],
+    references: [approvalRequests.id],
+  }),
+}));
+
 // ─── Enum: Audit Event Types ─────────────────────────────────────────────────
 // Source: contract §5 — Backend Event Traceability Matrix
 // Every frontend action MUST produce one of these traceable events
@@ -492,9 +822,22 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "flow_reset",
   "camera_initialized",
   "camera_failure",
+  // Source: src/docs/specs/resident-approval-flow.md — Feature 1 audit events.
+  // approval_* events are emitted by the approval-service on each state
+  // transition; together they reconstruct the full decision history.
+  "approval_requested",
+  "approval_approved",
+  "approval_denied",
+  "approval_expired",
+  // Source: src/docs/specs/notifications.md §11 — Feature 2 audit events.
+  // Each delivery attempt writes one of these; together they reconstruct
+  // the full notification timeline for any approval.
+  "notification_sent",
+  "notification_failed",
+  "notification_permanently_failed",
 ]);
 
-// ─── Table 6: Audit Events ──────────────────────────────────────────────────
+// ─── Table 7: Audit Events ──────────────────────────────────────────────────
 // Source: contract §5 — Backend Event Traceability Matrix
 // Source: GATEPASS DEFINITION — "Every action is written to shift log"
 //
