@@ -1598,3 +1598,293 @@ describe("useGatePassController.requestApproval — slice 8 sanitization", () =>
     );
   });
 });
+
+// ─── Feature 4 — Visitor profile CRUD controller tests ─────────────────
+//
+// Source: src/docs/specs/visitor-profiles.md §8.
+//
+// Every method must dispatch exactly one terminal reducer action:
+//   MUTATION_STARTED → UPSERTED | REMOVED | RESTORED | MUTATION_FAILED.
+// No silent success path is permitted. The 403 AUTH_FORBIDDEN test is
+// the critical default-deny verification — guard tokens cannot mutate.
+
+import type { visitorProfilesApi } from "@/lib/api/visitor-profiles";
+import type {
+  ListVisitorProfilesResponse,
+  VisitorProfileResponse,
+  VisitorProfileView,
+} from "@/lib/api/types";
+import { VISITOR_PROFILE_NEW_KEY } from "../types";
+
+interface MockVisitorApi {
+  createProfile: ReturnType<typeof vi.fn>;
+  listProfiles: ReturnType<typeof vi.fn>;
+  getProfile: ReturnType<typeof vi.fn>;
+  updateProfile: ReturnType<typeof vi.fn>;
+  softDeleteProfile: ReturnType<typeof vi.fn>;
+  restoreProfile: ReturnType<typeof vi.fn>;
+}
+
+function makeVisitorApi(): MockVisitorApi {
+  return {
+    createProfile: vi.fn(),
+    listProfiles: vi.fn(),
+    getProfile: vi.fn(),
+    updateProfile: vi.fn(),
+    softDeleteProfile: vi.fn(),
+    restoreProfile: vi.fn(),
+  };
+}
+
+function buildVisitorController(visitorApi: MockVisitorApi) {
+  return renderHook(() =>
+    useGatePassController({
+      visitorProfilesApi:
+        visitorApi as unknown as typeof visitorProfilesApi,
+      now: () => new Date("2024-02-01T00:00:00Z"),
+    }),
+  );
+}
+
+const PROFILE_A: VisitorProfileView = {
+  id: "00000000-0000-4000-8000-0000000000a1",
+  visitorName: "Maya Chen",
+  host: "A. Okafor",
+  unit: "18B",
+  plate: "LND-482",
+  phoneE164: "+254700000001",
+  notes: null,
+  watchFlag: false,
+  createdAt: "2024-01-01T00:00:00.000Z",
+  updatedAt: "2024-01-01T00:00:00.000Z",
+  deletedAt: null,
+};
+
+describe("useGatePassController — visitor profile CRUD (Feature 4)", () => {
+  let visitorApi: MockVisitorApi;
+
+  beforeEach(() => {
+    visitorApi = makeVisitorApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("loadVisitorProfiles dispatches LIST_LOADED with profiles + pagination on success", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      ok<ListVisitorProfilesResponse>({
+        profiles: [PROFILE_A],
+        pagination: { page: 1, pageSize: 25, totalItems: 1, totalPages: 1 },
+        traceId: "trace-ok",
+      }),
+    );
+    const hook = buildVisitorController(visitorApi);
+    await act(async () => {
+      await hook.result.current.loadVisitorProfiles();
+    });
+    expect(visitorApi.listProfiles).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.visitorProfiles.loading).toBe(false);
+    expect(hook.result.current.state.visitorProfiles.order).toEqual([
+      PROFILE_A.id,
+    ]);
+    expect(hook.result.current.state.visitorProfiles.lastError).toBeUndefined();
+  });
+
+  it("loadVisitorProfiles dispatches LIST_FAILED on 500 (no silent success)", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      fail(500, "INTERNAL_ERROR", "boom"),
+    );
+    const hook = buildVisitorController(visitorApi);
+    await act(async () => {
+      await hook.result.current.loadVisitorProfiles();
+    });
+    expect(hook.result.current.state.visitorProfiles.loading).toBe(false);
+    expect(hook.result.current.state.visitorProfiles.lastError?.code).toBe(
+      "INTERNAL_ERROR",
+    );
+    expect(hook.result.current.state.visitorProfiles.order).toEqual([]);
+  });
+
+  it("loadVisitorProfiles forwards the slice's includeDeleted flag to the API query", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      ok<ListVisitorProfilesResponse>({
+        profiles: [],
+        pagination: { page: 1, pageSize: 25, totalItems: 0, totalPages: 0 },
+        traceId: "t",
+      }),
+    );
+    const hook = buildVisitorController(visitorApi);
+    // Flip the toggle on; next list call must propagate it.
+    await act(async () => {
+      hook.result.current.toggleVisitorProfilesIncludeDeleted();
+    });
+    expect(
+      hook.result.current.state.visitorProfiles.includeDeleted,
+    ).toBe(true);
+    await act(async () => {
+      await hook.result.current.loadVisitorProfiles({ q: "maya" });
+    });
+    const args = visitorApi.listProfiles.mock.calls[0][0];
+    expect(args).toEqual({ q: "maya", includeDeleted: true });
+  });
+
+  it("createVisitorProfile dispatches MUTATION_STARTED(__new__) then UPSERTED on 201", async () => {
+    visitorApi.createProfile.mockResolvedValue(
+      ok<VisitorProfileResponse>({
+        profile: PROFILE_A,
+        traceId: "trace-created",
+      }),
+    );
+    const hook = buildVisitorController(visitorApi);
+    await act(async () => {
+      await hook.result.current.createVisitorProfile({
+        visitorName: PROFILE_A.visitorName,
+        host: PROFILE_A.host,
+        unit: PROFILE_A.unit,
+        phoneE164: PROFILE_A.phoneE164,
+        plate: PROFILE_A.plate,
+      });
+    });
+    expect(visitorApi.createProfile).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.visitorProfiles.order).toEqual([
+      PROFILE_A.id,
+    ]);
+    expect(
+      hook.result.current.state.visitorProfiles.byId[PROFILE_A.id],
+    ).toEqual(PROFILE_A);
+    // In-flight cleared under the sentinel key.
+    expect(
+      hook.result.current.state.visitorProfiles.mutationInFlight[
+        VISITOR_PROFILE_NEW_KEY
+      ],
+    ).toBeUndefined();
+  });
+
+  it("createVisitorProfile dispatches MUTATION_FAILED with the field hint on 409 PROFILE_DUPLICATE", async () => {
+    visitorApi.createProfile.mockResolvedValue(
+      fail(
+        409,
+        "PROFILE_DUPLICATE",
+        "A profile with this name + unit already exists.",
+        "visitorName",
+      ),
+    );
+    const hook = buildVisitorController(visitorApi);
+    await act(async () => {
+      await hook.result.current.createVisitorProfile({
+        visitorName: "Duplicate",
+        host: "A. Okafor",
+        unit: "18B",
+      });
+    });
+    expect(
+      hook.result.current.state.visitorProfiles.order,
+    ).toEqual([]);
+    const err =
+      hook.result.current.state.visitorProfiles.mutationErrors[
+        VISITOR_PROFILE_NEW_KEY
+      ];
+    expect(err?.code).toBe("PROFILE_DUPLICATE");
+    expect(err?.field).toBe("visitorName");
+    // In-flight cleared even on failure so the Save button re-enables.
+    expect(
+      hook.result.current.state.visitorProfiles.mutationInFlight[
+        VISITOR_PROFILE_NEW_KEY
+      ],
+    ).toBeUndefined();
+  });
+
+  it("softDeleteVisitorProfile surfaces 403 AUTH_FORBIDDEN as MUTATION_FAILED (default-deny)", async () => {
+    // Seed a row first via createProfile so the per-row error has a
+    // home in state.visitorProfiles.mutationErrors keyed by id.
+    visitorApi.createProfile.mockResolvedValue(
+      ok<VisitorProfileResponse>({
+        profile: PROFILE_A,
+        traceId: "t-seed",
+      }),
+    );
+    visitorApi.softDeleteProfile.mockResolvedValue(
+      fail(
+        403,
+        "AUTH_FORBIDDEN",
+        "Guard tokens cannot mutate visitor profiles.",
+      ),
+    );
+    const hook = buildVisitorController(visitorApi);
+    await act(async () => {
+      await hook.result.current.createVisitorProfile({
+        visitorName: PROFILE_A.visitorName,
+        host: PROFILE_A.host,
+        unit: PROFILE_A.unit,
+      });
+    });
+    await act(async () => {
+      await hook.result.current.softDeleteVisitorProfile(PROFILE_A.id);
+    });
+    // Row must NOT be removed from order — the failed delete is not a
+    // silent success.
+    expect(hook.result.current.state.visitorProfiles.order).toEqual([
+      PROFILE_A.id,
+    ]);
+    const err =
+      hook.result.current.state.visitorProfiles.mutationErrors[PROFILE_A.id];
+    expect(err?.code).toBe("AUTH_FORBIDDEN");
+  });
+
+  it("restoreVisitorProfile dispatches RESTORED with the server profile on success", async () => {
+    const tombstoned: VisitorProfileView = {
+      ...PROFILE_A,
+      deletedAt: "2024-01-15T00:00:00.000Z",
+    };
+    const restored: VisitorProfileView = { ...PROFILE_A, deletedAt: null };
+    visitorApi.listProfiles.mockResolvedValue(
+      ok<ListVisitorProfilesResponse>({
+        profiles: [tombstoned],
+        pagination: { page: 1, pageSize: 25, totalItems: 1, totalPages: 1 },
+        traceId: "t",
+      }),
+    );
+    visitorApi.restoreProfile.mockResolvedValue(
+      ok<VisitorProfileResponse>({ profile: restored, traceId: "t" }),
+    );
+    const hook = buildVisitorController(visitorApi);
+    // Show deleted rows so the tombstoned profile is in `order` when
+    // restore lands.
+    await act(async () => {
+      hook.result.current.toggleVisitorProfilesIncludeDeleted();
+      await hook.result.current.loadVisitorProfiles();
+    });
+    await act(async () => {
+      await hook.result.current.restoreVisitorProfile(PROFILE_A.id);
+    });
+    expect(
+      hook.result.current.state.visitorProfiles.byId[PROFILE_A.id].deletedAt,
+    ).toBeNull();
+    expect(hook.result.current.state.visitorProfiles.order).toContain(
+      PROFILE_A.id,
+    );
+  });
+
+  it("toggleVisitorProfilesIncludeDeleted flips the flag and clears stale lastError", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      fail(500, "INTERNAL_ERROR", "boom"),
+    );
+    const hook = buildVisitorController(visitorApi);
+    await act(async () => {
+      await hook.result.current.loadVisitorProfiles();
+    });
+    expect(hook.result.current.state.visitorProfiles.lastError?.code).toBe(
+      "INTERNAL_ERROR",
+    );
+    await act(async () => {
+      hook.result.current.toggleVisitorProfilesIncludeDeleted();
+    });
+    expect(
+      hook.result.current.state.visitorProfiles.includeDeleted,
+    ).toBe(true);
+    expect(
+      hook.result.current.state.visitorProfiles.lastError,
+    ).toBeUndefined();
+  });
+});
