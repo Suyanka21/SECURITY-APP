@@ -739,6 +739,216 @@ describe("useGatePassController.requestApproval", () => {
   });
 });
 
+// ─── Feature 3 — Auto-approval short-circuit ───────────────────────────────
+// Source: src/docs/specs/auto-approval.md §5 + §6 — when the backend
+// responds with autoApproved=true, the controller must dispatch
+// APPROVAL_AUTO_APPROVED (NOT APPROVAL_REQUEST_SUCCEEDED) so the UI never
+// observes a transient awaiting-approval state. Malformed auto-approval
+// responses MUST fall back to APPROVAL_REQUEST_FAILED — never silently
+// progress.
+describe("useGatePassController.requestApproval — auto-approval", () => {
+  let api: MockApi;
+  let approvalApi: MockApprovalApi;
+
+  beforeEach(() => {
+    api = makeApi();
+    approvalApi = makeApprovalApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function autoApprovedResponse(
+    overrides: Partial<CreateApprovalResponse> = {}
+  ): CreateApprovalResponse {
+    return {
+      approvalId: "22222222-2222-4222-8222-222222222222",
+      magicLinkUrl:
+        "http://localhost:5173/approve/22222222-2222-4222-8222-222222222222?token=" +
+        "b".repeat(64),
+      expiresAt: new Date("2024-01-01T00:05:00Z").toISOString(),
+      traceId: "trace-auto",
+      autoApproved: true,
+      entry: {
+        id: "entry-auto-1",
+        visitorName: "Ada Lovelace",
+        host: "Bola",
+        unit: "4A",
+        plate: null,
+        reason: "",
+        method: "auto",
+        guardId: "guard-west-04",
+        createdAt: new Date("2024-01-01T00:00:00Z").toISOString(),
+        status: "logged",
+        syncState: "synced",
+      },
+      matchedRule: {
+        id: "rule-1",
+        visitorName: "Ada Lovelace",
+        host: "Bola",
+        unit: "4A",
+      },
+      ...overrides,
+    };
+  }
+
+  it("dispatches APPROVAL_AUTO_APPROVED on autoApproved=true, lands directly in 'confirmed'", async () => {
+    approvalApi.createApproval.mockResolvedValue(
+      ok(autoApprovedResponse(), 201)
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    const s = hook.result.current.state;
+    expect(s.mode).toBe("confirmed");
+    expect(s.pendingApproval).toBeUndefined();
+    expect(s.lastEntry?.id).toBe("entry-auto-1");
+    expect(s.lastEntry?.method).toBe("auto");
+    expect(s.entries[0].id).toBe("entry-auto-1");
+    expect(s.banner.tone).toBe("success");
+    expect(s.banner.message).toContain("Auto-approved");
+    expect(s.audit[0]).toContain("auto_approval_matched");
+  });
+
+  it("does NOT start the polling stream when auto-approved (no pending row exists)", async () => {
+    approvalApi.createApproval.mockResolvedValue(
+      ok(autoApprovedResponse(), 201)
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    // No status poll should be triggered — mode is 'confirmed', not 'awaiting-approval'.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(approvalApi.getApprovalStatus).not.toHaveBeenCalled();
+  });
+
+  it("falls back to APPROVAL_REQUEST_FAILED when autoApproved=true but entry is missing", async () => {
+    // Source: spec §5 trustless contract — a malformed autoApproved=true
+    // payload must NEVER silently land in 'confirmed' on this device.
+    approvalApi.createApproval.mockResolvedValue(
+      ok(
+        autoApprovedResponse({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          entry: null as any,
+        }),
+        201
+      )
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    const s = hook.result.current.state;
+    expect(s.mode).toBe("error");
+    expect(s.lastError?.code).toBe("AUTO_APPROVAL_MALFORMED");
+    expect(s.entries).toHaveLength(0);
+  });
+
+  it("falls back to APPROVAL_REQUEST_FAILED when autoApproved=true but matchedRule is missing", async () => {
+    approvalApi.createApproval.mockResolvedValue(
+      ok(
+        autoApprovedResponse({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          matchedRule: null as any,
+        }),
+        201
+      )
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    const s = hook.result.current.state;
+    expect(s.mode).toBe("error");
+    expect(s.lastError?.code).toBe("AUTO_APPROVAL_MALFORMED");
+  });
+
+  it("falls back to APPROVAL_REQUEST_FAILED when autoApproved=true but entry.method !== 'auto'", async () => {
+    // A server returning method='walk-in' with autoApproved=true is a
+    // serious bug — the controller refuses to log it on the device.
+    approvalApi.createApproval.mockResolvedValue(
+      ok(
+        autoApprovedResponse({
+          entry: {
+            ...autoApprovedResponse().entry!,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            method: "walk-in" as any,
+          },
+        }),
+        201
+      )
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    const s = hook.result.current.state;
+    expect(s.mode).toBe("error");
+    expect(s.lastError?.code).toBe("AUTO_APPROVAL_MALFORMED");
+  });
+
+  it("autoApproved=false (or absent) still follows the manual pending-approval flow", async () => {
+    // Manual flow must remain UNCHANGED — backward compatibility.
+    approvalApi.createApproval.mockResolvedValue(
+      ok(
+        // No autoApproved key at all
+        {
+          approvalId: "11111111-1111-4111-8111-111111111111",
+          magicLinkUrl:
+            "http://localhost:5173/approve/11111111-1111-4111-8111-111111111111?token=" +
+            "a".repeat(64),
+          expiresAt: new Date("2024-01-01T00:05:00Z").toISOString(),
+          traceId: "trace-manual",
+        },
+        201
+      )
+    );
+    // Once we enter 'awaiting-approval', the poll effect calls
+    // getApprovalStatus on a timer. Return a stable pending view so
+    // the loop is a no-op (no terminal transition) during this test.
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok(
+        {
+          approval: approvalView({ status: "pending" }),
+          traceId: "trace-poll",
+        },
+        200
+      )
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+
+    const s = hook.result.current.state;
+    expect(s.mode).toBe("awaiting-approval");
+    expect(s.pendingApproval?.id).toBe(
+      "11111111-1111-4111-8111-111111111111"
+    );
+    expect(s.entries).toHaveLength(0);
+  });
+});
+
 describe("useGatePassController approval polling", () => {
   let api: MockApi;
   let approvalApi: MockApprovalApi;

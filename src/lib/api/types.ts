@@ -246,6 +246,48 @@ export interface CreateApprovalResponse {
   magicLinkUrl: string;
   expiresAt: string;
   traceId: string;
+  /**
+   * Source: src/docs/specs/auto-approval.md §5 — Feature 3.
+   *
+   * Optional. When `true`, the server short-circuited the manual approval
+   * flow because an active auto-approval rule matched the (visitorName,
+   * host, unit) triple. In that case `entry` is populated with the canonical
+   * server-side EntryRecord (method='auto') and `matchedRule` carries the
+   * rule that fired. When absent or `false`, the response is the standard
+   * pending-approval shape (no `entry`, no `matchedRule`).
+   *
+   * Backward-compatible: pre-Feature-3 clients read `undefined` and follow
+   * the awaiting-approval path as before.
+   */
+  autoApproved?: boolean;
+  /**
+   * Populated only when `autoApproved === true`. Mirrors the EntryRecord
+   * shape from POST /api/entries so the frontend reducer can plug it into
+   * its entries list without translation. `method` is always `"auto"`.
+   */
+  entry?: {
+    id: string;
+    visitorName: string;
+    host: string;
+    unit: string;
+    plate: string | null;
+    reason: string;
+    method: "auto";
+    guardId: string;
+    createdAt: string;
+    status: "logged";
+    syncState: "synced";
+  } | null;
+  /**
+   * Populated only when `autoApproved === true`. The minimal rule view the
+   * frontend needs to render "Auto-approved by rule …" in the UI / audit.
+   */
+  matchedRule?: {
+    id: string;
+    visitorName: string;
+    host: string;
+    unit: string;
+  } | null;
 }
 
 // GET /api/approvals/:id/status — spec §7.2

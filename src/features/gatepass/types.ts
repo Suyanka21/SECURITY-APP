@@ -15,7 +15,18 @@ export type GatePassMode =
   | "awaiting-approval"
   | "error";
 export type NetworkState = "online" | "offline";
-export type EntryMethod = "qr" | "walk-in" | "override" | "recognized";
+/**
+ * How a visitor entry was logged.
+ *
+ * Source:
+ *   - "qr"/"walk-in"/"override"/"recognized" — gatepass-api-contract.md §3.2
+ *   - "auto" — src/docs/specs/auto-approval.md §3 (data model)
+ *
+ * "auto" is set by the server ONLY when an auto-approval rule fires and
+ * short-circuits the manual approval flow. The frontend never authors
+ * an entry with method='auto' on the way out; it only RECEIVES one.
+ */
+export type EntryMethod = "qr" | "walk-in" | "override" | "recognized" | "auto";
 export type EntryStatus =
   | "draft"
   | "pending"
@@ -248,6 +259,26 @@ export type GatePassAction =
   | { type: "APPROVAL_RESOLVED"; entry: EntryRecord }
   | { type: "APPROVAL_DENIED"; reason: string }
   | { type: "APPROVAL_EXPIRED" }
+  /**
+   * Auto-approval short-circuited the request: backend already wrote
+   * the entry inside the createApproval transaction. No awaiting state
+   * is ever observed, no resident decision is pending, no polling is
+   * needed. The reducer must:
+   *   - skip 'awaiting-approval' and land directly in 'confirmed'
+   *   - prepend the entry into state.entries (mirroring ENTRY_SUCCEEDED
+   *     and APPROVAL_RESOLVED for list-shape parity)
+   *   - emit a distinct audit line so the auditor can tell auto from
+   *     manual approval at a glance (spec §3 louder audit)
+   *   - DO NOT enqueue any notification — backend wrote nothing
+   *
+   * Source: src/docs/specs/auto-approval.md §5 (state machine),
+   *         §6 (frontend reducer contract).
+   */
+  | {
+      type: "APPROVAL_AUTO_APPROVED";
+      entry: EntryRecord;
+      rule: { id: string; visitorName: string; host: string; unit: string };
+    }
   | { type: "FAIL_ACTIVE_ENTRY"; reason: string }
   | { type: "RESET_FLOW" }
   // ─── Notifications lifecycle ─────────────────────────────────────

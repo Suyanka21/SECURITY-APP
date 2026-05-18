@@ -25,6 +25,9 @@ export interface AuthenticatedRequest extends Request {
   guardId: string;
 }
 
+/** Closed set of guard roles. Mirrors the DB CHECK on guards.role. */
+export type GuardRole = "guard" | "senior-guard" | "admin";
+
 export interface JWTPayload {
   /** Guard UUID — the verified identity */
   sub: string;
@@ -202,4 +205,117 @@ export function generateGuardToken(
     JWT_SECRET,
     { algorithm: JWT_ALGORITHM, expiresIn }
   );
+}
+
+// ─── requireRole middleware ─────────────────────────────────────────────────
+//
+// Source: src/docs/specs/auto-approval.md §8 (security).
+// Source: Security-and-Hardening skill — "authorization checked on every
+//         protected endpoint".
+//
+// Reads the guard's role from the DB (the JWT carries only the sub/guardId,
+// never the role — a stale-role JWT cannot retain admin privileges after
+// demotion). The lookup uses the request-scoped Drizzle handle injected
+// in app.ts.
+//
+// The middleware MUST run AFTER requireAuth so req.guardId is set.
+
+import { eq } from "drizzle-orm";
+import { guards } from "@/db/schema";
+
+interface DrizzleDBHandle {
+  select: (...args: unknown[]) => unknown;
+  query?: Record<string, unknown>;
+}
+
+export function requireRole(...allowed: GuardRole[]) {
+  return async function requireRoleMiddleware(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const traceId = `trace-${randomUUID()}`;
+    const guardId = (req as AuthenticatedRequest).guardId;
+
+    if (!guardId) {
+      // requireAuth was not run upstream — fail closed.
+      res.status(401).json({
+        error: {
+          code: "AUTH_REQUIRED",
+          message: "Authentication required",
+          traceId,
+        },
+      });
+      return;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (req as any).db as DrizzleDBHandle | undefined;
+    if (!db) {
+      res.status(500).json({
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "Database handle missing on request",
+          traceId,
+        },
+      });
+      return;
+    }
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows = (await (db as any)
+        .select()
+        .from(guards)
+        .where(eq(guards.id, guardId))) as {
+        id: string;
+        role: GuardRole;
+        isActive: boolean;
+      }[];
+
+      if (!rows || rows.length === 0) {
+        res.status(401).json({
+          error: {
+            code: "AUTH_FAILED",
+            message: "Guard not found",
+            traceId,
+          },
+        });
+        return;
+      }
+
+      const guard = rows[0];
+      if (!guard.isActive) {
+        res.status(403).json({
+          error: {
+            code: "AUTH_FORBIDDEN",
+            message: "Guard is not active",
+            traceId,
+          },
+        });
+        return;
+      }
+
+      if (!allowed.includes(guard.role)) {
+        res.status(403).json({
+          error: {
+            code: "AUTH_FORBIDDEN",
+            message: `Role '${guard.role}' is not permitted for this endpoint`,
+            traceId,
+          },
+        });
+        return;
+      }
+
+      next();
+    } catch {
+      res.status(500).json({
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "Role check failed",
+          traceId,
+        },
+      });
+    }
+  };
 }

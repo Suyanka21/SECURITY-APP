@@ -35,11 +35,15 @@ import {
 
 /** Entry method — how the visitor was processed at the gate */
 // Source: types.ts L3, contract §2
+// "auto" added in Feature 3 (auto-approval engine) — written ONLY when
+// the rule evaluator short-circuits an approval. See
+// src/docs/specs/auto-approval.md §5.
 export const entryMethodEnum = pgEnum("entry_method", [
   "qr",
   "walk-in",
   "override",
   "recognized",
+  "auto",
 ]);
 
 /** Entry lifecycle status */
@@ -96,6 +100,17 @@ export const guards = pgTable("guards", {
   /** Whether this guard can currently operate the system */
   // Source: contract — "must resolve to active guard session"
   isActive: boolean("is_active").notNull().default(true),
+
+  /**
+   * Authorization role for admin-only endpoints.
+   *
+   * Source: src/docs/specs/auto-approval.md §8 — admin-only seed of
+   * auto-approval rules. Closed set: 'guard' | 'senior-guard' | 'admin'.
+   * DB CHECK constraint enforces the values (see migration 0004).
+   *
+   * Default 'guard' keeps every pre-Feature-3 row valid without a backfill.
+   */
+  role: text("role").notNull().default("guard"),
 
   /** Server-generated creation timestamp */
   createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
@@ -804,6 +819,138 @@ export const notificationsRelations = relations(notifications, ({ one }) => ({
   }),
 }));
 
+// ─── Table 6.5: Auto-approval rules ─────────────────────────────────────────
+// Source: src/docs/specs/auto-approval.md §3
+// Source: GATEPASS DEFINITION.md L18 ("Pre-approved frequent visitors should
+//         not need re-approval every time")
+//
+// WHY:
+// A bounded, default-deny rule table the approval-service consults BEFORE
+// minting a magic link. If a rule matches, the approval short-circuits to
+// 'approved' synchronously and an entry is logged inside the same handler.
+// If anything fails (no rule, expired rule, inactive rule, plate mismatch,
+// evaluator exception), the approval falls through to the manual flow.
+//
+// HARD RULES (DB-enforced — never trust the application):
+// - Lookup is case-insensitive on (lower(visitor_name), lower(host),
+//   lower(unit)). The partial UNIQUE index lives in the SQL migration
+//   because Drizzle's `unique()` helper does not support functional
+//   indices today.
+// - expires_at > created_at — a rule must have a positive TTL.
+// - Name/host/unit are bounded to the same widths as entry_records.
+// - plate_required is NULL or 1..32 chars.
+//
+// SECURITY:
+// - active=false is the kill switch; flipping it stops the rule firing
+//   without needing a delete (audit trail preserved).
+// - last_matched_at and match_count let admins find stale rules.
+// - created_by_guard_id is captured so admins can attribute every rule
+//   to a real person (no anonymous rule injection).
+//
+// ROLLBACK:
+// - DROP TABLE auto_approval_rules; the audit_event_type values cannot
+//   be removed once added in PostgreSQL — they remain harmlessly unused.
+
+export const autoApprovalRules = pgTable(
+  "auto_approval_rules",
+  {
+    /** Server-generated unique rule ID */
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** Visitor name match (case-insensitive lookup) */
+    visitorName: text("visitor_name").notNull(),
+
+    /** Host name match (case-insensitive lookup) */
+    host: text("host").notNull(),
+
+    /** Unit identifier match (case-insensitive lookup) */
+    unit: text("unit").notNull(),
+
+    /**
+     * Optional plate pin. NULL means the rule does NOT check the plate.
+     * Non-NULL means the walk-in's plate must equal this (case-insensitive)
+     * for the rule to fire.
+     */
+    plateRequired: text("plate_required"),
+
+    /** The guard / admin who seeded this rule */
+    createdByGuardId: uuid("created_by_guard_id")
+      .notNull()
+      .references(() => guards.id),
+
+    /** Hard kill switch — false stops the rule firing immediately */
+    active: boolean("active").notNull().default(true),
+
+    /** Server-enforced TTL — rule NEVER fires after this */
+    expiresAt: timestamp("expires_at", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+
+    /** Server-generated creation timestamp */
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Bumped on every mutation */
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Set on every successful match — surfaces stale rules to admins */
+    lastMatchedAt: timestamp("last_matched_at", {
+      precision: 3,
+      withTimezone: true,
+    }),
+
+    /** Bumped on every successful match */
+    matchCount: integer("match_count").notNull().default(0),
+  },
+  (table) => [
+    check(
+      "auto_approval_visitor_name_not_empty",
+      sql`length(trim(${table.visitorName})) BETWEEN 1 AND 120`
+    ),
+    check(
+      "auto_approval_host_bounded",
+      sql`length(trim(${table.host})) BETWEEN 1 AND 120`
+    ),
+    check(
+      "auto_approval_unit_bounded",
+      sql`length(trim(${table.unit})) BETWEEN 1 AND 32`
+    ),
+    check(
+      "auto_approval_plate_bounded",
+      sql`${table.plateRequired} IS NULL OR length(trim(${table.plateRequired})) BETWEEN 1 AND 32`
+    ),
+    check(
+      "auto_approval_positive_ttl",
+      sql`${table.expiresAt} > ${table.createdAt}`
+    ),
+    // Lookup index for the evaluator. The functional partial UNIQUE index
+    // (on lower(name), lower(host), lower(unit) WHERE active=true) is
+    // created in the migration SQL.
+    index("auto_approval_rules_triple_idx").on(
+      table.visitorName,
+      table.host,
+      table.unit
+    ),
+    // Admin queries by guard + active + expiry
+    index("auto_approval_rules_guard_idx").on(table.createdByGuardId),
+  ]
+);
+
+export const autoApprovalRulesRelations = relations(
+  autoApprovalRules,
+  ({ one }) => ({
+    /** The guard who seeded this rule (for admin attribution) */
+    createdByGuard: one(guards, {
+      fields: [autoApprovalRules.createdByGuardId],
+      references: [guards.id],
+    }),
+  })
+);
+
 // ─── Enum: Audit Event Types ─────────────────────────────────────────────────
 // Source: contract §5 — Backend Event Traceability Matrix
 // Every frontend action MUST produce one of these traceable events
@@ -835,6 +982,16 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "notification_sent",
   "notification_failed",
   "notification_permanently_failed",
+  // Source: src/docs/specs/auto-approval.md §3 — Feature 3 audit events.
+  // The rule_created / rule_deactivated / rule_expired events let admins
+  // reconstruct the lifecycle of any rule. The `auto_approval_matched`
+  // event is written ALONGSIDE the existing entry_created row inside the
+  // same transaction so the audit trail is louder for auto-approvals,
+  // not quieter (spec §1 contract).
+  "auto_approval_rule_created",
+  "auto_approval_rule_deactivated",
+  "auto_approval_rule_expired",
+  "auto_approval_matched",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

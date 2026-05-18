@@ -638,6 +638,51 @@ export function useGatePassController(
       return;
     }
 
+    // Auto-approval branch (Feature 3).
+    //
+    // Source: src/docs/specs/auto-approval.md §5 — when a matching
+    // active rule fires, the server short-circuits the approval and
+    // returns autoApproved=true with the full entry record + the rule
+    // that fired. We MUST detect this BEFORE constructing a pending
+    // approval, otherwise the awaiting-approval UI would briefly flash
+    // before being replaced.
+    //
+    // Defensive parsing: every field is checked. If the server sends a
+    // malformed autoApproved=true payload (entry missing, rule missing,
+    // entry method !== "auto"), we fall back to APPROVAL_REQUEST_FAILED
+    // — never silently treat it as a manual pending approval, never
+    // silently land in 'confirmed' on bad data.
+    if (result.data.autoApproved === true) {
+      const entry = result.data.entry;
+      const rule = result.data.matchedRule;
+      if (
+        !entry ||
+        !rule ||
+        entry.method !== "auto" ||
+        entry.status !== "logged"
+      ) {
+        dispatch({
+          type: "APPROVAL_REQUEST_FAILED",
+          error: {
+            code: "AUTO_APPROVAL_MALFORMED",
+            message:
+              "Server signaled auto-approval but the response shape was incomplete. The entry was NOT logged on this device \u2014 retry, or use override (with reason).",
+            traceId: result.data.traceId,
+          },
+        });
+        return;
+      }
+      dispatch({
+        type: "APPROVAL_AUTO_APPROVED",
+        entry: {
+          ...entry,
+          plate: entry.plate ?? undefined,
+        },
+        rule,
+      });
+      return;
+    }
+
     const approval: PendingApproval = {
       id: result.data.approvalId,
       draft: { ...current.draft },

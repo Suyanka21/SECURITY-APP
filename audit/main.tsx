@@ -178,11 +178,60 @@ function baseApproval(
   };
 }
 
+// ─── Auto-approval scenario fixtures (Feature 3) ──────────────────────
+// Source: src/docs/specs/auto-approval.md §3, §5, §6.
+const AUTO_RULE_ID = "rule-11111111-1111-4111-8111-111111111111";
+const AUTO_ENTRY_ID = "entry-auto-99999999";
+
+function autoApprovedCreateResponse(): CreateApprovalResponse {
+  return {
+    approvalId: APPROVAL_ID,
+    magicLinkUrl: MAGIC_URL,
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    traceId: "trace-auto-create",
+    autoApproved: true,
+    entry: {
+      id: AUTO_ENTRY_ID,
+      visitorName: "Maya Chen",
+      host: "A. Okafor",
+      unit: "18B",
+      plate: "LND-482",
+      reason: "",
+      method: "auto",
+      guardId: "guard-west-04",
+      createdAt: new Date().toISOString(),
+      status: "logged",
+      syncState: "synced",
+    },
+    matchedRule: {
+      id: AUTO_RULE_ID,
+      visitorName: "Maya Chen",
+      host: "A. Okafor",
+      unit: "18B",
+    },
+  };
+}
+
 function makeApprovalApi(scenario: string): typeof guardApprovalApi {
   const createApproval = async (): Promise<ApiResult<CreateApprovalResponse>> => {
     if (scenario === "approval-create-409") {
       return fail(409, "APPROVAL_DUPLICATE", "An approval is already pending for this entry");
     }
+    // A1: rule matches → server short-circuits with autoApproved=true.
+    if (scenario === "auto-rule-match") {
+      return ok(autoApprovedCreateResponse(), 201);
+    }
+    // A4: server signals autoApproved=true but the entry payload is
+    // malformed. Frontend MUST default-deny — never silently land in
+    // 'confirmed'. Spec §5 / §6 trustless contract.
+    if (scenario === "auto-malformed") {
+      const r = autoApprovedCreateResponse();
+      return ok({ ...r, entry: null }, 201);
+    }
+    // A2 / A3 / A5: server does NOT auto-approve (rule expired / no
+    // matching rule / plate-required-mismatch all manifest as a normal
+    // manual approval response — the evaluator's non-match decision is
+    // server-internal). Manual flow proceeds unchanged.
     return ok(
       {
         approvalId: APPROVAL_ID,
@@ -424,6 +473,11 @@ const SCENARIOS = [
   { id: "notif-list-500", label: "N3 · Notification list 500 — approval still alive (Feature 2)" },
   { id: "notif-retry-ok", label: "N4 · Resend → 202 + cooldown (Feature 2)" },
   { id: "notif-retry-rate-limited", label: "N5 · Resend → 429 RATE_LIMITED (Feature 2)" },
+  { id: "auto-rule-match", label: "A1 · Auto-approval rule matches → entry logged (Feature 3)" },
+  { id: "auto-rule-expired", label: "A2 · Rule expired → manual flow (Feature 3)" },
+  { id: "auto-no-rule", label: "A3 · No matching rule → manual flow (Feature 3)" },
+  { id: "auto-malformed", label: "A4 · Malformed autoApproved=true → default-deny (Feature 3)" },
+  { id: "auto-plate-mismatch", label: "A5 · plateRequired mismatch → manual flow (Feature 3)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
