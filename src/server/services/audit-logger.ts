@@ -42,7 +42,12 @@ export type AuditEventType =
   | "approval_requested"
   | "approval_approved"
   | "approval_denied"
-  | "approval_expired";
+  | "approval_expired"
+  // Source: src/docs/specs/notifications.md §11 — Feature 2 audit events.
+  // Each delivery attempt writes one of these.
+  | "notification_sent"
+  | "notification_failed"
+  | "notification_permanently_failed";
 
 export interface AuditEvent {
   /** Unique immutable event ID */

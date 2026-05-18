@@ -193,6 +193,52 @@ export interface CreateApprovalRequest {
     reason?: string;
     method: "walk-in";
   };
+  /** Optional E.164 — drives Feature 2 notifications (notifications.md §7.1). */
+  hostPhoneE164?: string;
+}
+
+// ─── Notifications (Feature 2) ──────────────────────────────────────────────
+// Source: src/docs/specs/notifications.md §7
+
+export type NotificationChannel = "whatsapp" | "sms";
+export type NotificationStatus =
+  | "queued"
+  | "sending"
+  | "delivered"
+  | "failed"
+  | "permanently_failed";
+
+/**
+ * Sanitized notification view — the server NEVER includes
+ * `renderedBody` or `idempotencyKey` (PII discipline, spec §3).
+ * Matches NotificationView in server validation/notification-schemas.ts.
+ */
+export interface NotificationView {
+  id: string;
+  approvalId: string;
+  channel: NotificationChannel;
+  status: NotificationStatus;
+  attempts: number;
+  targetPhone: string;
+  templateKey: string;
+  lastErrorCode: string | null;
+  lastProviderResponseCode: number | null;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt: string | null;
+  failedAt: string | null;
+}
+
+// GET /api/notifications?approvalId=:id
+export interface NotificationsListResponse {
+  notifications: NotificationView[];
+  traceId: string;
+}
+
+// POST /api/notifications/:id/retry
+export interface NotificationRetryResponse {
+  notification: NotificationView;
+  traceId: string;
 }
 
 export interface CreateApprovalResponse {

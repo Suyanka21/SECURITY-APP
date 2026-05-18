@@ -94,6 +94,69 @@ export type PendingApproval = {
   traceId: string;
 };
 
+/**
+ * Per-approval delivery view used by the UI's delivery-status block.
+ *
+ * Source: src/docs/specs/notifications.md §6 (NotificationView wire
+ * shape) + §9 (state machine). Mirrors the server's NotificationView
+ * but drops PII fields (rendered_body, idempotency_key never reach
+ * the wire).
+ *
+ * `lastError` and `retryInFlight` are reducer-local UI fields, NOT
+ * part of the wire shape. They surface the controller's per-retry
+ * lifecycle so the Resend button can disable itself in flight and
+ * show the most recent failure without re-rendering on every poll.
+ */
+export type NotificationDeliveryView = {
+  id: string;
+  approvalId: string;
+  channel: "whatsapp" | "sms";
+  status:
+    | "queued"
+    | "sending"
+    | "delivered"
+    | "failed"
+    | "permanently_failed";
+  attempts: number;
+  targetPhone: string;
+  templateKey: string;
+  lastErrorCode: string | null;
+  lastProviderResponseCode: number | null;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt: string | null;
+  failedAt: string | null;
+  /** Reducer-local: set while a manual retry is in-flight. */
+  retryInFlight?: boolean;
+  /** Reducer-local: surfaces the most recent retry-side error to the UI. */
+  retryError?: GatePassError;
+  /**
+   * Reducer-local: epoch ms until which Resend is disabled. Set by
+   * NOTIFICATIONS_RETRY_SUCCEEDED to enforce the 30s cooldown (spec
+   * notifications.md §6 — per-approval cap = 1 user-triggered retry,
+   * which we soften to a cooldown so the UI doesn't silently swallow
+   * a second click).
+   */
+  retryCooldownUntilMs?: number;
+};
+
+/**
+ * Per-approval notifications slice.
+ *
+ * `byApprovalId` is keyed by the approval id so the polling loop in
+ * useGatePassController can dispatch independently of approval-status
+ * results — a transient notifications failure must never mask the
+ * approval's status and vice-versa (spec §5, two-stream policy).
+ *
+ * `loading` and `lastError` are scoped to the in-flight list call.
+ * Per-row retry state lives on the NotificationDeliveryView itself.
+ */
+export type NotificationsState = {
+  byApprovalId: Record<string, NotificationDeliveryView[]>;
+  loading: boolean;
+  lastError?: GatePassError;
+};
+
 export type GatePassState = {
   mode: GatePassMode;
   guardId: string;
@@ -123,6 +186,15 @@ export type GatePassState = {
    * Source: spec §6.
    */
   pendingApproval?: PendingApproval;
+  /**
+   * Per-approval notification deliveries (Feature 2).
+   * Source: src/docs/specs/notifications.md §9.
+   *
+   * Cleared on RESET_FLOW and on approval-terminal transitions
+   * (RESOLVED / DENIED / EXPIRED) so a stale delivery view never
+   * survives onto the next walk-in.
+   */
+  notifications: NotificationsState;
 };
 
 export type GatePassAction =
@@ -177,7 +249,32 @@ export type GatePassAction =
   | { type: "APPROVAL_DENIED"; reason: string }
   | { type: "APPROVAL_EXPIRED" }
   | { type: "FAIL_ACTIVE_ENTRY"; reason: string }
-  | { type: "RESET_FLOW" };
+  | { type: "RESET_FLOW" }
+  // ─── Notifications lifecycle ─────────────────────────────────────
+  // Source: src/docs/specs/notifications.md §9.
+  | { type: "NOTIFICATIONS_LOADING" }
+  | {
+      type: "NOTIFICATIONS_LOADED";
+      approvalId: string;
+      notifications: NotificationDeliveryView[];
+    }
+  | { type: "NOTIFICATIONS_FAILED"; error: GatePassError }
+  | { type: "NOTIFICATIONS_RETRY_STARTED"; notificationId: string }
+  | {
+      type: "NOTIFICATIONS_RETRY_SUCCEEDED";
+      approvalId: string;
+      notification: NotificationDeliveryView;
+      /**
+       * Epoch ms at which the cooldown expires. Injected by the
+       * controller (which owns the clock) so the reducer stays pure.
+       */
+      cooldownUntilMs: number;
+    }
+  | {
+      type: "NOTIFICATIONS_RETRY_FAILED";
+      notificationId: string;
+      error: GatePassError;
+    };
 
 /** Re-exported for callers that already typed against the API shape. */
 export type { ApiErrorBody, RecognizedVisitorItem };

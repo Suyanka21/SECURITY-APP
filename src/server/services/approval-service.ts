@@ -43,6 +43,11 @@ import {
 } from "../validation/approval-schemas";
 import { ServiceError } from "./errors";
 import { emitAuditEvent } from "./audit-logger";
+import {
+  enqueueNotification,
+  renderApprovalMagicLinkBody,
+  TEMPLATE_KEYS,
+} from "./notifications/notification-service";
 
 // Re-exported so route handlers keep a single import surface.
 export { ServiceError };
@@ -193,7 +198,12 @@ export async function createApprovalRequest(
   guardId: string,
   db: DrizzleDB,
   clock: ServiceClock = DEFAULT_CLOCK
-): Promise<{ response: CreateApprovalResponse; statusCode: number }> {
+): Promise<{
+  response: CreateApprovalResponse;
+  statusCode: number;
+  /** Set when the create call also enqueued a notification row (slice 3). */
+  enqueuedNotification: { id: string; channel: "whatsapp" } | null;
+}> {
   const traceId = generateTraceId();
 
   // Step 1: verify guard exists and is active.
@@ -241,23 +251,54 @@ export async function createApprovalRequest(
   const nowMs = clock.now();
   const expiresAt = new Date(nowMs + resolveApprovalTimeoutSeconds() * 1000);
 
-  // Step 4: INSERT pending row. We do not wrap in a transaction because there
-  // is exactly one write here; failure rolls back automatically.
-  await (db as any).insert(approvalRequests).values({
-    id: approvalId,
-    offlineId: input.offlineId,
-    visitorName: input.draft.visitorName,
-    host: input.draft.host,
-    unit: input.draft.unit,
-    plate: input.draft.plate ?? null,
-    reason: input.draft.reason ?? "",
-    method: input.draft.method,
-    requestedByGuardId: guardId,
-    tokenHash,
-    status: "pending",
-    expiresAt,
-    createdAt: new Date(nowMs),
-    traceId,
+  // Step 4: INSERT pending row + enqueue WhatsApp notification atomically.
+  //
+  // Source: src/docs/specs/notifications.md §5 (architecture) + B2.
+  // Wrapping both writes in one transaction guarantees we never leave
+  // an orphan notification (approval failed) or a phone-enabled
+  // approval without its queued delivery (notification failed). The
+  // dispatcher kick is fire-and-forget AFTER commit — done by the
+  // route handler, not this service, so a slow provider can never
+  // delay the approval HTTP response.
+  let notificationEnqueued: { id: string; channel: "whatsapp" } | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (db as any).transaction(async (tx: DrizzleDB) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (tx as any).insert(approvalRequests).values({
+      id: approvalId,
+      offlineId: input.offlineId,
+      visitorName: input.draft.visitorName,
+      host: input.draft.host,
+      unit: input.draft.unit,
+      plate: input.draft.plate ?? null,
+      reason: input.draft.reason ?? "",
+      method: input.draft.method,
+      requestedByGuardId: guardId,
+      tokenHash,
+      status: "pending",
+      expiresAt,
+      createdAt: new Date(nowMs),
+      traceId,
+      hostPhoneE164: input.hostPhoneE164 ?? null,
+    });
+
+    if (input.hostPhoneE164) {
+      const renderedBody = renderApprovalMagicLinkBody({
+        visitorName: input.draft.visitorName,
+        host: input.draft.host,
+        unit: input.draft.unit,
+        magicLinkUrl: `${resolvePublicOrigin()}/approve/${approvalId}?token=${rawToken}`,
+      });
+      const enq = await enqueueNotification(tx, {
+        approvalId,
+        channel: "whatsapp",
+        targetPhone: input.hostPhoneE164,
+        templateKey: TEMPLATE_KEYS.approvalMagicLink,
+        renderedBody,
+        attemptNo: 0,
+      });
+      notificationEnqueued = { id: enq.id, channel: "whatsapp" };
+    }
   });
 
   // Step 5: audit. AWAITED — if the audit write fails we want the route to
@@ -284,7 +325,14 @@ export async function createApprovalRequest(
     traceId,
   };
 
-  return { response, statusCode: 201 };
+  return {
+    response,
+    statusCode: 201,
+    // Surfaced to the route so it can kick the dispatcher after the
+    // response is sent. Not part of CreateApprovalResponse — the wire
+    // contract is unchanged. (B2: delivery is best-effort.)
+    enqueuedNotification: notificationEnqueued,
+  };
 }
 
 // ─── 2. getApprovalStatus ─────────────────────────────────────────────────────
