@@ -8,6 +8,7 @@ import {
   QrScanPanel,
   SearchPanel,
   StatusBanner,
+  VisitorsAdminPanel,
   WalkInPanel,
 } from "./components/GatePassPanels";
 import { useGatePassController } from "./useGatePassController";
@@ -29,6 +30,14 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     setNetwork: controller.setNetwork,
     requestApproval: controller.requestApproval,
     retryNotification: controller.retryNotification,
+    // Feature 4 — visitor profile CRUD wiring.
+    loadVisitorProfiles: controller.loadVisitorProfiles,
+    createVisitorProfile: controller.createVisitorProfile,
+    updateVisitorProfile: controller.updateVisitorProfile,
+    softDeleteVisitorProfile: controller.softDeleteVisitorProfile,
+    restoreVisitorProfile: controller.restoreVisitorProfile,
+    toggleVisitorProfilesIncludeDeleted:
+      controller.toggleVisitorProfilesIncludeDeleted,
   };
 
   return (
@@ -94,7 +103,16 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
         {state.mode === "error" && (
           <ErrorPanel state={state} dispatch={dispatch} actions={actions} />
         )}
-        {state.mode === "admin" && <AdminShell state={state} />}
+        {state.mode === "admin" && (
+          <div className="grid gap-5">
+            <AdminShell state={state} />
+            <VisitorsAdminPanel
+              state={state}
+              dispatch={dispatch}
+              actions={actions}
+            />
+          </div>
+        )}
       </div>
     </main>
   );

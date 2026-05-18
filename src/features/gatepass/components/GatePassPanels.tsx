@@ -18,7 +18,7 @@ import {
   WifiOff,
   X as XIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   EntryDraft,
   GatePassAction,
@@ -26,6 +26,12 @@ import type {
   NotificationDeliveryView,
   Visitor,
 } from "../types";
+import { VISITOR_PROFILE_NEW_KEY } from "../types";
+import type {
+  CreateVisitorProfileRequest,
+  UpdateVisitorProfileRequest,
+  VisitorProfileView,
+} from "@/lib/api/types";
 
 /**
  * Panels are presentational only. They never call the API directly —
@@ -52,6 +58,25 @@ export type GatePassActions = {
    * Source: src/docs/specs/notifications.md §7.3
    */
   retryNotification: (notificationId: string) => Promise<void> | void;
+  // ─── Visitor profile CRUD (Feature 4) ────────────────────────
+  // Source: src/docs/specs/visitor-profiles.md §8
+  loadVisitorProfiles: (query?: {
+    page?: number;
+    pageSize?: number;
+    q?: string;
+    host?: string;
+    unit?: string;
+  }) => Promise<void> | void;
+  createVisitorProfile: (
+    input: CreateVisitorProfileRequest,
+  ) => Promise<void> | void;
+  updateVisitorProfile: (
+    id: string,
+    patch: UpdateVisitorProfileRequest,
+  ) => Promise<void> | void;
+  softDeleteVisitorProfile: (id: string) => Promise<void> | void;
+  restoreVisitorProfile: (id: string) => Promise<void> | void;
+  toggleVisitorProfilesIncludeDeleted: () => void;
 };
 
 type Props = {
@@ -1047,6 +1072,551 @@ export function AdminShell({ state }: { state: GatePassState }) {
         </ul>
       </div>
     </section>
+  );
+}
+
+// ─── Feature 4 — Visitor profile CRUD admin panel ───────────────────
+//
+// Source: src/docs/specs/visitor-profiles.md §8 (frontend reducer
+// contract) and §4 (API). The panel is a pure consumer of
+// state.visitorProfiles and the controller's visitor methods; it never
+// touches the API directly. Watch-flagged rows render with a left
+// accent border and a WATCH pill so an admin scanning the table can
+// spot them without reading the row body. Soft-deleted rows render a
+// Restore action instead of Edit/Delete and a tombstone timestamp.
+
+export function VisitorsAdminPanel({ state, actions }: Props) {
+  const slice = state.visitorProfiles;
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const editingProfile = useMemo(
+    () => (editingId ? slice.byId[editingId] : undefined),
+    [editingId, slice.byId],
+  );
+
+  const visibleRows = useMemo(
+    () =>
+      slice.order
+        .map((id) => slice.byId[id])
+        .filter((profile): profile is VisitorProfileView => Boolean(profile)),
+    [slice.byId, slice.order],
+  );
+
+  const openCreate = () => {
+    setEditingId(null);
+    setShowForm(true);
+  };
+
+  const openEdit = (id: string) => {
+    setEditingId(id);
+    setShowForm(true);
+  };
+
+  const closeForm = () => {
+    setShowForm(false);
+    setEditingId(null);
+  };
+
+  const createInFlight = Boolean(
+    slice.mutationInFlight[VISITOR_PROFILE_NEW_KEY],
+  );
+  const createError = slice.mutationErrors[VISITOR_PROFILE_NEW_KEY];
+
+  return (
+    <section
+      className="border border-border bg-card p-5 shadow-panel"
+      data-testid="visitors-admin-panel"
+    >
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-3xl font-bold">Visitors</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Manage the visitor directory used for recognition + watch flags.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-sm font-semibold">
+            <input
+              type="checkbox"
+              checked={slice.includeDeleted}
+              onChange={() => actions.toggleVisitorProfilesIncludeDeleted()}
+              data-testid="visitors-show-deleted-toggle"
+            />
+            Show deleted
+          </label>
+          <button
+            type="button"
+            className="focus-ring border border-primary bg-primary px-4 py-2 font-display text-sm font-bold text-primary-foreground shadow-panel transition-transform hover:-translate-y-0.5"
+            onClick={openCreate}
+            data-testid="visitors-new-button"
+          >
+            + New visitor
+          </button>
+        </div>
+      </header>
+
+      {slice.lastError && (
+        <div
+          role="alert"
+          data-testid="visitors-list-error"
+          className="mt-4 border border-destructive bg-destructive/10 p-3 text-sm font-semibold text-destructive"
+        >
+          {slice.lastError.code}: {slice.lastError.message}
+        </div>
+      )}
+
+      {slice.loading && (
+        <p
+          className="mt-4 text-sm font-semibold text-muted-foreground"
+          data-testid="visitors-loading"
+        >
+          Loading visitors…
+        </p>
+      )}
+
+      <div className="mt-4 overflow-x-auto">
+        <table
+          className="w-full border-collapse text-left text-sm"
+          data-testid="visitors-table"
+        >
+          <thead className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+            <tr>
+              <th className="border-b border-border px-2 py-2">Visitor</th>
+              <th className="border-b border-border px-2 py-2">Host</th>
+              <th className="border-b border-border px-2 py-2">Unit</th>
+              <th className="border-b border-border px-2 py-2">Plate</th>
+              <th className="border-b border-border px-2 py-2">Phone</th>
+              <th className="border-b border-border px-2 py-2">Notes</th>
+              <th className="border-b border-border px-2 py-2">Updated</th>
+              <th className="border-b border-border px-2 py-2 text-right">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.length === 0 && !slice.loading && (
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-2 py-6 text-center text-muted-foreground"
+                  data-testid="visitors-empty-row"
+                >
+                  No visitors yet. Use “+ New visitor” to add one.
+                </td>
+              </tr>
+            )}
+            {visibleRows.map((profile) => (
+              <VisitorAdminRow
+                key={profile.id}
+                profile={profile}
+                inFlight={Boolean(slice.mutationInFlight[profile.id])}
+                error={slice.mutationErrors[profile.id]}
+                onEdit={() => openEdit(profile.id)}
+                onDelete={() =>
+                  void actions.softDeleteVisitorProfile(profile.id)
+                }
+                onRestore={() =>
+                  void actions.restoreVisitorProfile(profile.id)
+                }
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {slice.pagination && slice.pagination.totalPages > 1 && (
+        <div
+          className="mt-4 flex items-center justify-between text-sm"
+          data-testid="visitors-pagination"
+        >
+          <span>
+            Page {slice.pagination.page} of {slice.pagination.totalPages}
+            {" — "}
+            {slice.pagination.totalItems} total
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="focus-ring border border-input bg-background px-3 py-1 font-semibold disabled:opacity-50"
+              disabled={slice.pagination.page <= 1 || slice.loading}
+              onClick={() =>
+                void actions.loadVisitorProfiles({
+                  page: (slice.pagination?.page ?? 1) - 1,
+                  pageSize: slice.pagination?.pageSize,
+                })
+              }
+              data-testid="visitors-prev-page"
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              className="focus-ring border border-input bg-background px-3 py-1 font-semibold disabled:opacity-50"
+              disabled={
+                slice.pagination.page >= slice.pagination.totalPages ||
+                slice.loading
+              }
+              onClick={() =>
+                void actions.loadVisitorProfiles({
+                  page: (slice.pagination?.page ?? 1) + 1,
+                  pageSize: slice.pagination?.pageSize,
+                })
+              }
+              data-testid="visitors-next-page"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showForm && (
+        <VisitorAdminForm
+          editingProfile={editingProfile}
+          inFlight={
+            editingProfile
+              ? Boolean(slice.mutationInFlight[editingProfile.id])
+              : createInFlight
+          }
+          error={
+            editingProfile
+              ? slice.mutationErrors[editingProfile.id]
+              : createError
+          }
+          onCancel={closeForm}
+          onCreate={async (input) => {
+            await actions.createVisitorProfile(input);
+          }}
+          onUpdate={async (id, patch) => {
+            await actions.updateVisitorProfile(id, patch);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function VisitorAdminRow({
+  profile,
+  inFlight,
+  error,
+  onEdit,
+  onDelete,
+  onRestore,
+}: {
+  profile: VisitorProfileView;
+  inFlight: boolean;
+  error: GatePassState["visitorProfiles"]["mutationErrors"][string];
+  onEdit: () => void;
+  onDelete: () => void;
+  onRestore: () => void;
+}) {
+  const tombstoned = Boolean(profile.deletedAt);
+  const watch = profile.watchFlag;
+  return (
+    <tr
+      data-testid={`visitor-row-${profile.id}`}
+      data-watch={watch ? "true" : undefined}
+      data-deleted={tombstoned ? "true" : undefined}
+      className={
+        // Watch-flagged rows get a thick left accent so they read at a
+        // glance even if WATCH text is clipped on a narrow viewport.
+        "border-b border-border align-top " +
+        (watch ? "border-l-4 border-l-destructive" : "") +
+        (tombstoned ? " opacity-60" : "")
+      }
+    >
+      <td className="px-2 py-2 font-semibold">
+        {profile.visitorName}
+        {watch && (
+          <span
+            data-testid={`watch-pill-${profile.id}`}
+            aria-label="Watch list flag"
+            className="ml-2 inline-block border border-destructive bg-destructive/10 px-2 py-0.5 align-middle text-xs font-bold uppercase tracking-widest text-destructive"
+          >
+            WATCH
+          </span>
+        )}
+      </td>
+      <td className="px-2 py-2">{profile.host}</td>
+      <td className="px-2 py-2">{profile.unit}</td>
+      <td className="px-2 py-2">{profile.plate ?? "—"}</td>
+      <td className="px-2 py-2">{profile.phoneE164 ?? "—"}</td>
+      <td className="px-2 py-2 text-xs text-muted-foreground">
+        {profile.notes ?? ""}
+      </td>
+      <td className="px-2 py-2 text-xs text-muted-foreground">
+        {profile.updatedAt}
+        {tombstoned && (
+          <div className="text-destructive">
+            deleted {profile.deletedAt}
+          </div>
+        )}
+      </td>
+      <td className="px-2 py-2 text-right">
+        {tombstoned ? (
+          <button
+            type="button"
+            className="focus-ring border border-input bg-background px-2 py-1 text-xs font-semibold disabled:opacity-50"
+            onClick={onRestore}
+            disabled={inFlight}
+            data-testid={`visitor-restore-${profile.id}`}
+          >
+            {inFlight ? "Restoring…" : "Restore"}
+          </button>
+        ) : (
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              className="focus-ring border border-input bg-background px-2 py-1 text-xs font-semibold disabled:opacity-50"
+              onClick={onEdit}
+              disabled={inFlight}
+              data-testid={`visitor-edit-${profile.id}`}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className="focus-ring border border-destructive bg-destructive/10 px-2 py-1 text-xs font-semibold text-destructive disabled:opacity-50"
+              onClick={onDelete}
+              disabled={inFlight}
+              data-testid={`visitor-delete-${profile.id}`}
+            >
+              {inFlight ? "Working…" : "Delete"}
+            </button>
+          </div>
+        )}
+        {error && (
+          <div
+            role="alert"
+            data-testid={`visitor-row-error-${profile.id}`}
+            className="mt-1 text-xs font-semibold text-destructive"
+          >
+            {error.code}: {error.message}
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function VisitorAdminForm({
+  editingProfile,
+  inFlight,
+  error,
+  onCancel,
+  onCreate,
+  onUpdate,
+}: {
+  editingProfile?: VisitorProfileView;
+  inFlight: boolean;
+  error: GatePassState["visitorProfiles"]["mutationErrors"][string];
+  onCancel: () => void;
+  onCreate: (input: CreateVisitorProfileRequest) => Promise<void>;
+  onUpdate: (
+    id: string,
+    patch: UpdateVisitorProfileRequest,
+  ) => Promise<void>;
+}) {
+  const [visitorName, setVisitorName] = useState(
+    editingProfile?.visitorName ?? "",
+  );
+  const [host, setHost] = useState(editingProfile?.host ?? "");
+  const [unit, setUnit] = useState(editingProfile?.unit ?? "");
+  const [plate, setPlate] = useState(editingProfile?.plate ?? "");
+  const [phoneE164, setPhoneE164] = useState(editingProfile?.phoneE164 ?? "");
+  const [notes, setNotes] = useState(editingProfile?.notes ?? "");
+  const [watchFlag, setWatchFlag] = useState(
+    editingProfile?.watchFlag ?? false,
+  );
+  const [validation, setValidation] = useState<string | null>(null);
+
+  const errorField = error?.field;
+  const isEditing = Boolean(editingProfile);
+
+  const handleSubmit = async () => {
+    // Client-side guard so we never burn an HTTP roundtrip on an obviously
+    // empty form. The server is still the source of truth for any
+    // edge-case validation (uniqueness, format, etc.).
+    if (!visitorName.trim() || !host.trim() || !unit.trim()) {
+      setValidation("Visitor name, host, and unit are required.");
+      return;
+    }
+    setValidation(null);
+    if (isEditing && editingProfile) {
+      await onUpdate(editingProfile.id, {
+        visitorName: visitorName.trim(),
+        host: host.trim(),
+        unit: unit.trim(),
+        plate: plate.trim() || null,
+        phoneE164: phoneE164.trim() || null,
+        notes: notes.trim() || null,
+        watchFlag,
+      });
+    } else {
+      await onCreate({
+        visitorName: visitorName.trim(),
+        host: host.trim(),
+        unit: unit.trim(),
+        plate: plate.trim() || undefined,
+        phoneE164: phoneE164.trim() || undefined,
+        notes: notes.trim() || undefined,
+        watchFlag,
+      });
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={isEditing ? "Edit visitor profile" : "New visitor profile"}
+      data-testid="visitor-form-dialog"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4"
+    >
+      <div className="w-full max-w-2xl border border-border bg-card p-5 shadow-panel">
+        <header className="flex items-center justify-between">
+          <h3 className="font-display text-2xl font-bold">
+            {isEditing ? "Edit visitor" : "New visitor"}
+          </h3>
+          <button
+            type="button"
+            className="focus-ring border border-input bg-background px-2 py-1 text-xs"
+            onClick={onCancel}
+            data-testid="visitor-form-cancel"
+          >
+            Cancel
+          </button>
+        </header>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <FormField
+            label="Visitor name (required)"
+            value={visitorName}
+            onChange={setVisitorName}
+            invalid={errorField === "visitorName"}
+            testid="visitor-form-name"
+          />
+          <FormField
+            label="Host (required)"
+            value={host}
+            onChange={setHost}
+            invalid={errorField === "host"}
+            testid="visitor-form-host"
+          />
+          <FormField
+            label="Unit (required)"
+            value={unit}
+            onChange={setUnit}
+            invalid={errorField === "unit"}
+            testid="visitor-form-unit"
+          />
+          <FormField
+            label="Plate (optional)"
+            value={plate ?? ""}
+            onChange={setPlate}
+            invalid={errorField === "plate"}
+            testid="visitor-form-plate"
+          />
+          <FormField
+            label="Phone (E.164, optional)"
+            value={phoneE164 ?? ""}
+            onChange={setPhoneE164}
+            invalid={errorField === "phoneE164"}
+            testid="visitor-form-phone"
+          />
+          <label className="grid gap-2 text-sm font-semibold md:col-span-2">
+            Notes (optional)
+            <textarea
+              className={`focus-ring min-h-20 border bg-background px-3 py-2 ${errorField === "notes" ? "border-destructive" : "border-input"}`}
+              value={notes ?? ""}
+              onChange={(e) => setNotes(e.target.value)}
+              data-testid="visitor-form-notes"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm font-semibold md:col-span-2">
+            <input
+              type="checkbox"
+              checked={watchFlag}
+              onChange={(e) => setWatchFlag(e.target.checked)}
+              data-testid="visitor-form-watch"
+            />
+            Watch list flag (visitor needs extra scrutiny)
+          </label>
+        </div>
+
+        {validation && (
+          <p
+            role="alert"
+            data-testid="visitor-form-validation"
+            className="mt-3 text-sm font-semibold text-destructive"
+          >
+            {validation}
+          </p>
+        )}
+
+        {error && (
+          <p
+            role="alert"
+            data-testid="visitor-form-error"
+            className="mt-3 text-sm font-semibold text-destructive"
+          >
+            {error.code}: {error.message}
+          </p>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            className="focus-ring border border-input bg-background px-4 py-2 font-semibold disabled:opacity-50"
+            onClick={onCancel}
+            disabled={inFlight}
+          >
+            Close
+          </button>
+          <button
+            type="button"
+            className="focus-ring border border-primary bg-primary px-4 py-2 font-display font-bold text-primary-foreground shadow-panel disabled:opacity-50"
+            onClick={() => void handleSubmit()}
+            disabled={inFlight}
+            data-testid="visitor-form-submit"
+          >
+            {inFlight
+              ? "Saving…"
+              : isEditing
+                ? "Save changes"
+                : "Create visitor"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FormField({
+  label,
+  value,
+  onChange,
+  invalid,
+  testid,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+  invalid: boolean;
+  testid: string;
+}) {
+  return (
+    <label className="grid gap-2 text-sm font-semibold">
+      {label}
+      <input
+        className={`focus-ring border bg-background px-3 py-2 ${invalid ? "border-destructive" : "border-input"}`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        data-testid={testid}
+      />
+    </label>
   );
 }
 
