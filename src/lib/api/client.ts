@@ -65,7 +65,8 @@ export function statusToContractCode(status: number): string {
 // ─── Internal request runner ──────────────────────────────────────────
 
 interface RequestOptions {
-  method: "GET" | "POST";
+  // PATCH + DELETE added for Feature 4 (visitor profile CRUD); spec §4.
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string;
   query?: Record<string, string | number | undefined>;
   body?: unknown;
@@ -205,6 +206,19 @@ export const apiClient = {
     options: { signal?: AbortSignal } = {}
   ): Promise<ApiResult<T>> {
     return runRequest<T>({ method: "POST", path, body, ...options });
+  },
+  patch<T>(
+    path: string,
+    body: unknown,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<ApiResult<T>> {
+    return runRequest<T>({ method: "PATCH", path, body, ...options });
+  },
+  del<T>(
+    path: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<ApiResult<T>> {
+    return runRequest<T>({ method: "DELETE", path, ...options });
   },
 };
 

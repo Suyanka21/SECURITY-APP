@@ -47,7 +47,23 @@ export type AuditEventType =
   // Each delivery attempt writes one of these.
   | "notification_sent"
   | "notification_failed"
-  | "notification_permanently_failed";
+  | "notification_permanently_failed"
+  // Source: src/docs/specs/auto-approval.md §3 — Feature 3 audit events.
+  // The auto_approval_matched event is written ALONGSIDE the existing
+  // entry_created row inside the same transaction so the audit trail
+  // is louder for auto-approvals, not quieter (spec §1 contract).
+  | "auto_approval_rule_created"
+  | "auto_approval_rule_deactivated"
+  | "auto_approval_rule_expired"
+  | "auto_approval_matched"
+  // Source: src/docs/specs/visitor-profiles.md §5 — Feature 4 audit events.
+  // Mutations to a visitor profile always write exactly one of these rows
+  // inside the same transaction as the mutation. Reads do NOT emit an
+  // audit row (would flood the log).
+  | "visitor_profile_created"
+  | "visitor_profile_updated"
+  | "visitor_profile_soft_deleted"
+  | "visitor_profile_restored";
 
 export interface AuditEvent {
   /** Unique immutable event ID */

@@ -20,12 +20,15 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { gatePassApi } from "@/lib/api/gatepass";
 import { guardApprovalApi } from "@/lib/api/approvals";
 import { guardNotificationsApi } from "@/lib/api/notifications";
+import { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
   CreateEntryResponse,
+  CreateVisitorProfileRequest,
+  ListVisitorProfilesResponse,
   NotificationsListResponse,
   NotificationRetryResponse,
   QrValidateResponse,
@@ -33,6 +36,8 @@ import type {
   ServerEntry,
   SyncBatchResponse,
   SyncEntryRequest,
+  UpdateVisitorProfileRequest,
+  VisitorProfileResponse,
 } from "@/lib/api/types";
 import {
   gatePassReducer,
@@ -47,6 +52,7 @@ import type {
   PendingApproval,
   Visitor,
 } from "./types";
+import { VISITOR_PROFILE_NEW_KEY } from "./types";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -201,6 +207,25 @@ export interface GatePassController {
    * Source: src/docs/specs/notifications.md §7.3.
    */
   retryNotification: (notificationId: string) => Promise<void>;
+  // ─── Visitor profile CRUD (Feature 4) ────────────────────────
+  // Source: src/docs/specs/visitor-profiles.md §8. Every method maps an
+  // ApiResult discriminant onto exactly one reducer dispatch. No silent
+  // success: a failed call always lands on LIST_FAILED or MUTATION_FAILED.
+  loadVisitorProfiles: (query?: {
+    page?: number;
+    pageSize?: number;
+    q?: string;
+    host?: string;
+    unit?: string;
+  }) => Promise<void>;
+  createVisitorProfile: (input: CreateVisitorProfileRequest) => Promise<void>;
+  updateVisitorProfile: (
+    id: string,
+    patch: UpdateVisitorProfileRequest,
+  ) => Promise<void>;
+  softDeleteVisitorProfile: (id: string) => Promise<void>;
+  restoreVisitorProfile: (id: string) => Promise<void>;
+  toggleVisitorProfilesIncludeDeleted: () => void;
 }
 
 export interface GatePassControllerOptions {
@@ -212,6 +237,11 @@ export interface GatePassControllerOptions {
    * Source: src/docs/specs/notifications.md §7.
    */
   notificationsApi?: typeof guardNotificationsApi;
+  /**
+   * Optional override for the visitor-profile client surface (Feature 4).
+   * Source: src/docs/specs/visitor-profiles.md §4.
+   */
+  visitorProfilesApi?: typeof visitorProfilesApi;
   /** Override clock for deterministic tests. */
   now?: () => Date;
   /** Override UUID generator for deterministic tests. */
@@ -236,6 +266,7 @@ export function useGatePassController(
   const api = options.api ?? gatePassApi;
   const approvalApi = options.approvalApi ?? guardApprovalApi;
   const notificationsApi = options.notificationsApi ?? guardNotificationsApi;
+  const visitorApi = options.visitorProfilesApi ?? visitorProfilesApi;
   const pollIntervalMs = options.approvalPollIntervalMs ?? 2000;
   const notificationsPollIntervalMs =
     options.notificationsPollIntervalMs ?? 2000;
@@ -638,6 +669,51 @@ export function useGatePassController(
       return;
     }
 
+    // Auto-approval branch (Feature 3).
+    //
+    // Source: src/docs/specs/auto-approval.md §5 — when a matching
+    // active rule fires, the server short-circuits the approval and
+    // returns autoApproved=true with the full entry record + the rule
+    // that fired. We MUST detect this BEFORE constructing a pending
+    // approval, otherwise the awaiting-approval UI would briefly flash
+    // before being replaced.
+    //
+    // Defensive parsing: every field is checked. If the server sends a
+    // malformed autoApproved=true payload (entry missing, rule missing,
+    // entry method !== "auto"), we fall back to APPROVAL_REQUEST_FAILED
+    // — never silently treat it as a manual pending approval, never
+    // silently land in 'confirmed' on bad data.
+    if (result.data.autoApproved === true) {
+      const entry = result.data.entry;
+      const rule = result.data.matchedRule;
+      if (
+        !entry ||
+        !rule ||
+        entry.method !== "auto" ||
+        entry.status !== "logged"
+      ) {
+        dispatch({
+          type: "APPROVAL_REQUEST_FAILED",
+          error: {
+            code: "AUTO_APPROVAL_MALFORMED",
+            message:
+              "Server signaled auto-approval but the response shape was incomplete. The entry was NOT logged on this device \u2014 retry, or use override (with reason).",
+            traceId: result.data.traceId,
+          },
+        });
+        return;
+      }
+      dispatch({
+        type: "APPROVAL_AUTO_APPROVED",
+        entry: {
+          ...entry,
+          plate: entry.plate ?? undefined,
+        },
+        rule,
+      });
+      return;
+    }
+
     const approval: PendingApproval = {
       id: result.data.approvalId,
       draft: { ...current.draft },
@@ -887,6 +963,139 @@ export function useGatePassController(
     lastNetwork.current = state.network;
   }, [state.network, state.pendingSync.length, state.inFlight, syncPending]);
 
+  // ─── Visitor profile CRUD callbacks (Feature 4) ────────────────────
+  // Source: src/docs/specs/visitor-profiles.md §8. Each method:
+  //   1. dispatches the *_STARTED action so the UI shows progress
+  //   2. awaits the typed ApiResult
+  //   3. dispatches either the success terminal or *_FAILED
+  // The reducer enforces no-silent-success by only clearing the
+  // in-flight flag on these terminal dispatches.
+
+  const loadVisitorProfiles = useCallback(
+    async (query: {
+      page?: number;
+      pageSize?: number;
+      q?: string;
+      host?: string;
+      unit?: string;
+    } = {}) => {
+      dispatch({ type: "VISITOR_PROFILES_LIST_STARTED" });
+      const includeDeleted = stateRef.current.visitorProfiles.includeDeleted;
+      const result: ApiResult<ListVisitorProfilesResponse> =
+        await visitorApi.listProfiles({
+          ...query,
+          includeDeleted,
+        });
+      if (!result.ok) {
+        dispatch({
+          type: "VISITOR_PROFILES_LIST_FAILED",
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "VISITOR_PROFILES_LIST_LOADED",
+        profiles: result.data.profiles,
+        pagination: result.data.pagination,
+      });
+    },
+    [visitorApi],
+  );
+
+  const createVisitorProfile = useCallback(
+    async (input: CreateVisitorProfileRequest) => {
+      // The server-issued id isn't known until success; track the
+      // in-flight create under the sentinel key.
+      dispatch({
+        type: "VISITOR_PROFILE_MUTATION_STARTED",
+        profileId: VISITOR_PROFILE_NEW_KEY,
+      });
+      const result: ApiResult<VisitorProfileResponse> =
+        await visitorApi.createProfile(input);
+      if (!result.ok) {
+        dispatch({
+          type: "VISITOR_PROFILE_MUTATION_FAILED",
+          profileId: VISITOR_PROFILE_NEW_KEY,
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "VISITOR_PROFILE_UPSERTED",
+        profile: result.data.profile,
+        mutationKey: VISITOR_PROFILE_NEW_KEY,
+      });
+    },
+    [visitorApi],
+  );
+
+  const updateVisitorProfile = useCallback(
+    async (id: string, patch: UpdateVisitorProfileRequest) => {
+      dispatch({ type: "VISITOR_PROFILE_MUTATION_STARTED", profileId: id });
+      const result: ApiResult<VisitorProfileResponse> =
+        await visitorApi.updateProfile(id, patch);
+      if (!result.ok) {
+        dispatch({
+          type: "VISITOR_PROFILE_MUTATION_FAILED",
+          profileId: id,
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "VISITOR_PROFILE_UPSERTED",
+        profile: result.data.profile,
+      });
+    },
+    [visitorApi],
+  );
+
+  const softDeleteVisitorProfile = useCallback(
+    async (id: string) => {
+      dispatch({ type: "VISITOR_PROFILE_MUTATION_STARTED", profileId: id });
+      const result: ApiResult<VisitorProfileResponse> =
+        await visitorApi.softDeleteProfile(id);
+      if (!result.ok) {
+        dispatch({
+          type: "VISITOR_PROFILE_MUTATION_FAILED",
+          profileId: id,
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "VISITOR_PROFILE_REMOVED",
+        profile: result.data.profile,
+      });
+    },
+    [visitorApi],
+  );
+
+  const restoreVisitorProfile = useCallback(
+    async (id: string) => {
+      dispatch({ type: "VISITOR_PROFILE_MUTATION_STARTED", profileId: id });
+      const result: ApiResult<VisitorProfileResponse> =
+        await visitorApi.restoreProfile(id);
+      if (!result.ok) {
+        dispatch({
+          type: "VISITOR_PROFILE_MUTATION_FAILED",
+          profileId: id,
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "VISITOR_PROFILE_RESTORED",
+        profile: result.data.profile,
+      });
+    },
+    [visitorApi],
+  );
+
+  const toggleVisitorProfilesIncludeDeleted = useCallback(() => {
+    dispatch({ type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED" });
+  }, []);
+
   return useMemo(
     () => ({
       state,
@@ -898,6 +1107,12 @@ export function useGatePassController(
       setNetwork,
       requestApproval,
       retryNotification,
+      loadVisitorProfiles,
+      createVisitorProfile,
+      updateVisitorProfile,
+      softDeleteVisitorProfile,
+      restoreVisitorProfile,
+      toggleVisitorProfilesIncludeDeleted,
     }),
     [
       state,
@@ -908,6 +1123,12 @@ export function useGatePassController(
       setNetwork,
       requestApproval,
       retryNotification,
+      loadVisitorProfiles,
+      createVisitorProfile,
+      updateVisitorProfile,
+      softDeleteVisitorProfile,
+      restoreVisitorProfile,
+      toggleVisitorProfilesIncludeDeleted,
     ]
   );
 }

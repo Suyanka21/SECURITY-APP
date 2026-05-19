@@ -246,6 +246,48 @@ export interface CreateApprovalResponse {
   magicLinkUrl: string;
   expiresAt: string;
   traceId: string;
+  /**
+   * Source: src/docs/specs/auto-approval.md §5 — Feature 3.
+   *
+   * Optional. When `true`, the server short-circuited the manual approval
+   * flow because an active auto-approval rule matched the (visitorName,
+   * host, unit) triple. In that case `entry` is populated with the canonical
+   * server-side EntryRecord (method='auto') and `matchedRule` carries the
+   * rule that fired. When absent or `false`, the response is the standard
+   * pending-approval shape (no `entry`, no `matchedRule`).
+   *
+   * Backward-compatible: pre-Feature-3 clients read `undefined` and follow
+   * the awaiting-approval path as before.
+   */
+  autoApproved?: boolean;
+  /**
+   * Populated only when `autoApproved === true`. Mirrors the EntryRecord
+   * shape from POST /api/entries so the frontend reducer can plug it into
+   * its entries list without translation. `method` is always `"auto"`.
+   */
+  entry?: {
+    id: string;
+    visitorName: string;
+    host: string;
+    unit: string;
+    plate: string | null;
+    reason: string;
+    method: "auto";
+    guardId: string;
+    createdAt: string;
+    status: "logged";
+    syncState: "synced";
+  } | null;
+  /**
+   * Populated only when `autoApproved === true`. The minimal rule view the
+   * frontend needs to render "Auto-approved by rule …" in the UI / audit.
+   */
+  matchedRule?: {
+    id: string;
+    visitorName: string;
+    host: string;
+    unit: string;
+  } | null;
 }
 
 // GET /api/approvals/:id/status — spec §7.2
@@ -265,5 +307,74 @@ export interface DecideApprovalResponse {
   approval: ApprovalRequestView;
   /** Populated only on approve — null on deny. */
   entry: ServerEntry | null;
+  traceId: string;
+}
+
+// ─── Visitor profiles (Feature 4) ───────────────────────────────────────────
+// Source: src/docs/specs/visitor-profiles.md §4
+
+/**
+ * The PII-bearing view returned by every visitor-profile endpoint.
+ * Mirrors VisitorProfileView in server validation/visitor-profile-schemas.ts.
+ * `deletedAt` is non-null only when the profile is soft-deleted.
+ */
+export interface VisitorProfileView {
+  id: string;
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+  phoneE164: string | null;
+  notes: string | null;
+  watchFlag: boolean;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface CreateVisitorProfileRequest {
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate?: string | null;
+  phoneE164?: string | null;
+  notes?: string | null;
+  watchFlag?: boolean;
+}
+
+export interface UpdateVisitorProfileRequest {
+  visitorName?: string;
+  host?: string;
+  unit?: string;
+  plate?: string | null;
+  phoneE164?: string | null;
+  notes?: string | null;
+  watchFlag?: boolean;
+}
+
+export interface ListVisitorProfilesQuery {
+  host?: string;
+  unit?: string;
+  /** Free-text search across visitorName/host/unit/plate. */
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  /** When true, returns soft-deleted rows as well. Default: false. */
+  includeDeleted?: boolean;
+}
+
+export interface VisitorProfileResponse {
+  profile: VisitorProfileView;
+  traceId: string;
+}
+
+export interface ListVisitorProfilesResponse {
+  profiles: VisitorProfileView[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
   traceId: string;
 }

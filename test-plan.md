@@ -112,6 +112,32 @@ versa.
 
 These scenarios extend the same injection seam used by S1–S8, now also passing through `controller.notificationsApi`. The reducer + controller + UI paths under audit are identical to production.
 
+## Feature 3 — Auto-approval engine
+
+Source: `src/docs/specs/auto-approval.md`. The audit must prove the
+default-deny contract: a matching active rule short-circuits the manual
+flow with a louder audit trail, AND every non-match reason
+(expired / no rule / plate mismatch / malformed payload / evaluator
+failure) falls back to the manual approval flow without any silent
+bypass. The "no silent success" guarantee must hold across the
+boundary where a human-in-the-loop is replaced by a rule.
+
+| # | Scenario | What it proves |
+|---|---|---|
+| A1 | Rule matches → entry logged | Page lands directly on the confirmation panel with the AUTO pill, accent border, and `Rule:` audit line. `Entries logged` increments by 1. The awaiting-approval panel NEVER mounts. `Auto-approved` admin stat increments by 1. |
+| A2 | Rule expired → manual flow | Server returns a normal manual approval response (no `autoApproved` field). The guard lands on the awaiting-approval panel exactly as before. Server-side, the rule evaluator's `RULE_EXPIRED` reason was logged but is server-internal; the frontend MUST NOT show any auto-approval UI. |
+| A3 | No matching rule → manual flow | Same external behavior as A2 — server's `NO_RULE` reason is server-internal. Awaiting-approval panel mounts; no AUTO pill anywhere. |
+| A4 | Malformed `autoApproved=true` payload → default-deny | Server signals `autoApproved=true` but the response is missing the `entry` field. The controller's defensive parser flips to `APPROVAL_REQUEST_FAILED` with code `AUTO_APPROVAL_MALFORMED`. The error panel mounts with the explicit error code visible. `Entries logged` stays at 0. The UI NEVER lands in `confirmed` on a bad payload. |
+| A5 | `plateRequired=true` rule, plate mismatch → manual flow | Same external behavior as A2/A3 — server's `PLATE_MISMATCH` reason is server-internal. Awaiting-approval panel mounts; no AUTO pill. Proves a rule with stricter conditions does NOT silently match when the conditions aren't satisfied. |
+
+### Pass criteria summary
+
+- **A1**: Open scenario `auto-rule-match`. Click Walk-in → fill draft (Visitor `Maya Chen`, Host `A. Okafor`, Unit `18B`) → click **Request resident approval**. The page lands DIRECTLY on the confirmation panel — no awaiting-approval state flashes. The heading reads `Entry auto-approved`, the `AUTO` pill is present with accent border, and a `Rule:` line shows the rule's visitor/host/unit. `Entries logged` is 1, `Auto-approved` admin stat is 1, `Override flags` admin stat is 0.
+- **A2 / A3 / A5**: Open scenario `auto-rule-expired` / `auto-no-rule` / `auto-plate-mismatch`. Same setup. Page lands on the **awaiting-approval panel** with the magic-link / countdown. The confirmation panel never appears. No `AUTO` pill anywhere. `Entries logged` is 0. Demonstrates that every non-match reason on the server side surfaces as a normal manual approval — the frontend cannot distinguish *which* non-match reason fired (correctly: that's server-internal audit detail, not guard-facing).
+- **A4**: Open scenario `auto-malformed`. Same setup. Page lands on the **error panel** with code `AUTO_APPROVAL_MALFORMED` visible. The error message guides the guard to retry or use override. `Entries logged` stays at 0. The confirmation panel NEVER mounts. Proves the controller's defensive parser refuses to log an entry on a malformed auto-approval — the trustless contract.
+
+These scenarios extend the same `controller.approvalApi` injection seam used by S4–S8. The server-side default-deny mechanics are already covered by 26 evaluator unit tests + 9 wiring tests, so this harness focuses on the frontend's response to each server-side outcome.
+
 ## Out of scope
 
 - Real backend round-trips: backend has no `dev:server` script and requires a Postgres DB + seeded guard + signed JWT. Out of scope for a deterministic audit. Unit + integration tests against the real Express server (133 server tests) already cover the backend side.

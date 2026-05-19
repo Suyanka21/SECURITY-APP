@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   RecognizedVisitorItem,
   SyncEntryResult,
+  VisitorProfileView,
 } from "@/lib/api/types";
 
 export type GatePassMode =
@@ -15,7 +16,18 @@ export type GatePassMode =
   | "awaiting-approval"
   | "error";
 export type NetworkState = "online" | "offline";
-export type EntryMethod = "qr" | "walk-in" | "override" | "recognized";
+/**
+ * How a visitor entry was logged.
+ *
+ * Source:
+ *   - "qr"/"walk-in"/"override"/"recognized" — gatepass-api-contract.md §3.2
+ *   - "auto" — src/docs/specs/auto-approval.md §3 (data model)
+ *
+ * "auto" is set by the server ONLY when an auto-approval rule fires and
+ * short-circuits the manual approval flow. The frontend never authors
+ * an entry with method='auto' on the way out; it only RECEIVES one.
+ */
+export type EntryMethod = "qr" | "walk-in" | "override" | "recognized" | "auto";
 export type EntryStatus =
   | "draft"
   | "pending"
@@ -157,6 +169,63 @@ export type NotificationsState = {
   lastError?: GatePassError;
 };
 
+/**
+ * Pagination block mirrored from ListVisitorProfilesResponse.pagination.
+ * Stored alongside the list so the UI can render Prev/Next without
+ * holding it in a separate ref.
+ */
+export type VisitorProfilesPagination = {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+};
+
+/**
+ * Admin-only slice maintaining the visitor-profile CRUD list state.
+ * Source: src/docs/specs/visitor-profiles.md §8 (frontend reducer).
+ *
+ * Lifecycle (one slice cycle = one list call + zero-or-more mutations):
+ *   LIST_STARTED
+ *     → LIST_LOADED  (replaces byId/order/pagination, clears loading + lastError)
+ *     | LIST_FAILED   (sets lastError, keeps cached byId so a transient blip
+ *                      doesn't blank the table)
+ *
+ *   MUTATION_STARTED (id | "__new__")
+ *     → UPSERTED      (server confirmed create or update)
+ *     | REMOVED       (server confirmed soft-delete; row keeps deletedAt set)
+ *     | RESTORED      (server confirmed restore; deletedAt cleared)
+ *     | MUTATION_FAILED (per-row error, NO silent success allowed)
+ *
+ * Soft-deleted rows are kept in byId so the UI can still render them
+ * when the includeDeleted toggle is on. The `order` list drops them by
+ * default; restoring re-adds the id to the top of `order`.
+ *
+ * RESET_FLOW does NOT clear this slice — it belongs to the admin
+ * subview, not the per-walk-in lifecycle.
+ */
+export type VisitorProfilesState = {
+  byId: Record<string, VisitorProfileView>;
+  order: string[];
+  pagination?: VisitorProfilesPagination;
+  loading: boolean;
+  /**
+   * Per-id mutation in-flight flag. The literal key `"__new__"` tracks
+   * a create call (the server-assigned id isn't known until success).
+   */
+  mutationInFlight: Record<string, boolean>;
+  lastError?: GatePassError;
+  /**
+   * Per-id structured error. Cleared by the matching MUTATION_STARTED;
+   * surfaced inline by the row UI. Never silently dropped.
+   */
+  mutationErrors: Record<string, GatePassError>;
+  /** UI toggle. The list call passes this through to the API query. */
+  includeDeleted: boolean;
+};
+
+export const VISITOR_PROFILE_NEW_KEY = "__new__";
+
 export type GatePassState = {
   mode: GatePassMode;
   guardId: string;
@@ -195,6 +264,11 @@ export type GatePassState = {
    * survives onto the next walk-in.
    */
   notifications: NotificationsState;
+  /**
+   * Admin-only visitor-profile CRUD list state (Feature 4).
+   * Source: src/docs/specs/visitor-profiles.md §8.
+   */
+  visitorProfiles: VisitorProfilesState;
 };
 
 export type GatePassAction =
@@ -248,6 +322,26 @@ export type GatePassAction =
   | { type: "APPROVAL_RESOLVED"; entry: EntryRecord }
   | { type: "APPROVAL_DENIED"; reason: string }
   | { type: "APPROVAL_EXPIRED" }
+  /**
+   * Auto-approval short-circuited the request: backend already wrote
+   * the entry inside the createApproval transaction. No awaiting state
+   * is ever observed, no resident decision is pending, no polling is
+   * needed. The reducer must:
+   *   - skip 'awaiting-approval' and land directly in 'confirmed'
+   *   - prepend the entry into state.entries (mirroring ENTRY_SUCCEEDED
+   *     and APPROVAL_RESOLVED for list-shape parity)
+   *   - emit a distinct audit line so the auditor can tell auto from
+   *     manual approval at a glance (spec §3 louder audit)
+   *   - DO NOT enqueue any notification — backend wrote nothing
+   *
+   * Source: src/docs/specs/auto-approval.md §5 (state machine),
+   *         §6 (frontend reducer contract).
+   */
+  | {
+      type: "APPROVAL_AUTO_APPROVED";
+      entry: EntryRecord;
+      rule: { id: string; visitorName: string; host: string; unit: string };
+    }
   | { type: "FAIL_ACTIVE_ENTRY"; reason: string }
   | { type: "RESET_FLOW" }
   // ─── Notifications lifecycle ─────────────────────────────────────
@@ -274,7 +368,43 @@ export type GatePassAction =
       type: "NOTIFICATIONS_RETRY_FAILED";
       notificationId: string;
       error: GatePassError;
-    };
+    }
+  // ─── Visitor profile CRUD lifecycle (Feature 4) ─────────────────
+  // Source: src/docs/specs/visitor-profiles.md §8.
+  | { type: "VISITOR_PROFILES_LIST_STARTED" }
+  | {
+      type: "VISITOR_PROFILES_LIST_LOADED";
+      profiles: VisitorProfileView[];
+      pagination: VisitorProfilesPagination;
+    }
+  | { type: "VISITOR_PROFILES_LIST_FAILED"; error: GatePassError }
+  /**
+   * profileId = an existing profile id for update/delete/restore, or
+   * the sentinel VISITOR_PROFILE_NEW_KEY ("__new__") for create.
+   */
+  | { type: "VISITOR_PROFILE_MUTATION_STARTED"; profileId: string }
+  /**
+   * Handles both create AND update. The reducer checks `state.visitorProfiles.byId[profile.id]`
+   * to decide whether to prepend to `order` (create) or replace in place (update).
+   *
+   * `mutationKey` lets the controller pass through the original key that started
+   * the mutation (e.g. "__new__" for create), so MUTATION_STARTED → UPSERTED
+   * clears the right `mutationInFlight` entry. If omitted, the reducer
+   * defaults to `profile.id`.
+   */
+  | {
+      type: "VISITOR_PROFILE_UPSERTED";
+      profile: VisitorProfileView;
+      mutationKey?: string;
+    }
+  | { type: "VISITOR_PROFILE_REMOVED"; profile: VisitorProfileView }
+  | { type: "VISITOR_PROFILE_RESTORED"; profile: VisitorProfileView }
+  | {
+      type: "VISITOR_PROFILE_MUTATION_FAILED";
+      profileId: string;
+      error: GatePassError;
+    }
+  | { type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED" };
 
 /** Re-exported for callers that already typed against the API shape. */
 export type { ApiErrorBody, RecognizedVisitorItem };
