@@ -951,6 +951,153 @@ export const autoApprovalRulesRelations = relations(
   })
 );
 
+// ─── Table 6.6: Visitor profiles ─────────────────────────────────────────────
+// Source: src/docs/specs/visitor-profiles.md §2 (data model)
+// Source: GATEPASS DEFINITION.md §6 (visitor profile CRUD was listed as out of
+//         scope of PR #1 — Feature 4 territory).
+//
+// WHY:
+// Today the recognized-visitor list is derived from entry_records at query
+// time. This table makes visitor profiles first-class so admins/senior-guards
+// can attach a phone number (for Feature 2 delivery), set a watch_flag,
+// record notes, and soft-delete a profile while preserving the audit trail.
+//
+// HARD RULES (DB-enforced — never trust the application):
+// - Lookup is case-insensitive on (lower(visitor_name), lower(host),
+//   lower(unit)). The partial UNIQUE index on the same triple WHERE
+//   deleted_at IS NULL lives in the SQL migration (Drizzle's `unique()`
+//   helper cannot express functional indices).
+// - Soft-deleted rows do NOT block re-adding the same identity.
+// - All text fields are bounded by CHECK constraints (length(trim(...))).
+// - phone_e164 NULL OR matches '^\+[1-9]\d{1,14}$' (E.164).
+// - Soft-delete consistency: (deleted_at IS NULL) = (deleted_by_guard_id
+//   IS NULL).
+//
+// SECURITY:
+// - watch_flag is a visual signal only — a flagged visitor is NOT
+//   auto-denied (that would be a silent-deny surface; see spec §13).
+// - created_by_guard_id and deleted_by_guard_id let admins attribute
+//   every mutation to a real person.
+//
+// ROLLBACK:
+// - DROP TABLE visitor_profiles;
+//   The four audit_event_type values cannot be removed in PostgreSQL —
+//   they remain harmlessly unused.
+
+export const visitorProfiles = pgTable(
+  "visitor_profiles",
+  {
+    /** Server-generated unique profile ID */
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** Visitor name (case-insensitive lookup) */
+    visitorName: text("visitor_name").notNull(),
+
+    /** Host name (case-insensitive lookup) */
+    host: text("host").notNull(),
+
+    /** Unit identifier (case-insensitive lookup) */
+    unit: text("unit").notNull(),
+
+    /** Optional plate. NULL means the profile does not pin a plate. */
+    plate: text("plate"),
+
+    /**
+     * Optional phone in E.164 format. Used by Feature 2's notification
+     * dispatch path (future wiring). Format is enforced at the DB layer
+     * so a malformed phone never reaches the provider.
+     */
+    phoneE164: text("phone_e164"),
+
+    /** Free-form notes (bounded to 1000 chars after trim). */
+    notes: text("notes"),
+
+    /**
+     * Watch flag — visitors flagged for extra scrutiny. Surfaced
+     * visually in the UI (border + WATCH pill). DOES NOT block entry
+     * — guards still make the final decision.
+     */
+    watchFlag: boolean("watch_flag").notNull().default(false),
+
+    /** Guard / admin who created this profile */
+    createdByGuardId: uuid("created_by_guard_id")
+      .notNull()
+      .references(() => guards.id),
+
+    /** Server-generated creation timestamp */
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Bumped on every mutation */
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    /** Soft-delete marker. NULL means active. */
+    deletedAt: timestamp("deleted_at", {
+      precision: 3,
+      withTimezone: true,
+    }),
+
+    /** Guard who soft-deleted this profile. NULL iff deletedAt is NULL. */
+    deletedByGuardId: uuid("deleted_by_guard_id").references(() => guards.id),
+  },
+  (table) => [
+    check(
+      "visitor_profile_name_bounded",
+      sql`length(trim(${table.visitorName})) BETWEEN 1 AND 120`
+    ),
+    check(
+      "visitor_profile_host_bounded",
+      sql`length(trim(${table.host})) BETWEEN 1 AND 120`
+    ),
+    check(
+      "visitor_profile_unit_bounded",
+      sql`length(trim(${table.unit})) BETWEEN 1 AND 32`
+    ),
+    check(
+      "visitor_profile_plate_bounded",
+      sql`${table.plate} IS NULL OR length(trim(${table.plate})) BETWEEN 1 AND 32`
+    ),
+    check(
+      "visitor_profile_phone_e164_format",
+      sql`${table.phoneE164} IS NULL OR ${table.phoneE164} ~ '^\\+[1-9]\\d{1,14}$'`
+    ),
+    check(
+      "visitor_profile_notes_bounded",
+      sql`${table.notes} IS NULL OR length(trim(${table.notes})) BETWEEN 1 AND 1000`
+    ),
+    check(
+      "visitor_profile_soft_delete_consistent",
+      sql`((${table.deletedAt} IS NULL) AND (${table.deletedByGuardId} IS NULL)) OR ((${table.deletedAt} IS NOT NULL) AND (${table.deletedByGuardId} IS NOT NULL))`
+    ),
+    // Resident-scoped listings + creator attribution. The functional
+    // partial UNIQUE index on (lower(name), lower(host), lower(unit))
+    // WHERE deleted_at IS NULL lives in the migration SQL.
+    index("visitor_profiles_host_unit_idx").on(table.host, table.unit),
+    index("visitor_profiles_creator_idx").on(table.createdByGuardId),
+  ]
+);
+
+export const visitorProfilesRelations = relations(
+  visitorProfiles,
+  ({ one }) => ({
+    /** The guard / admin who created this profile */
+    createdByGuard: one(guards, {
+      fields: [visitorProfiles.createdByGuardId],
+      references: [guards.id],
+      relationName: "visitor_profile_created_by",
+    }),
+    /** The guard who soft-deleted this profile (NULL when active) */
+    deletedByGuard: one(guards, {
+      fields: [visitorProfiles.deletedByGuardId],
+      references: [guards.id],
+      relationName: "visitor_profile_deleted_by",
+    }),
+  })
+);
+
 // ─── Enum: Audit Event Types ─────────────────────────────────────────────────
 // Source: contract §5 — Backend Event Traceability Matrix
 // Every frontend action MUST produce one of these traceable events
@@ -992,6 +1139,15 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "auto_approval_rule_deactivated",
   "auto_approval_rule_expired",
   "auto_approval_matched",
+  // Source: src/docs/specs/visitor-profiles.md §5 — Feature 4 audit events.
+  // Mutations to a visitor profile always write exactly one of these rows
+  // inside the same transaction as the mutation. Reads do NOT emit an
+  // audit row (would flood the log). Soft-delete restoration is an
+  // explicit, separate event so admins can reconstruct the lifecycle.
+  "visitor_profile_created",
+  "visitor_profile_updated",
+  "visitor_profile_soft_deleted",
+  "visitor_profile_restored",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

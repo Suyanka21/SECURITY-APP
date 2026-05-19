@@ -55,7 +55,15 @@ export type AuditEventType =
   | "auto_approval_rule_created"
   | "auto_approval_rule_deactivated"
   | "auto_approval_rule_expired"
-  | "auto_approval_matched";
+  | "auto_approval_matched"
+  // Source: src/docs/specs/visitor-profiles.md §5 — Feature 4 audit events.
+  // Mutations to a visitor profile always write exactly one of these rows
+  // inside the same transaction as the mutation. Reads do NOT emit an
+  // audit row (would flood the log).
+  | "visitor_profile_created"
+  | "visitor_profile_updated"
+  | "visitor_profile_soft_deleted"
+  | "visitor_profile_restored";
 
 export interface AuditEvent {
   /** Unique immutable event ID */

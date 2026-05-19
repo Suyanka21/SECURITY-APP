@@ -13,15 +13,19 @@ import { GatePassApp } from "@/features/gatepass/GatePassApp";
 import type { GatePassApi } from "@/lib/api/gatepass";
 import type { guardApprovalApi } from "@/lib/api/approvals";
 import type { guardNotificationsApi } from "@/lib/api/notifications";
+import type { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
+  ListVisitorProfilesResponse,
   NotificationRetryResponse,
   NotificationView,
   NotificationsListResponse,
   RecognizedVisitorsResponse,
+  VisitorProfileResponse,
+  VisitorProfileView,
 } from "@/lib/api/types";
 
 function ok<T>(data: T, status = 200): ApiResult<T> {
@@ -459,6 +463,172 @@ function makeNotificationsApi(
   return { getNotifications, retryNotification } as unknown as typeof guardNotificationsApi;
 }
 
+// ─── Visitor profile CRUD scenarios (Feature 4) ──────────────────
+// Source: src/docs/specs/visitor-profiles.md §4 (API), §6 (UI), §8
+// (frontend reducer contract).
+//
+// Each scenario stubs the EXACT response the server would give under
+// the documented failure mode so the audit can prove the frontend
+// surfaces it correctly:
+//   V1 createProfile → 201 success      → row appended, modal closes
+//   V2 createProfile → 409 duplicate    → modal stays open, field hint
+//   V3 createProfile → 403 AUTH_FORBIDDEN (guard token, default-deny)
+//   V4 softDeleteProfile → 200 success  → row drops or shows tombstone
+//   V5 restoreProfile → 409 conflict    → inline error, no row added
+
+const SEED_PROFILE: VisitorProfileView = {
+  id: "00000000-0000-4000-8000-0000000000a1",
+  visitorName: "Maya Chen",
+  host: "A. Okafor",
+  unit: "18B",
+  plate: "LND-482",
+  phoneE164: "+254700000001",
+  notes: null,
+  watchFlag: false,
+  createdAt: "2024-01-01T00:00:00.000Z",
+  updatedAt: "2024-01-15T00:00:00.000Z",
+  deletedAt: null,
+};
+
+const SEED_PROFILE_WATCH: VisitorProfileView = {
+  ...SEED_PROFILE,
+  id: "00000000-0000-4000-8000-0000000000a2",
+  visitorName: "Risky Rita",
+  plate: null,
+  phoneE164: null,
+  watchFlag: true,
+};
+
+function makeVisitorProfilesApi(
+  scenario: string,
+): typeof visitorProfilesApi {
+  // Default fixture: two profiles seeded so V2/V3/V4/V5 have rows
+  // to interact with and the watch-flag visual is visible at a glance.
+  const seededList = [SEED_PROFILE_WATCH, SEED_PROFILE];
+
+  const listProfiles = async (): Promise<
+    ApiResult<ListVisitorProfilesResponse>
+  > =>
+    ok({
+      profiles: seededList,
+      pagination: { page: 1, pageSize: 25, totalItems: 2, totalPages: 1 },
+      traceId: "trace-visitors-list",
+    });
+
+  const getProfile = async (
+    id: string,
+  ): Promise<ApiResult<VisitorProfileResponse>> => {
+    const found = seededList.find((p) => p.id === id);
+    if (!found) return fail(404, "PROFILE_NOT_FOUND", "No such profile.");
+    return ok({ profile: found, traceId: "trace-get" });
+  };
+
+  const createProfile = async (
+    input: { visitorName: string; host: string; unit: string },
+  ): Promise<ApiResult<VisitorProfileResponse>> => {
+    // V2 — conflict on uniqueness (visitorName + unit + null deletedAt).
+    if (scenario === "visitor-create-409") {
+      return fail(
+        409,
+        "PROFILE_DUPLICATE",
+        "A profile with this name + unit already exists.",
+        "visitorName",
+      );
+    }
+    // V3 — critical default-deny test. requireRole(['admin','senior-guard'])
+    // on the server rejects guard tokens with 403 AUTH_FORBIDDEN. The
+    // frontend MUST surface this as an inline form error — no row
+    // appears in the table, no silent success.
+    if (scenario === "visitor-create-403") {
+      return fail(
+        403,
+        "AUTH_FORBIDDEN",
+        "Guard tokens cannot mutate visitor profiles.",
+      );
+    }
+    // V1 — happy path.
+    return ok(
+      {
+        profile: {
+          ...SEED_PROFILE,
+          id: "00000000-0000-4000-8000-0000000000ff",
+          visitorName: input.visitorName,
+          host: input.host,
+          unit: input.unit,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        traceId: "trace-create",
+      },
+      201,
+    );
+  };
+
+  const updateProfile = async (
+    id: string,
+    patch: Partial<VisitorProfileView>,
+  ): Promise<ApiResult<VisitorProfileResponse>> =>
+    ok({
+      profile: {
+        ...(seededList.find((p) => p.id === id) ?? SEED_PROFILE),
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      } as VisitorProfileView,
+      traceId: "trace-update",
+    });
+
+  const softDeleteProfile = async (
+    id: string,
+  ): Promise<ApiResult<VisitorProfileResponse>> => {
+    // V4 — happy-path soft-delete. Returns the row with deletedAt set
+    // so the reducer can drop it from `order` (default visibility).
+    //
+    // The reducer keys updates by `profile.id`, so the stub MUST echo
+    // the requested id back — otherwise a freshly-created profile
+    // (whose id is not in `seededList`) would be "updated" under the
+    // SEED_PROFILE fallback id and the original row's `mutationInFlight`
+    // flag would never clear, leaving the Delete button stuck on
+    // "Working…" forever. A real server returns the row matching
+    // the requested id, never a different one.
+    const found = seededList.find((p) => p.id === id) ?? SEED_PROFILE;
+    return ok({
+      profile: { ...found, id, deletedAt: new Date().toISOString() },
+      traceId: "trace-delete",
+    });
+  };
+
+  const restoreProfile = async (
+    id: string,
+  ): Promise<ApiResult<VisitorProfileResponse>> => {
+    // V5 — the row exists but is not currently soft-deleted, so a
+    // restore is a state-transition conflict. The frontend must show
+    // an inline error and NOT add a duplicate row.
+    if (scenario === "visitor-restore-409") {
+      return fail(
+        409,
+        "PROFILE_RESTORE_CONFLICT",
+        "Profile is not in a deleted state — nothing to restore.",
+      );
+    }
+    // Echo the requested id back (see soft-delete note above) so the
+    // reducer can locate and update the original row.
+    const found = seededList.find((p) => p.id === id) ?? SEED_PROFILE;
+    return ok({
+      profile: { ...found, id, deletedAt: null },
+      traceId: "trace-restore",
+    });
+  };
+
+  return {
+    listProfiles,
+    getProfile,
+    createProfile,
+    updateProfile,
+    softDeleteProfile,
+    restoreProfile,
+  } as unknown as typeof visitorProfilesApi;
+}
+
 const SCENARIOS = [
   { id: "submit-500", label: "S1 · POST /entries → 500" },
   { id: "submit-422-unit", label: "S2 · POST /entries → 422 (field=unit)" },
@@ -478,6 +648,11 @@ const SCENARIOS = [
   { id: "auto-no-rule", label: "A3 · No matching rule → manual flow (Feature 3)" },
   { id: "auto-malformed", label: "A4 · Malformed autoApproved=true → default-deny (Feature 3)" },
   { id: "auto-plate-mismatch", label: "A5 · plateRequired mismatch → manual flow (Feature 3)" },
+  { id: "visitor-create-201", label: "V1 · Create profile → 201 success (Feature 4)" },
+  { id: "visitor-create-409", label: "V2 · Create profile → 409 PROFILE_DUPLICATE (Feature 4)" },
+  { id: "visitor-create-403", label: "V3 · Create profile → 403 AUTH_FORBIDDEN guard token (Feature 4 — critical default-deny)" },
+  { id: "visitor-delete-200", label: "V4 · Soft-delete profile → 200 success (Feature 4)" },
+  { id: "visitor-restore-409", label: "V5 · Restore profile → 409 PROFILE_RESTORE_CONFLICT (Feature 4)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
@@ -488,6 +663,7 @@ function Harness() {
   const api = makeScenarioApi(scenario);
   const approvalApi = makeApprovalApi(scenario);
   const notificationsApi = makeNotificationsApi(scenario);
+  const visitorProfilesApi = makeVisitorProfilesApi(scenario);
 
   return (
     <div>
@@ -530,6 +706,7 @@ function Harness() {
           api,
           approvalApi,
           notificationsApi,
+          visitorProfilesApi,
           approvalPollIntervalMs: 1500,
           notificationsPollIntervalMs: 1500,
         }}

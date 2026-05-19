@@ -309,3 +309,72 @@ export interface DecideApprovalResponse {
   entry: ServerEntry | null;
   traceId: string;
 }
+
+// ─── Visitor profiles (Feature 4) ───────────────────────────────────────────
+// Source: src/docs/specs/visitor-profiles.md §4
+
+/**
+ * The PII-bearing view returned by every visitor-profile endpoint.
+ * Mirrors VisitorProfileView in server validation/visitor-profile-schemas.ts.
+ * `deletedAt` is non-null only when the profile is soft-deleted.
+ */
+export interface VisitorProfileView {
+  id: string;
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+  phoneE164: string | null;
+  notes: string | null;
+  watchFlag: boolean;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface CreateVisitorProfileRequest {
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate?: string | null;
+  phoneE164?: string | null;
+  notes?: string | null;
+  watchFlag?: boolean;
+}
+
+export interface UpdateVisitorProfileRequest {
+  visitorName?: string;
+  host?: string;
+  unit?: string;
+  plate?: string | null;
+  phoneE164?: string | null;
+  notes?: string | null;
+  watchFlag?: boolean;
+}
+
+export interface ListVisitorProfilesQuery {
+  host?: string;
+  unit?: string;
+  /** Free-text search across visitorName/host/unit/plate. */
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  /** When true, returns soft-deleted rows as well. Default: false. */
+  includeDeleted?: boolean;
+}
+
+export interface VisitorProfileResponse {
+  profile: VisitorProfileView;
+  traceId: string;
+}
+
+export interface ListVisitorProfilesResponse {
+  profiles: VisitorProfileView[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+  traceId: string;
+}

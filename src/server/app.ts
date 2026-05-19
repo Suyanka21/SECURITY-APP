@@ -39,6 +39,14 @@ import {
   handleListAutoApprovalRules,
   handleDeactivateAutoApprovalRule,
 } from "./routes/auto-approval";
+import {
+  handleCreateVisitorProfile,
+  handleListVisitorProfiles,
+  handleGetVisitorProfile,
+  handleUpdateVisitorProfile,
+  handleSoftDeleteVisitorProfile,
+  handleRestoreVisitorProfile,
+} from "./routes/visitor-profiles";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
 
@@ -103,7 +111,8 @@ export function createApp(db: unknown) {
   // Source: TRUSTLESS-AUDIT-REPORT [C2] — "Without CORS: any website can make API calls"
   app.use(cors({
     origin: ALLOWED_ORIGINS,
-    methods: ["GET", "POST"],
+    // PATCH + DELETE added for Feature 4 (visitor profile CRUD); spec §4.
+    methods: ["GET", "POST", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
     maxAge: 600, // Cache preflight for 10 minutes
@@ -184,6 +193,50 @@ export function createApp(db: unknown) {
     strictLimiter,
     requireRole("admin"),
     handleDeactivateAutoApprovalRule
+  );
+
+  // Feature 4 — Visitor Profile CRUD (spec §4, §6).
+  // Reads: any authenticated role (guard / senior-guard / admin).
+  // Mutations: admin + senior-guard. The guard role is intentionally
+  // excluded; requireRole rejects guard tokens with AUTH_FORBIDDEN.
+  // PATCH is exposed via app.patch so the verb is explicit on the wire.
+  app.post(
+    "/api/visitor-profiles",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin", "senior-guard"),
+    handleCreateVisitorProfile
+  );
+  app.get(
+    "/api/visitor-profiles",
+    requireAuth,
+    handleListVisitorProfiles
+  );
+  app.get(
+    "/api/visitor-profiles/:id",
+    requireAuth,
+    handleGetVisitorProfile
+  );
+  app.patch(
+    "/api/visitor-profiles/:id",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin", "senior-guard"),
+    handleUpdateVisitorProfile
+  );
+  app.delete(
+    "/api/visitor-profiles/:id",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin", "senior-guard"),
+    handleSoftDeleteVisitorProfile
+  );
+  app.post(
+    "/api/visitor-profiles/:id/restore",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin", "senior-guard"),
+    handleRestoreVisitorProfile
   );
 
   // ─── Error Handler ─────────────────────────────────────────────────

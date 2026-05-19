@@ -29,6 +29,13 @@
       "when": 1778717200000,
       "tag": "0004_auto_approval_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778719800000,
+      "tag": "0005_visitor_profiles",
+      "breakpoints": true
     }
   ]
 }
