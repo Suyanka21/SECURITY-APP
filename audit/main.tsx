@@ -582,9 +582,17 @@ function makeVisitorProfilesApi(
   ): Promise<ApiResult<VisitorProfileResponse>> => {
     // V4 — happy-path soft-delete. Returns the row with deletedAt set
     // so the reducer can drop it from `order` (default visibility).
+    //
+    // The reducer keys updates by `profile.id`, so the stub MUST echo
+    // the requested id back — otherwise a freshly-created profile
+    // (whose id is not in `seededList`) would be "updated" under the
+    // SEED_PROFILE fallback id and the original row's `mutationInFlight`
+    // flag would never clear, leaving the Delete button stuck on
+    // "Working…" forever. A real server returns the row matching
+    // the requested id, never a different one.
     const found = seededList.find((p) => p.id === id) ?? SEED_PROFILE;
     return ok({
-      profile: { ...found, deletedAt: new Date().toISOString() },
+      profile: { ...found, id, deletedAt: new Date().toISOString() },
       traceId: "trace-delete",
     });
   };
@@ -602,9 +610,11 @@ function makeVisitorProfilesApi(
         "Profile is not in a deleted state — nothing to restore.",
       );
     }
+    // Echo the requested id back (see soft-delete note above) so the
+    // reducer can locate and update the original row.
     const found = seededList.find((p) => p.id === id) ?? SEED_PROFILE;
     return ok({
-      profile: { ...found, deletedAt: null },
+      profile: { ...found, id, deletedAt: null },
       traceId: "trace-restore",
     });
   };
