@@ -1239,4 +1239,169 @@ describe("gatePassReducer", () => {
       });
     });
   });
+
+  // ─── Feature 5 — Shift log aggregation ────────────────────────────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §7 (reducer contract).
+  describe("shift log slice (Feature 5)", () => {
+    const GUARD_ID = "22222222-2222-4222-8222-222222222222";
+
+    function makeRow(over: Partial<{ entries: number }> = {}) {
+      return {
+        guardId: GUARD_ID,
+        guardName: "A. Okafor",
+        badgeNumber: "G-1042",
+        totals: {
+          entries: over.entries ?? 1,
+          qr: 1,
+          walkIn: 0,
+          override: 0,
+          recognized: 0,
+          auto: 0,
+          approvalsDenied: 0,
+          approvalsExpired: 0,
+          autoApprovalsMatched: 0,
+          overrideAuthorized: 0,
+        },
+      };
+    }
+
+    it("seeds the empty shifts slice on initial state", () => {
+      expect(initialGatePassState.shifts).toEqual({
+        query: {},
+        rows: [],
+        loading: false,
+      });
+    });
+
+    it("SHIFTS_QUERY_CHANGED updates the filter and clears stale lastError", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          ...initialGatePassState.shifts,
+          lastError: { code: "INTERNAL_ERROR", message: "stale" },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "SHIFTS_QUERY_CHANGED",
+        query: {
+          fromIso: "2024-01-15T00:00:00.000Z",
+          toIso: "2024-01-16T00:00:00.000Z",
+          guardId: GUARD_ID,
+        },
+      });
+      expect(next.shifts.query).toEqual({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-16T00:00:00.000Z",
+        guardId: GUARD_ID,
+      });
+      expect(next.shifts.lastError).toBeUndefined();
+      // Rows / loading untouched by query edit.
+      expect(next.shifts.rows).toEqual([]);
+      expect(next.shifts.loading).toBe(false);
+    });
+
+    it("SHIFTS_LIST_STARTED flips loading and clears lastError, preserving prior rows", () => {
+      const prevRows = [makeRow()];
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: {},
+          rows: prevRows,
+          loading: false,
+          lastError: { code: "INTERNAL_ERROR", message: "old" },
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "SHIFTS_LIST_STARTED" });
+      expect(next.shifts.loading).toBe(true);
+      expect(next.shifts.lastError).toBeUndefined();
+      // Prior rows preserved so the UI does not blank during refresh.
+      expect(next.shifts.rows).toBe(prevRows);
+    });
+
+    it("SHIFTS_LIST_LOADED stores window + rows, clears loading and lastError", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: {},
+          rows: [],
+          loading: true,
+          lastError: { code: "INTERNAL_ERROR", message: "old" },
+        },
+      };
+      const rows = [makeRow({ entries: 3 }), makeRow({ entries: 1 })];
+      const next = gatePassReducer(seeded, {
+        type: "SHIFTS_LIST_LOADED",
+        window: {
+          fromIso: "2024-01-15T00:00:00.000Z",
+          toIso: "2024-01-15T18:00:00.000Z",
+        },
+        rows,
+      });
+      expect(next.shifts.loading).toBe(false);
+      expect(next.shifts.lastError).toBeUndefined();
+      expect(next.shifts.window).toEqual({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-15T18:00:00.000Z",
+      });
+      expect(next.shifts.rows).toBe(rows);
+    });
+
+    it("SHIFTS_LIST_FAILED records lastError, clears loading, and KEEPS prior rows (no silent wipe)", () => {
+      const prevRows = [makeRow({ entries: 2 })];
+      const prevWindow = {
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-15T18:00:00.000Z",
+      };
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: {},
+          window: prevWindow,
+          rows: prevRows,
+          loading: true,
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "SHIFTS_LIST_FAILED",
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "An unexpected error occurred",
+          traceId: "trace-x",
+        },
+      });
+      expect(next.shifts.loading).toBe(false);
+      expect(next.shifts.lastError).toEqual({
+        code: "INTERNAL_ERROR",
+        message: "An unexpected error occurred",
+        traceId: "trace-x",
+      });
+      // Prior rows + window preserved — a failure must not look like
+      // a silent empty list.
+      expect(next.shifts.rows).toBe(prevRows);
+      expect(next.shifts.window).toBe(prevWindow);
+    });
+
+    it("RESET_FLOW leaves the shifts slice untouched (admin lifecycle, not walk-in)", () => {
+      const rows = [makeRow()];
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: { guardId: GUARD_ID },
+          window: {
+            fromIso: "2024-01-15T00:00:00.000Z",
+            toIso: "2024-01-15T18:00:00.000Z",
+          },
+          rows,
+          loading: false,
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
+      expect(next.shifts.rows).toBe(rows);
+      expect(next.shifts.query).toEqual({ guardId: GUARD_ID });
+      expect(next.shifts.window).toEqual({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-15T18:00:00.000Z",
+      });
+    });
+  });
 });
