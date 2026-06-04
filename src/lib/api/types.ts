@@ -378,3 +378,41 @@ export interface ListVisitorProfilesResponse {
   };
   traceId: string;
 }
+
+// ─── Shift log aggregation (Feature 5) ──────────────────────────────────────
+// Source: src/docs/specs/shift-log-aggregation.md §4
+
+export interface ShiftTotalsView {
+  entries: number;
+  qr: number;
+  walkIn: number;
+  override: number;
+  recognized: number;
+  auto: number;
+  approvalsDenied: number;
+  approvalsExpired: number;
+  autoApprovalsMatched: number;
+  overrideAuthorized: number;
+}
+
+export interface ShiftSummaryView {
+  guardId: string;
+  guardName: string;
+  badgeNumber: string;
+  totals: ShiftTotalsView;
+}
+
+export interface ListShiftsQuery {
+  /** ISO-8601 UTC inclusive lower bound. Omit to default to today UTC midnight. */
+  fromIso?: string;
+  /** ISO-8601 UTC exclusive upper bound. Omit to default to now. */
+  toIso?: string;
+  /** Optional single-guard filter (UUID). */
+  guardId?: string;
+}
+
+export interface ListShiftsResponse {
+  window: { fromIso: string; toIso: string };
+  shifts: ShiftSummaryView[];
+  traceId: string;
+}
