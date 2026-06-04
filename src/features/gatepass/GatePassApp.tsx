@@ -7,6 +7,7 @@ import {
   OverridePanel,
   QrScanPanel,
   SearchPanel,
+  ShiftLogPanel,
   StatusBanner,
   VisitorsAdminPanel,
   WalkInPanel,
@@ -38,6 +39,9 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     restoreVisitorProfile: controller.restoreVisitorProfile,
     toggleVisitorProfilesIncludeDeleted:
       controller.toggleVisitorProfilesIncludeDeleted,
+    // Feature 5 — shift log aggregation wiring.
+    setShiftsQuery: controller.setShiftsQuery,
+    loadShifts: controller.loadShifts,
   };
 
   return (
@@ -107,6 +111,11 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
           <div className="grid gap-5">
             <AdminShell state={state} />
             <VisitorsAdminPanel
+              state={state}
+              dispatch={dispatch}
+              actions={actions}
+            />
+            <ShiftLogPanel
               state={state}
               dispatch={dispatch}
               actions={actions}

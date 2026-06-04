@@ -1173,6 +1173,21 @@ export function useGatePassController(
     void loadVisitorProfiles();
   }, [state.mode, state.visitorProfiles.includeDeleted, loadVisitorProfiles]);
 
+  // ─── Feature 5 — auto-load shift log on admin entry ─────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §8.
+  //
+  // Same discipline as the visitor-profile auto-load above: the admin
+  // sees a populated table on first paint instead of an empty grid
+  // they would misread as "no shifts yet". We intentionally do NOT
+  // refire on `state.shifts.query` changes — that loop belongs to the
+  // explicit Refresh button so the admin's pending edits aren't
+  // submitted on every keystroke. The default-query happy path on
+  // mount is what this effect covers.
+  useEffect(() => {
+    if (state.mode !== "admin") return;
+    void loadShifts();
+  }, [state.mode, loadShifts]);
+
   return useMemo(
     () => ({
       state,
