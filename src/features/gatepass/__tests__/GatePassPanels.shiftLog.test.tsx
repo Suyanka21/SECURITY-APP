@@ -129,10 +129,16 @@ describe("ShiftLogPanel — Feature 5 admin UI", () => {
           approvalsExpired: 0,
         },
       ),
+      // Source: src/server/services/shift-log-service.ts:147-172 —
+      // incrementMethod() always bumps `entries` alongside the per-method
+      // counter, so `entries === qr + walkIn + override + recognized + auto`
+      // for any row built from known method types. Both fixtures must
+      // honour that invariant or the harness lies about what the real
+      // service can produce.
       makeRow(
         { guardId: GUARD_B_ID, guardName: "M. Sato", badgeNumber: "G-1099" },
         {
-          entries: 7,
+          entries: 10, // 5 + 2 + 0 + 0 + 3
           qr: 5,
           walkIn: 2,
           override: 0,
@@ -158,7 +164,8 @@ describe("ShiftLogPanel — Feature 5 admin UI", () => {
     const rowB = within(screen.getByTestId(`shift-log-row-${GUARD_B_ID}`));
     expect(rowB.getByText("M. Sato")).toBeTruthy();
     expect(rowB.getByText("G-1099")).toBeTruthy();
-    expect(rowB.getByText("7")).toBeTruthy();
+    expect(rowB.getByText("10")).toBeTruthy(); // entries cell — invariant
+    expect(rowB.getAllByText("5")).toHaveLength(1); // qr
     expect(rowB.getByText("3")).toBeTruthy(); // auto
     expect(rowB.getAllByText("2")).toHaveLength(2); // walkIn AND expired
   });

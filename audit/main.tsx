@@ -655,12 +655,19 @@ const SEED_SHIFT_ROW_A: ShiftSummaryView = {
   },
 };
 
+// Source: src/server/services/shift-log-service.ts:147-172 —
+// incrementMethod() always bumps `entries` alongside the per-method
+// counter, so the production invariant is
+// `entries >= qr + walkIn + override + recognized + auto`
+// (equal when every method is known, greater only when an unknown
+// method-type slips through). Both SEED_SHIFT_ROW_A and B use known
+// methods only, so entries must be EXACTLY the sum of the buckets.
 const SEED_SHIFT_ROW_B: ShiftSummaryView = {
   guardId: "33333333-3333-4333-8333-333333333333",
   guardName: "M. Sato",
   badgeNumber: "G-1099",
   totals: {
-    entries: 7,
+    entries: 10, // 5 (qr) + 2 (walk-in) + 0 (override) + 0 (recognized) + 3 (auto)
     qr: 5,
     walkIn: 2,
     override: 0,
