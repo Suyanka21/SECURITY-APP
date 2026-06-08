@@ -103,6 +103,9 @@ export const initialGatePassState: GatePassState = {
     mutationErrors: {},
     includeDeleted: false,
   },
+  visitorInvitations: {
+    status: "idle",
+  },
   shifts: {
     query: {},
     rows: [],
@@ -1181,6 +1184,54 @@ export function gatePassReducer(
           loading: false,
           lastError: action.error,
         },
+      };
+
+    // ─── Visitor invitations (Feature 6 / Guest QR Ticket) ──────────
+    // Source: src/docs/specs/guest-qr-ticket.md §7.
+    //
+    // The slice is admin-only. RESET_FLOW does NOT clear it.
+    case "VISITOR_INVITATION_ISSUE_STARTED":
+      return {
+        ...state,
+        visitorInvitations: {
+          status: "submitting",
+          // Clear prior issued + error so the success card/error banner
+          // do not flash stale state during the next submission.
+          lastIssued: undefined,
+          lastError: undefined,
+        },
+      };
+
+    case "VISITOR_INVITATION_ISSUE_SUCCEEDED":
+      return {
+        ...state,
+        visitorInvitations: {
+          status: "issued",
+          lastIssued: action.invitation,
+          lastError: undefined,
+        },
+      };
+
+    case "VISITOR_INVITATION_ISSUE_FAILED":
+      // Default-deny: the form lands in "failed", NOT "issued". No
+      // partial success path. The error is preserved so the form can
+      // re-render the banner without another network call.
+      return {
+        ...state,
+        visitorInvitations: {
+          status: "failed",
+          lastIssued: undefined,
+          lastError: action.error,
+        },
+      };
+
+    case "VISITOR_INVITATION_RESET":
+      // Admin clicked "issue another" or closed the success card.
+      // Clears the raw token from memory so it does not linger after
+      // it has been delivered to the visitor.
+      return {
+        ...state,
+        visitorInvitations: { status: "idle" },
       };
 
     default:

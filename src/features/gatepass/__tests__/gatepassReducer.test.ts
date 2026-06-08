@@ -1404,4 +1404,126 @@ describe("gatePassReducer", () => {
       });
     });
   });
+
+  // ─── Feature 6 — visitor invitation slice ─────────────────────────
+  // Source: src/docs/specs/guest-qr-ticket.md §7 + gatepassReducer.ts
+  // The default-deny invariant: ISSUE_FAILED must NEVER leave the
+  // slice in "issued" — no path can land the form on a success card
+  // unless the server returned a real 201 with an invitation payload.
+
+  describe("visitor invitation slice", () => {
+    const INVITATION_ID = "66666666-6666-4666-8666-666666666666";
+    const RAW_TOKEN = "TEST_RAW_TOKEN_FORTY_THREE_CHARS_ABCDEFGHIJ";
+    function makeIssued() {
+      return {
+        id: INVITATION_ID,
+        qrToken: RAW_TOKEN,
+        passUrl: `https://gate.example.com/pass/${RAW_TOKEN}`,
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        issuedAt: new Date().toISOString(),
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+        plate: null,
+      };
+    }
+
+    it("initial state is idle with no lastIssued / lastError", () => {
+      expect(initialGatePassState.visitorInvitations).toEqual({
+        status: "idle",
+      });
+    });
+
+    it("VISITOR_INVITATION_ISSUE_STARTED clears prior issued + error and enters submitting", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: {
+          status: "issued",
+          lastIssued: makeIssued(),
+          lastError: { code: "PRIOR", message: "stale" },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_ISSUE_STARTED",
+      });
+      expect(next.visitorInvitations.status).toBe("submitting");
+      expect(next.visitorInvitations.lastIssued).toBeUndefined();
+      expect(next.visitorInvitations.lastError).toBeUndefined();
+    });
+
+    it("VISITOR_INVITATION_ISSUE_SUCCEEDED lands in 'issued' with the full invitation view", () => {
+      const inv = makeIssued();
+      const next = gatePassReducer(initialGatePassState, {
+        type: "VISITOR_INVITATION_ISSUE_SUCCEEDED",
+        invitation: inv,
+      });
+      expect(next.visitorInvitations.status).toBe("issued");
+      expect(next.visitorInvitations.lastIssued).toEqual(inv);
+      expect(next.visitorInvitations.lastError).toBeUndefined();
+    });
+
+    it("VISITOR_INVITATION_ISSUE_FAILED lands in 'failed' with the error (default-deny: NOT in 'issued')", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: { status: "submitting" },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_ISSUE_FAILED",
+        error: {
+          code: "AUTH_FORBIDDEN",
+          message: "Guard tokens cannot mint invitations",
+          traceId: "trace-403",
+        },
+      });
+      expect(next.visitorInvitations.status).toBe("failed");
+      expect(next.visitorInvitations.status).not.toBe("issued");
+      expect(next.visitorInvitations.lastIssued).toBeUndefined();
+      expect(next.visitorInvitations.lastError).toEqual({
+        code: "AUTH_FORBIDDEN",
+        message: "Guard tokens cannot mint invitations",
+        traceId: "trace-403",
+      });
+    });
+
+    it("VISITOR_INVITATION_RESET clears the slice back to idle (drops raw token from memory)", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: {
+          status: "issued",
+          lastIssued: makeIssued(),
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_RESET",
+      });
+      expect(next.visitorInvitations).toEqual({ status: "idle" });
+      // Critical: the raw token is no longer reachable from state.
+      expect(JSON.stringify(next.visitorInvitations)).not.toContain(RAW_TOKEN);
+    });
+
+    it("RESET_FLOW does NOT clear the visitor-invitation slice (admin subview, not per-walk-in)", () => {
+      const inv = makeIssued();
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: { status: "issued", lastIssued: inv },
+      };
+      const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
+      expect(next.visitorInvitations.status).toBe("issued");
+      expect(next.visitorInvitations.lastIssued).toEqual(inv);
+    });
+
+    it("default-deny: an ISSUE_FAILED following a stale ISSUE_SUCCEEDED clears lastIssued", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: { status: "issued", lastIssued: makeIssued() },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_ISSUE_FAILED",
+        error: { code: "INTERNAL_ERROR", message: "kaboom" },
+      });
+      // The form MUST NOT display the prior issued card after a failed retry.
+      expect(next.visitorInvitations.lastIssued).toBeUndefined();
+      expect(next.visitorInvitations.status).toBe("failed");
+    });
+  });
 });
