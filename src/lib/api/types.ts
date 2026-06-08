@@ -416,3 +416,53 @@ export interface ListShiftsResponse {
   shifts: ShiftSummaryView[];
   traceId: string;
 }
+
+// ─── Visitor invitations (Feature 6 — Guest QR Ticket) ──────────────────────
+// Source: src/docs/specs/guest-qr-ticket.md §6
+
+/**
+ * Raw token returned EXACTLY ONCE in the issue response.
+ * 256 bits base64url-encoded (43 chars). Server stores SHA-256 hash only.
+ */
+export interface VisitorInvitationIssuedView {
+  id: string;
+  qrToken: string;
+  passUrl: string;
+  expiresAt: string;
+  issuedAt: string;
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+}
+
+/**
+ * Safe display payload returned by the public preview endpoint.
+ * Deliberately omits id, qrTokenHash, isUsed, usedAt — these are
+ * implementation details that MUST NOT leak to the visitor's device.
+ */
+export interface VisitorInvitationPreviewView {
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+  expiresAt: string;
+}
+
+export interface IssueVisitorInvitationRequest {
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate?: string | null;
+  /** Optional override of the default TTL (24h). Server clamps to [1, 168]. */
+  ttlHours?: number;
+}
+
+export interface IssueVisitorInvitationResponse {
+  invitation: VisitorInvitationIssuedView;
+  traceId: string;
+}
+
+export interface PreviewVisitorInvitationResponse {
+  invitation: VisitorInvitationPreviewView;
+}
