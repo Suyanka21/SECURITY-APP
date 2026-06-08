@@ -14,16 +14,19 @@ import type { GatePassApi } from "@/lib/api/gatepass";
 import type { guardApprovalApi } from "@/lib/api/approvals";
 import type { guardNotificationsApi } from "@/lib/api/notifications";
 import type { visitorProfilesApi } from "@/lib/api/visitor-profiles";
+import type { shiftsApi } from "@/lib/api/shifts";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
+  ListShiftsResponse,
   ListVisitorProfilesResponse,
   NotificationRetryResponse,
   NotificationView,
   NotificationsListResponse,
   RecognizedVisitorsResponse,
+  ShiftSummaryView,
   VisitorProfileResponse,
   VisitorProfileView,
 } from "@/lib/api/types";
@@ -629,6 +632,112 @@ function makeVisitorProfilesApi(
   } as unknown as typeof visitorProfilesApi;
 }
 
+// ─── Feature 5 — Shift log aggregation scenario fixtures ────────────
+// Source: src/docs/specs/shift-log-aggregation.md §10 (audit harness
+// scenarios). Two seeded guard rows so SH2 has something meaningful
+// to filter against.
+
+const SEED_SHIFT_ROW_A: ShiftSummaryView = {
+  guardId: "22222222-2222-4222-8222-222222222222",
+  guardName: "A. Okafor",
+  badgeNumber: "G-1042",
+  totals: {
+    entries: 4,
+    qr: 2,
+    walkIn: 1,
+    override: 1,
+    recognized: 0,
+    auto: 0,
+    approvalsDenied: 1,
+    approvalsExpired: 0,
+    autoApprovalsMatched: 0,
+    overrideAuthorized: 1,
+  },
+};
+
+// Source: src/server/services/shift-log-service.ts:147-172 —
+// incrementMethod() always bumps `entries` alongside the per-method
+// counter, so the production invariant is
+// `entries >= qr + walkIn + override + recognized + auto`
+// (equal when every method is known, greater only when an unknown
+// method-type slips through). Both SEED_SHIFT_ROW_A and B use known
+// methods only, so entries must be EXACTLY the sum of the buckets.
+const SEED_SHIFT_ROW_B: ShiftSummaryView = {
+  guardId: "33333333-3333-4333-8333-333333333333",
+  guardName: "M. Sato",
+  badgeNumber: "G-1099",
+  totals: {
+    entries: 10, // 5 (qr) + 2 (walk-in) + 0 (override) + 0 (recognized) + 3 (auto)
+    qr: 5,
+    walkIn: 2,
+    override: 0,
+    recognized: 0,
+    auto: 3,
+    approvalsDenied: 0,
+    approvalsExpired: 2,
+    autoApprovalsMatched: 3,
+    overrideAuthorized: 0,
+  },
+};
+
+function makeShiftsApi(scenario: string): typeof shiftsApi {
+  const listShifts = async (
+    query: { fromIso?: string; toIso?: string; guardId?: string } = {},
+  ): Promise<ApiResult<ListShiftsResponse>> => {
+    // SH3 — critical default-deny test. requireRole(['admin','senior-
+    // guard']) on the server rejects guard tokens with 403
+    // AUTH_FORBIDDEN. The frontend MUST surface this as a banner and
+    // not silently render an empty table.
+    if (scenario === "shifts-list-403") {
+      return fail(
+        403,
+        "AUTH_FORBIDDEN",
+        "Guard tokens cannot read shift aggregations.",
+      );
+    }
+    // SH4 — server error. Must surface, must not wipe prior rows.
+    if (scenario === "shifts-list-500") {
+      return fail(
+        500,
+        "INTERNAL_ERROR",
+        "An unexpected error occurred. Please retry.",
+      );
+    }
+    // SH2 — single-guard filter. When the admin pins guardId in the
+    // form and clicks Refresh, the API receives the UUID. The stub
+    // narrows the seeded rows so the panel proves the filter is
+    // actually forwarded end-to-end.
+    if (query.guardId) {
+      const found =
+        query.guardId === SEED_SHIFT_ROW_A.guardId
+          ? [SEED_SHIFT_ROW_A]
+          : query.guardId === SEED_SHIFT_ROW_B.guardId
+            ? [SEED_SHIFT_ROW_B]
+            : [];
+      return ok({
+        window: {
+          fromIso: query.fromIso ?? "2024-02-01T00:00:00.000Z",
+          toIso: query.toIso ?? "2024-02-01T08:00:00.000Z",
+        },
+        shifts: found,
+        traceId: "trace-shifts-by-guard",
+      });
+    }
+    // SH1 — happy path. Default window returns both rows sorted by
+    // entries DESC (mirroring the server's deterministic sort).
+    return ok({
+      window: {
+        fromIso: query.fromIso ?? "2024-02-01T00:00:00.000Z",
+        toIso: query.toIso ?? "2024-02-01T08:00:00.000Z",
+      },
+      shifts: [SEED_SHIFT_ROW_B, SEED_SHIFT_ROW_A],
+      traceId: "trace-shifts-list",
+    });
+  };
+
+  return { listShifts } as unknown as typeof shiftsApi;
+}
+
 const SCENARIOS = [
   { id: "submit-500", label: "S1 · POST /entries → 500" },
   { id: "submit-422-unit", label: "S2 · POST /entries → 422 (field=unit)" },
@@ -653,6 +762,10 @@ const SCENARIOS = [
   { id: "visitor-create-403", label: "V3 · Create profile → 403 AUTH_FORBIDDEN guard token (Feature 4 — critical default-deny)" },
   { id: "visitor-delete-200", label: "V4 · Soft-delete profile → 200 success (Feature 4)" },
   { id: "visitor-restore-409", label: "V5 · Restore profile → 409 PROFILE_RESTORE_CONFLICT (Feature 4)" },
+  { id: "shifts-list-200", label: "SH1 · Shift log → 200 happy path (Feature 5)" },
+  { id: "shifts-filter-guard", label: "SH2 · Shift log → single-guard filter (Feature 5)" },
+  { id: "shifts-list-403", label: "SH3 · Shift log → 403 AUTH_FORBIDDEN (Feature 5 — critical default-deny)" },
+  { id: "shifts-list-500", label: "SH4 · Shift log → 500 INTERNAL_ERROR (Feature 5)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
@@ -664,6 +777,7 @@ function Harness() {
   const approvalApi = makeApprovalApi(scenario);
   const notificationsApi = makeNotificationsApi(scenario);
   const visitorProfilesApi = makeVisitorProfilesApi(scenario);
+  const shiftsApi = makeShiftsApi(scenario);
 
   return (
     <div>
@@ -707,6 +821,7 @@ function Harness() {
           approvalApi,
           notificationsApi,
           visitorProfilesApi,
+          shiftsApi,
           approvalPollIntervalMs: 1500,
           notificationsPollIntervalMs: 1500,
         }}

@@ -46,6 +46,8 @@ function actionsStub(): GatePassActions {
     softDeleteVisitorProfile: vi.fn(async () => undefined),
     restoreVisitorProfile: vi.fn(async () => undefined),
     toggleVisitorProfilesIncludeDeleted: vi.fn(),
+    setShiftsQuery: vi.fn(),
+    loadShifts: vi.fn(async () => undefined),
   };
 }
 

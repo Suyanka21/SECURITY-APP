@@ -2009,3 +2009,170 @@ describe("useGatePassController — visitor profile CRUD (Feature 4)", () => {
     expect(visitorApi.listProfiles).not.toHaveBeenCalled();
   });
 });
+
+// ─── Feature 5 — Shift log aggregation controller tests ────────────────
+//
+// Source: src/docs/specs/shift-log-aggregation.md §8.
+//
+// Each method must dispatch exactly one terminal reducer action:
+//   SHIFTS_LIST_STARTED → SHIFTS_LIST_LOADED | SHIFTS_LIST_FAILED.
+// No silent success path is permitted. A failed load must surface the
+// error and leave any previously-loaded rows in place.
+
+import type { shiftsApi } from "@/lib/api/shifts";
+import type {
+  ListShiftsResponse,
+  ShiftSummaryView,
+} from "@/lib/api/types";
+
+interface MockShiftsApi {
+  listShifts: ReturnType<typeof vi.fn>;
+}
+
+function makeShiftsApi(): MockShiftsApi {
+  return { listShifts: vi.fn() };
+}
+
+function buildShiftsController(shiftsClient: MockShiftsApi) {
+  return renderHook(() =>
+    useGatePassController({
+      shiftsApi: shiftsClient as unknown as typeof shiftsApi,
+      now: () => new Date("2024-02-01T00:00:00Z"),
+    }),
+  );
+}
+
+const ROW_A: ShiftSummaryView = {
+  guardId: "22222222-2222-4222-8222-222222222222",
+  guardName: "A. Okafor",
+  badgeNumber: "G-1042",
+  totals: {
+    entries: 3,
+    qr: 2,
+    walkIn: 1,
+    override: 0,
+    recognized: 0,
+    auto: 0,
+    approvalsDenied: 0,
+    approvalsExpired: 0,
+    autoApprovalsMatched: 0,
+    overrideAuthorized: 0,
+  },
+};
+
+describe("useGatePassController — shift log aggregation (Feature 5)", () => {
+  let shiftsClient: MockShiftsApi;
+
+  beforeEach(() => {
+    shiftsClient = makeShiftsApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("loadShifts dispatches SHIFTS_LIST_LOADED with window + rows on success", async () => {
+    shiftsClient.listShifts.mockResolvedValue(
+      ok<ListShiftsResponse>({
+        window: {
+          fromIso: "2024-02-01T00:00:00.000Z",
+          toIso: "2024-02-01T08:00:00.000Z",
+        },
+        shifts: [ROW_A],
+        traceId: "trace-ok",
+      }),
+    );
+    const hook = buildShiftsController(shiftsClient);
+    await act(async () => {
+      await hook.result.current.loadShifts();
+    });
+    expect(shiftsClient.listShifts).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.shifts.loading).toBe(false);
+    expect(hook.result.current.state.shifts.rows).toEqual([ROW_A]);
+    expect(hook.result.current.state.shifts.window).toEqual({
+      fromIso: "2024-02-01T00:00:00.000Z",
+      toIso: "2024-02-01T08:00:00.000Z",
+    });
+    expect(hook.result.current.state.shifts.lastError).toBeUndefined();
+  });
+
+  it("loadShifts dispatches SHIFTS_LIST_FAILED on 500 and keeps prior rows (no silent wipe)", async () => {
+    // Seed: succeed first, then 500. Prior rows must NOT be wiped.
+    shiftsClient.listShifts
+      .mockResolvedValueOnce(
+        ok<ListShiftsResponse>({
+          window: {
+            fromIso: "2024-02-01T00:00:00.000Z",
+            toIso: "2024-02-01T08:00:00.000Z",
+          },
+          shifts: [ROW_A],
+          traceId: "trace-1",
+        }),
+      )
+      .mockResolvedValueOnce(fail(500, "INTERNAL_ERROR", "boom"));
+    const hook = buildShiftsController(shiftsClient);
+    await act(async () => {
+      await hook.result.current.loadShifts();
+    });
+    expect(hook.result.current.state.shifts.rows).toEqual([ROW_A]);
+    await act(async () => {
+      await hook.result.current.loadShifts();
+    });
+    expect(hook.result.current.state.shifts.loading).toBe(false);
+    expect(hook.result.current.state.shifts.lastError?.code).toBe(
+      "INTERNAL_ERROR",
+    );
+    // Critical: previously-loaded rows must remain visible so the UI
+    // does not silently flash to an empty table on a transient 500.
+    expect(hook.result.current.state.shifts.rows).toEqual([ROW_A]);
+  });
+
+  it("loadShifts(override) stores the override as the new query AND uses it for the call", async () => {
+    shiftsClient.listShifts.mockResolvedValue(
+      ok<ListShiftsResponse>({
+        window: {
+          fromIso: "2024-01-15T00:00:00.000Z",
+          toIso: "2024-01-16T00:00:00.000Z",
+        },
+        shifts: [],
+        traceId: "trace-q",
+      }),
+    );
+    const hook = buildShiftsController(shiftsClient);
+    await act(async () => {
+      await hook.result.current.loadShifts({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-16T00:00:00.000Z",
+        guardId: ROW_A.guardId,
+      });
+    });
+    // Override forwarded to API verbatim.
+    expect(shiftsClient.listShifts).toHaveBeenCalledWith({
+      fromIso: "2024-01-15T00:00:00.000Z",
+      toIso: "2024-01-16T00:00:00.000Z",
+      guardId: ROW_A.guardId,
+    });
+    // Override persisted into the slice so a subsequent refresh keeps it.
+    expect(hook.result.current.state.shifts.query).toEqual({
+      fromIso: "2024-01-15T00:00:00.000Z",
+      toIso: "2024-01-16T00:00:00.000Z",
+      guardId: ROW_A.guardId,
+    });
+  });
+
+  it("setShiftsQuery updates the slice without firing a network call", async () => {
+    const hook = buildShiftsController(shiftsClient);
+    await act(async () => {
+      hook.result.current.setShiftsQuery({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-16T00:00:00.000Z",
+      });
+    });
+    expect(hook.result.current.state.shifts.query).toEqual({
+      fromIso: "2024-01-15T00:00:00.000Z",
+      toIso: "2024-01-16T00:00:00.000Z",
+    });
+    // Pure setter: no API hit.
+    expect(shiftsClient.listShifts).not.toHaveBeenCalled();
+  });
+});

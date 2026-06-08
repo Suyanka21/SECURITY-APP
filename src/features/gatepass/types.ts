@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   RecognizedVisitorItem,
+  ShiftSummaryView,
   SyncEntryResult,
   VisitorProfileView,
 } from "@/lib/api/types";
@@ -226,6 +227,34 @@ export type VisitorProfilesState = {
 
 export const VISITOR_PROFILE_NEW_KEY = "__new__";
 
+/**
+ * Source: src/docs/specs/shift-log-aggregation.md §7.
+ *
+ * The shift log slice is intentionally narrow: a query describes the
+ * admin's current filter, a window mirrors what the server actually
+ * computed, rows hold the deterministic summary, and lastError carries
+ * the most-recent failure so the UI can surface it without losing the
+ * previously-loaded rows (no-silent-success).
+ */
+export type ShiftsQuery = {
+  /** ISO-8601 UTC inclusive lower bound. Optional — server defaults. */
+  fromIso?: string;
+  /** ISO-8601 UTC exclusive upper bound. Optional — server defaults. */
+  toIso?: string;
+  /** Optional single-guard filter (UUID). */
+  guardId?: string;
+};
+
+export type ShiftsState = {
+  /** What the admin asked for; sent to the server on the next refresh. */
+  query: ShiftsQuery;
+  /** What the server actually computed over (echoed from the response). */
+  window?: { fromIso: string; toIso: string };
+  rows: ShiftSummaryView[];
+  loading: boolean;
+  lastError?: GatePassError;
+};
+
 export type GatePassState = {
   mode: GatePassMode;
   guardId: string;
@@ -269,6 +298,18 @@ export type GatePassState = {
    * Source: src/docs/specs/visitor-profiles.md §8.
    */
   visitorProfiles: VisitorProfilesState;
+  /**
+   * Admin-only shift log aggregation slice (Feature 5).
+   * Source: src/docs/specs/shift-log-aggregation.md §7.
+   *
+   * Read-only view: query describes what the admin asked for; window
+   * is what the server actually computed over (so a 422 doesn't
+   * silently shift the displayed bounds). `rows` is sorted server-side.
+   *
+   * RESET_FLOW does NOT clear this slice — it belongs to the admin
+   * subview, not the per-walk-in lifecycle.
+   */
+  shifts: ShiftsState;
 };
 
 export type GatePassAction =
@@ -404,7 +445,20 @@ export type GatePassAction =
       profileId: string;
       error: GatePassError;
     }
-  | { type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED" };
+  | { type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED" }
+  // ─── Shift log aggregation lifecycle (Feature 5) ────────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §7.
+  | {
+      type: "SHIFTS_QUERY_CHANGED";
+      query: ShiftsQuery;
+    }
+  | { type: "SHIFTS_LIST_STARTED" }
+  | {
+      type: "SHIFTS_LIST_LOADED";
+      window: { fromIso: string; toIso: string };
+      rows: ShiftSummaryView[];
+    }
+  | { type: "SHIFTS_LIST_FAILED"; error: GatePassError };
 
 /** Re-exported for callers that already typed against the API shape. */
 export type { ApiErrorBody, RecognizedVisitorItem };

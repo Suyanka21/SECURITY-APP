@@ -103,6 +103,11 @@ export const initialGatePassState: GatePassState = {
     mutationErrors: {},
     includeDeleted: false,
   },
+  shifts: {
+    query: {},
+    rows: [],
+    loading: false,
+  },
 };
 
 /**
@@ -1122,6 +1127,59 @@ export function gatePassReducer(
           ...state.visitorProfiles,
           includeDeleted: !state.visitorProfiles.includeDeleted,
           lastError: undefined,
+        },
+      };
+
+    // ─── Shift log aggregation (Feature 5) ────────────────────────
+    // Source: src/docs/specs/shift-log-aggregation.md §7 (reducer
+    // contract). Default-deny: a failed load does NOT wipe the
+    // previously-loaded rows; lastError surfaces the failure so the UI
+    // can render a banner without silently dropping the data.
+
+    case "SHIFTS_QUERY_CHANGED":
+      // Pure update of the filter. Clears lastError so the user's next
+      // load doesn't surface a stale error from the previous query.
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          query: action.query,
+          lastError: undefined,
+        },
+      };
+
+    case "SHIFTS_LIST_STARTED":
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          loading: true,
+          lastError: undefined,
+        },
+      };
+
+    case "SHIFTS_LIST_LOADED":
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          loading: false,
+          window: action.window,
+          rows: action.rows,
+          lastError: undefined,
+        },
+      };
+
+    case "SHIFTS_LIST_FAILED":
+      // Keep prior rows. Surfacing the error in lastError is required
+      // by the trustless contract — a 500 must NOT look like a quiet
+      // empty list.
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          loading: false,
+          lastError: action.error,
         },
       };
 
