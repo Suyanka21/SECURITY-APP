@@ -32,8 +32,10 @@ but for which we have no issue side.
 
 ## 2. Goals
 
-1. A resident (or an admin acting on their behalf) can issue a visitor invitation in under
-   60 seconds, producing a QR pass the visitor can show at the gate.
+1. An admin or senior-guard (acting on a resident's request, captured via name + unit)
+   can issue a visitor invitation in under 60 seconds, producing a QR pass the visitor
+   can show at the gate. A resident-self-service portal is a separate feature; v1's
+   audience is the staff issuing on the resident's behalf.
 2. The guard scanning the QR sees the same `Entry confirmed` panel as today — zero new UI
    on the guard side.
 3. Every issued ticket has an explicit expiry. Expired QRs **never** create an entry.
@@ -48,8 +50,9 @@ but for which we have no issue side.
 ## 3. Non-Goals (Out of Scope for This Feature)
 
 - **Resident self-service login.** v1 issues invitations from the existing admin shell
-  using the same `requireRole(['admin', 'resident'])` middleware that gates auto-approval
-  rule CRUD. A standalone resident portal with passwordless login is a separate feature.
+  using the same `requireRole('admin', 'senior-guard')` middleware that gates visitor-
+  profile CRUD (Feature 4). A standalone resident portal with passwordless login is a
+  separate feature.
 - **Visitor identity verification at scan time** (face match, ID check). Out of scope.
   The QR is the credential; the guard is the verifier.
 - **Push delivery of the QR.** The pass URL is returned to the issuer and shared by them
@@ -63,10 +66,10 @@ but for which we have no issue side.
 
 | # | Assumption | Validation strategy |
 |---|---|---|
-| A1 | The existing `authorization_decisions` table is the right home for these tickets. It already has `qr_token_hash` UNIQUE, `expires_at`, `is_used`, `used_at`, `used_by_guard_id`. F6 adds one nullable column: `approval_request_id` (FK to `approval_requests`) so we can trace a ticket back to its issuing decision. | Schema review in slice 2. |
+| A1 | The existing `authorization_decisions` table is the right home for these tickets. It already has `qr_token_hash` UNIQUE, `expires_at`, `is_used`, `used_at`, `used_by_guard_id`, `created_at`. **No schema migration is required.** Tracing an invitation to its issuer is captured in the existing `audit_log` table (`qr_invitation_issued` event with `actorId`). | Schema verified against src/db/schema.ts lines 130-200; no slice 1 needed. |
 | A2 | The existing `qr-service.validateQrToken` already covers verify with default-deny on `QR_NOT_FOUND` / `QR_REPLAYED` / `QR_EXPIRED`. No changes to verify; F6 only adds an **issue** path. | Code reading completed (src/server/services/qr-service.ts lines 1-100); existing audit-harness QR scenarios still pass after F6 lands. |
 | A3 | The token is 32 random bytes, base64url-encoded — same shape as Feature 1's magic-link token. SHA-256 hashing matches the existing `hashQrToken` helper. | Cryptographic primitives reused verbatim. |
-| A4 | Issuing role is `admin` OR `resident` (same as `auto-approval-rules` per Feature 3). Audit harness stubs the auth boundary the same way Feature 4 and Feature 5 do. | Reuse `requireRole(['admin', 'resident'])` middleware verbatim; add 1 routing test that 403s a guard token. |
+| A4 | Issuing role is `admin` OR `senior-guard` (same as Feature 4 visitor-profile CRUD; verified the actual `GuardRole` enum is `"guard" \| "senior-guard" \| "admin"` — no `resident` role exists in the auth layer). A standalone resident self-service portal is a separate feature. Audit harness stubs the auth boundary the same way Feature 4 and Feature 5 do. | Reuse `requireRole('admin', 'senior-guard')` middleware verbatim; add 1 routing test that 403s a regular guard token. |
 | A5 | Default TTL is **24 hours**; configurable per invitation up to a 7-day cap. A guard-shift window is ~8 hours, so 24h covers same-day visits with margin. Beyond 7 days, the resident should re-issue. | `MAX_INVITATION_TTL_HOURS=168`; covered by service test. |
 | A6 | The visitor's pass URL is unauthenticated. The token IN the URL is the auth, same as Feature 1's magic-link pattern. The pass page is read-only and renders the QR PNG client-side. | Token has 256 bits of entropy → unguessable. Pass page does NOT consume the QR — only display. Consumption happens on guard scan. |
 | A7 | Pass URL format: `${PUBLIC_BASE_URL}/pass/${token}`. The pass page is a static React route that calls `GET /api/visitor-invitations/:token/preview` (read-only, returns only safe display fields: visitorName, host, unit, expiresAt, isUsed). It does NOT mark the QR as used. | Preview endpoint is idempotent and rate-limited. |
@@ -118,7 +121,7 @@ The consume side is **already implemented**. F6 only adds the issue + preview si
 
 ### `POST /api/visitor-invitations` — Issue (resident/admin)
 
-**Auth:** `requireRole(['admin', 'resident'])`. Guard tokens → 403 `AUTH_FORBIDDEN`.
+**Auth:** `requireAuth` + `requireRole('admin', 'senior-guard')`. Regular guard tokens → 403 `AUTH_FORBIDDEN`. Missing/expired token → 401 `AUTH_REQUIRED`.
 
 **Request:**
 ```ts
@@ -160,7 +163,8 @@ The consume side is **already implemented**. F6 only adds the issue + preview si
 **Errors:**
 | Code | Status | Trigger |
 |---|---|---|
-| `AUTH_FORBIDDEN` | 403 | Guard token attempted issue. Default-deny. |
+| `AUTH_REQUIRED` | 401 | Missing or expired JWT. |
+| `AUTH_FORBIDDEN` | 403 | Regular guard token attempted issue. Default-deny. |
 | `VALIDATION_ERROR` | 422 | Zod failure; field-specific message. |
 | `INTERNAL_ERROR` | 500 | DB transaction failure (returned with traceId). |
 
@@ -195,7 +199,7 @@ The consume side is **already implemented**. F6 only adds the issue + preview si
 
 ### Issue surface — Admin shell
 
-A new card on the existing admin module: **"Invite a visitor"**. Form fields: visitor name, host, unit, plate (optional), TTL (preset: 24h / 3d / 7d). On submit:
+A new card on the existing admin module (next to the Visitor Profiles panel): **"Invite a visitor"**. Form fields: visitor name, host, unit, plate (optional), TTL (preset: 24h / 3d / 7d). On submit:
 
 1. Reducer dispatches `INVITATION_ISSUE_STARTED`.
 2. API call. On success: `INVITATION_ISSUED` with the invitation payload.
@@ -221,7 +225,7 @@ No login. No JS that mutates state. Pass page is read-only.
 | ID | Scenario | Expected outcome | Why it matters |
 |---|---|---|---|
 | Q1 | Happy issue → preview → guard scan → entry created | Confirmation panel; entry logged; `is_used=true` after | Baseline |
-| Q2 | Guard token attempts `POST /api/visitor-invitations` | 403 `AUTH_FORBIDDEN`; no row in `authorization_decisions` | Default-deny on issue |
+| Q2 | Regular guard token attempts `POST /api/visitor-invitations` | 403 `AUTH_FORBIDDEN`; no row in `authorization_decisions` | Default-deny on issue |
 | Q3 | Expired QR scan | `QR_EXPIRED` banner on guard view; no entry | Default-deny on stale credentials |
 | Q4 | Replayed QR scan (used → re-scan) | `QR_REPLAYED` banner; no second entry | Default-deny on replay |
 | Q5 | Tampered/malformed QR scan | `QR_NOT_FOUND` banner; no entry | Default-deny on forgery |
@@ -235,7 +239,7 @@ Q2, Q3, Q4, Q5, Q6 are **default-deny gates**. Q1 is the only happy path.
 |---|---|
 | Pass URL forwarded to an unintended visitor | Single-use enforcement at DB layer; first scan wins; subsequent scans → `QR_REPLAYED`. |
 | Token leaked in logs | `qr-service.ts` already enforces "hash only" discipline; F6 service follows same pattern; new audit-log assertion in tests that raw token never appears. |
-| Resident over-issues → spam | Rate limit per-resident on `POST /api/visitor-invitations`: max 50 per hour. Out of scope for slice 0; tracked as a follow-up. |
+| Issuer over-issues → spam | Rate limit per-issuer on `POST /api/visitor-invitations`: target 50 per hour. Out of scope for slice 0; tracked as a follow-up. |
 | Server clock skew → premature expiry | Server uses UTC throughout; client renders `expiresAt` in local TZ. Existing TZ pattern from Feature 1. |
 | `MAX_INVITATION_TTL_HOURS` set too high in misconfigured env | Hard-coded ceiling of 168h in the Zod schema (not env-driven). Even if env says higher, service rejects. |
 
