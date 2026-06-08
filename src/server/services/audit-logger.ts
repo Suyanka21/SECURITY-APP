@@ -63,7 +63,12 @@ export type AuditEventType =
   | "visitor_profile_created"
   | "visitor_profile_updated"
   | "visitor_profile_soft_deleted"
-  | "visitor_profile_restored";
+  | "visitor_profile_restored"
+  // Source: src/docs/specs/guest-qr-ticket.md §6 — Feature 6 issue event.
+  // Written when an admin/senior-guard issues a visitor invitation.
+  // The raw QR token is NEVER part of the payload — only the SHA-256
+  // hash, mirroring the discipline in qr-service.ts.
+  | "qr_invitation_issued";
 
 export interface AuditEvent {
   /** Unique immutable event ID */
