@@ -1887,4 +1887,125 @@ describe("useGatePassController — visitor profile CRUD (Feature 4)", () => {
       hook.result.current.state.visitorProfiles.lastError,
     ).toBeUndefined();
   });
+
+  // ─── Regression: G1 — auto-load on entering admin mode ───────────────
+  // Source: test-report-feature-4.md §Observed gaps (G1).
+  // Before this fix, the visitor directory only loaded when an admin
+  // explicitly invoked loadVisitorProfiles. Entering admin mode left
+  // the table empty, which a real admin would mistake for "no profiles
+  // exist." The auto-load happens once per NAVIGATE → "admin"
+  // transition; it does NOT fire on every render or on irrelevant
+  // mode changes.
+  it("G1 — auto-loads the visitor directory when NAVIGATE moves the operator into admin mode", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      ok<ListVisitorProfilesResponse>({
+        profiles: [PROFILE_A],
+        pagination: { page: 1, pageSize: 25, totalItems: 1, totalPages: 1 },
+        traceId: "t-g1",
+      }),
+    );
+    const hook = buildVisitorController(visitorApi);
+    // Precondition: starting mode is "home" so the auto-load gate has
+    // not fired and the API has not been touched yet.
+    expect(hook.result.current.state.mode).toBe("home");
+    expect(visitorApi.listProfiles).not.toHaveBeenCalled();
+
+    await act(async () => {
+      hook.result.current.dispatch({ type: "NAVIGATE", mode: "admin" });
+    });
+
+    expect(visitorApi.listProfiles).toHaveBeenCalledTimes(1);
+    // The auto-load uses the current includeDeleted flag (false by
+    // default) — same contract as an explicit loadVisitorProfiles().
+    expect(visitorApi.listProfiles.mock.calls[0][0]).toEqual({
+      includeDeleted: false,
+    });
+    expect(hook.result.current.state.visitorProfiles.order).toEqual([
+      PROFILE_A.id,
+    ]);
+  });
+
+  it("G1 — does NOT auto-load when NAVIGATE moves the operator to a non-admin mode", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      ok<ListVisitorProfilesResponse>({
+        profiles: [],
+        pagination: { page: 1, pageSize: 25, totalItems: 0, totalPages: 0 },
+        traceId: "t-g1-neg",
+      }),
+    );
+    const hook = buildVisitorController(visitorApi);
+
+    await act(async () => {
+      hook.result.current.dispatch({ type: "NAVIGATE", mode: "walkin" });
+    });
+    await act(async () => {
+      hook.result.current.dispatch({ type: "NAVIGATE", mode: "search" });
+    });
+
+    expect(visitorApi.listProfiles).not.toHaveBeenCalled();
+  });
+
+  // ─── Regression: G2 — toggle Show-deleted refetches in admin mode ────
+  // Source: test-report-feature-4.md §Observed gaps (G2).
+  // Toggling Show-deleted only flipped local state; tombstoned rows
+  // dropped from `order` on soft-delete stayed hidden because the
+  // toggle never rebound the row set to the new visibility scope.
+  // The refetch is gated on admin mode so background controllers in
+  // guard mode don't issue spurious list calls.
+  it("G2 — toggling includeDeleted while in admin mode triggers a refetch with the new flag", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      ok<ListVisitorProfilesResponse>({
+        profiles: [],
+        pagination: { page: 1, pageSize: 25, totalItems: 0, totalPages: 0 },
+        traceId: "t-g2",
+      }),
+    );
+    const hook = buildVisitorController(visitorApi);
+
+    // Enter admin → auto-load fires once with includeDeleted=false.
+    await act(async () => {
+      hook.result.current.dispatch({ type: "NAVIGATE", mode: "admin" });
+    });
+    expect(visitorApi.listProfiles).toHaveBeenCalledTimes(1);
+    expect(visitorApi.listProfiles.mock.calls[0][0]).toEqual({
+      includeDeleted: false,
+    });
+
+    // Flip the toggle → refetch fires with includeDeleted=true.
+    await act(async () => {
+      hook.result.current.toggleVisitorProfilesIncludeDeleted();
+    });
+    expect(visitorApi.listProfiles).toHaveBeenCalledTimes(2);
+    expect(visitorApi.listProfiles.mock.calls[1][0]).toEqual({
+      includeDeleted: true,
+    });
+
+    // Flip it back → refetch again with includeDeleted=false.
+    await act(async () => {
+      hook.result.current.toggleVisitorProfilesIncludeDeleted();
+    });
+    expect(visitorApi.listProfiles).toHaveBeenCalledTimes(3);
+    expect(visitorApi.listProfiles.mock.calls[2][0]).toEqual({
+      includeDeleted: false,
+    });
+  });
+
+  it("G2 — toggling includeDeleted while NOT in admin mode does NOT trigger a refetch", async () => {
+    visitorApi.listProfiles.mockResolvedValue(
+      ok<ListVisitorProfilesResponse>({
+        profiles: [],
+        pagination: { page: 1, pageSize: 25, totalItems: 0, totalPages: 0 },
+        traceId: "t-g2-neg",
+      }),
+    );
+    const hook = buildVisitorController(visitorApi);
+
+    // Stay in default home mode and toggle.
+    await act(async () => {
+      hook.result.current.toggleVisitorProfilesIncludeDeleted();
+    });
+
+    expect(hook.result.current.state.visitorProfiles.includeDeleted).toBe(true);
+    expect(visitorApi.listProfiles).not.toHaveBeenCalled();
+  });
 });

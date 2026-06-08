@@ -1096,6 +1096,24 @@ export function useGatePassController(
     dispatch({ type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED" });
   }, []);
 
+  // ─── G1 + G2 — auto-load admin visitor directory ─────────────────────
+  // Source: test-report-feature-4.md §Observed gaps.
+  //   G1 — On entering admin mode, the panel needs a populated table;
+  //        without this effect an admin sees an empty grid and would
+  //        misread it as "no profiles exist."
+  //   G2 — On includeDeleted flip, the row set must be rebound to the
+  //        new visibility scope. Without a refetch, a soft-deleted row
+  //        dropped from `order` during the previous mutation stays
+  //        invisible even when Show-deleted is on, because the toggle
+  //        only flips the local flag — it does not re-derive `order`
+  //        from the server.
+  // The gate `state.mode === "admin"` keeps this effect quiet when the
+  // operator is in guard modes (no spurious list calls in walkin/qr/etc.).
+  useEffect(() => {
+    if (state.mode !== "admin") return;
+    void loadVisitorProfiles();
+  }, [state.mode, state.visitorProfiles.includeDeleted, loadVisitorProfiles]);
+
   return useMemo(
     () => ({
       state,
