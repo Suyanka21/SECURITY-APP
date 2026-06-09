@@ -9,6 +9,7 @@ import {
   SearchPanel,
   ShiftLogPanel,
   StatusBanner,
+  VisitorInvitationsAdminPanel,
   VisitorsAdminPanel,
   WalkInPanel,
 } from "./components/GatePassPanels";
@@ -42,6 +43,9 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     // Feature 5 — shift log aggregation wiring.
     setShiftsQuery: controller.setShiftsQuery,
     loadShifts: controller.loadShifts,
+    // Feature 6 — visitor invitation wiring.
+    issueVisitorInvitation: controller.issueVisitorInvitation,
+    resetVisitorInvitation: controller.resetVisitorInvitation,
   };
 
   return (
@@ -110,6 +114,11 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
         {state.mode === "admin" && (
           <div className="grid gap-5">
             <AdminShell state={state} />
+            <VisitorInvitationsAdminPanel
+              state={state}
+              dispatch={dispatch}
+              actions={actions}
+            />
             <VisitorsAdminPanel
               state={state}
               dispatch={dispatch}
