@@ -24,14 +24,17 @@ import type {
   GatePassAction,
   GatePassState,
   NotificationDeliveryView,
+  ShiftsQuery,
   Visitor,
 } from "../types";
 import { VISITOR_PROFILE_NEW_KEY } from "../types";
 import type {
   CreateVisitorProfileRequest,
+  IssueVisitorInvitationRequest,
   UpdateVisitorProfileRequest,
   VisitorProfileView,
 } from "@/lib/api/types";
+import { QRCodeSVG } from "qrcode.react";
 
 /**
  * Panels are presentational only. They never call the API directly —
@@ -77,6 +80,14 @@ export type GatePassActions = {
   softDeleteVisitorProfile: (id: string) => Promise<void> | void;
   restoreVisitorProfile: (id: string) => Promise<void> | void;
   toggleVisitorProfilesIncludeDeleted: () => void;
+  // ─── Shift log aggregation (Feature 5) ───────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §8
+  setShiftsQuery: (query: ShiftsQuery) => void;
+  loadShifts: (override?: ShiftsQuery) => Promise<void> | void;
+  // ─── Visitor invitations (Feature 6) ─────────────────
+  // Source: src/docs/specs/guest-qr-ticket.md §6
+  issueVisitorInvitation: (input: IssueVisitorInvitationRequest) => Promise<void> | void;
+  resetVisitorInvitation: () => void;
 };
 
 type Props = {
@@ -1628,5 +1639,419 @@ function Stat({ label, value }: { label: string; value: number }) {
       </p>
       <p className="mt-2 font-display text-3xl font-black">{value}</p>
     </div>
+  );
+}
+
+// ─── Feature 5 — Shift log aggregation panel ───────────────────
+//
+// Source: src/docs/specs/shift-log-aggregation.md §8 (UI surface).
+//
+// Read-only admin view. The form lets an admin tighten the window and
+// optionally pin to a single guard. Submitting fires loadShifts; the
+// reducer's lastError surfaces below the table without wiping the
+// previously-loaded rows — a 500 never silently flashes the admin to
+// an empty list (no-silent-success contract).
+//
+// `localQuery` mirrors the admin's pending edits before they submit;
+// the slice's `query` is the canonical filter the controller persists.
+
+export function ShiftLogPanel({ state, actions }: Props) {
+  const slice = state.shifts;
+  const [localQuery, setLocalQuery] = useState<ShiftsQuery>(() => slice.query);
+
+  // Keep the form in sync if the slice's query is updated externally
+  // (e.g. loadShifts(override) persists a window).
+  useEffect(() => {
+    setLocalQuery(slice.query);
+  }, [slice.query]);
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    void actions.loadShifts(localQuery);
+  };
+
+  const onChange = (patch: Partial<ShiftsQuery>) => {
+    const next = { ...localQuery, ...patch };
+    // Drop empty strings so the API client sees genuine 'omitted'
+    // (instead of a literal empty query param).
+    for (const key of Object.keys(next) as (keyof ShiftsQuery)[]) {
+      if (next[key] === "") delete next[key];
+    }
+    setLocalQuery(next);
+  };
+
+  return (
+    <section
+      className="border border-border bg-card p-5 shadow-panel"
+      data-testid="shift-log-panel"
+    >
+      <header className="flex flex-col gap-2 md:flex-row md:items-baseline md:justify-between">
+        <div>
+          <h2 className="font-display text-2xl font-bold">Shift log</h2>
+          <p className="text-sm text-muted-foreground">
+            Read-only aggregation over entry records and audit events.
+          </p>
+        </div>
+        {slice.window && (
+          <p
+            className="text-xs font-bold uppercase tracking-widest text-muted-foreground"
+            data-testid="shift-log-window-label"
+          >
+            Window: {slice.window.fromIso} → {slice.window.toIso}
+          </p>
+        )}
+      </header>
+
+      <form
+        className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto]"
+        onSubmit={handleSubmit}
+      >
+        <FormField
+          label="From (ISO-8601 UTC)"
+          value={localQuery.fromIso ?? ""}
+          onChange={(value) => onChange({ fromIso: value })}
+          invalid={false}
+          testid="shift-log-from"
+        />
+        <FormField
+          label="To (ISO-8601 UTC)"
+          value={localQuery.toIso ?? ""}
+          onChange={(value) => onChange({ toIso: value })}
+          invalid={false}
+          testid="shift-log-to"
+        />
+        <FormField
+          label="Guard ID (UUID, optional)"
+          value={localQuery.guardId ?? ""}
+          onChange={(value) => onChange({ guardId: value })}
+          invalid={false}
+          testid="shift-log-guard"
+        />
+        <button
+          type="submit"
+          className="focus-ring self-end border border-foreground bg-foreground px-4 py-2 text-sm font-semibold text-background"
+          data-testid="shift-log-refresh"
+          disabled={slice.loading}
+        >
+          {slice.loading ? "Loading…" : "Refresh"}
+        </button>
+      </form>
+
+      {slice.lastError && (
+        <div
+          className="mt-4 border border-destructive bg-destructive/10 p-3 text-sm text-destructive"
+          role="alert"
+          data-testid="shift-log-error"
+        >
+          <p className="font-semibold">
+            {slice.lastError.code}: {slice.lastError.message}
+          </p>
+          {slice.lastError.traceId && (
+            <p className="mt-1 text-xs opacity-80">
+              Trace: <code>{slice.lastError.traceId}</code>
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="mt-4 overflow-x-auto">
+        <table
+          className="w-full border-collapse text-sm"
+          data-testid="shift-log-table"
+        >
+          <thead>
+            <tr className="border-b border-border text-left text-xs font-bold uppercase tracking-widest text-muted-foreground">
+              <th className="py-2 pr-3">Guard</th>
+              <th className="py-2 pr-3">Badge</th>
+              <th className="py-2 pr-3">Entries</th>
+              <th className="py-2 pr-3">QR</th>
+              <th className="py-2 pr-3">Walk-in</th>
+              <th className="py-2 pr-3">Override</th>
+              <th className="py-2 pr-3">Auto</th>
+              <th className="py-2 pr-3">Denied</th>
+              <th className="py-2 pr-3">Expired</th>
+            </tr>
+          </thead>
+          <tbody>
+            {slice.rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={9}
+                  className="py-6 text-center text-sm text-muted-foreground"
+                  data-testid="shift-log-empty"
+                >
+                  No shifts in this window.
+                </td>
+              </tr>
+            ) : (
+              slice.rows.map((row) => (
+                <tr
+                  key={row.guardId}
+                  className="border-b border-border"
+                  data-testid={`shift-log-row-${row.guardId}`}
+                >
+                  <td className="py-2 pr-3 font-semibold">{row.guardName}</td>
+                  <td className="py-2 pr-3 font-mono text-xs">
+                    {row.badgeNumber}
+                  </td>
+                  <td className="py-2 pr-3 font-mono">{row.totals.entries}</td>
+                  <td className="py-2 pr-3 font-mono">{row.totals.qr}</td>
+                  <td className="py-2 pr-3 font-mono">{row.totals.walkIn}</td>
+                  <td className="py-2 pr-3 font-mono">{row.totals.override}</td>
+                  <td className="py-2 pr-3 font-mono">{row.totals.auto}</td>
+                  <td className="py-2 pr-3 font-mono">
+                    {row.totals.approvalsDenied}
+                  </td>
+                  <td className="py-2 pr-3 font-mono">
+                    {row.totals.approvalsExpired}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// ─── Visitor invitation admin panel (Feature 6 Slice 7) ────────────────
+//
+// Source: src/docs/specs/guest-qr-ticket.md §7 (UI states), §A6/A8
+// (security model — QR rendered client-side, raw token surfaces ONCE).
+//
+// State machine:
+//   idle      → form
+//   submitting→ form (disabled) with "Issuing…"
+//   issued    → success card (QR PNG + pass URL + raw token) + "Issue another"
+//   failed    → form + error banner (code + message + traceId hint)
+//
+// Default-deny contract: the success card is reachable ONLY when the
+// slice status is "issued". Any non-2xx response lands in "failed" via
+// the reducer (gatepassReducer.ts case VISITOR_INVITATION_ISSUE_FAILED)
+// and the form stays visible with the error code displayed.
+export function VisitorInvitationsAdminPanel({ state, actions }: Props) {
+  const slice = state.visitorInvitations;
+  const [visitorName, setVisitorName] = useState("");
+  const [host, setHost] = useState("");
+  const [unit, setUnit] = useState("");
+  const [plate, setPlate] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const isSubmitting = slice.status === "submitting";
+  const isIssued = slice.status === "issued" && slice.lastIssued;
+  const issueError = slice.status === "failed" ? slice.lastError : undefined;
+
+  const canSubmit =
+    !isSubmitting &&
+    visitorName.trim().length > 0 &&
+    host.trim().length > 0 &&
+    unit.trim().length > 0;
+
+  const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSubmit) return;
+    const trimmedPlate = plate.trim();
+    await actions.issueVisitorInvitation({
+      visitorName: visitorName.trim(),
+      host: host.trim(),
+      unit: unit.trim(),
+      plate: trimmedPlate.length > 0 ? trimmedPlate : undefined,
+    });
+  };
+
+  const onIssueAnother = () => {
+    actions.resetVisitorInvitation();
+    setVisitorName("");
+    setHost("");
+    setUnit("");
+    setPlate("");
+    setCopied(false);
+  };
+
+  const onCopyPassUrl = async () => {
+    if (!slice.lastIssued) return;
+    try {
+      await navigator.clipboard.writeText(slice.lastIssued.passUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API may be unavailable in some browsers — keep the
+      // visible URL so the admin can copy manually. Silent failure
+      // here is acceptable because the URL is already on screen.
+    }
+  };
+
+  return (
+    <section
+      className="border border-border bg-card p-5 shadow-panel"
+      data-testid="visitor-invitations-panel"
+    >
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-3xl font-bold">Invite visitor</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Issue a single-use QR pass. Share the link or QR with the visitor —
+            the guard scans it at the gate.
+          </p>
+        </div>
+      </header>
+
+      {isIssued && slice.lastIssued && (
+        <div
+          className="mt-4 border border-primary bg-primary/5 p-4"
+          data-testid="visitor-invitation-issued"
+        >
+          <div className="flex flex-wrap items-start gap-5">
+            <div
+              className="bg-white p-3"
+              data-testid="visitor-invitation-qr"
+            >
+              <QRCodeSVG
+                value={slice.lastIssued.passUrl}
+                size={160}
+                level="M"
+                includeMargin
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-display text-xl font-bold">
+                Pass issued for {slice.lastIssued.visitorName}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Host: {slice.lastIssued.host} · Unit: {slice.lastIssued.unit}
+                {slice.lastIssued.plate ? ` · Plate: ${slice.lastIssued.plate}` : ""}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Valid until{" "}
+                <time dateTime={slice.lastIssued.expiresAt}>
+                  {new Date(slice.lastIssued.expiresAt).toLocaleString()}
+                </time>
+              </p>
+
+              <div className="mt-3">
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                  Pass URL
+                </p>
+                <div className="mt-1 flex items-center gap-2">
+                  <code
+                    className="block min-w-0 flex-1 truncate border border-border bg-background px-2 py-1 text-xs"
+                    data-testid="visitor-invitation-pass-url"
+                  >
+                    {slice.lastIssued.passUrl}
+                  </code>
+                  <button
+                    type="button"
+                    className="focus-ring border border-border bg-background px-3 py-1 text-xs font-bold"
+                    onClick={onCopyPassUrl}
+                    data-testid="visitor-invitation-copy"
+                  >
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              </div>
+
+              <p className="mt-3 text-xs italic text-muted-foreground">
+                This pass is single-use. The QR will not be shown again.
+              </p>
+
+              <button
+                type="button"
+                className="focus-ring mt-4 border border-primary bg-primary px-4 py-2 font-display text-sm font-bold text-primary-foreground"
+                onClick={onIssueAnother}
+                data-testid="visitor-invitation-reset"
+              >
+                Issue another
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!isIssued && (
+        <form
+          className="mt-4 grid gap-3"
+          onSubmit={onSubmit}
+          data-testid="visitor-invitation-form"
+          noValidate
+        >
+          {issueError && (
+            <div
+              role="alert"
+              data-testid="visitor-invitation-error"
+              className="border border-destructive bg-destructive/10 p-3 text-sm font-semibold text-destructive"
+            >
+              {issueError.code}: {issueError.message}
+              {issueError.traceId ? (
+                <span className="ml-2 text-xs font-normal opacity-75">
+                  (trace {issueError.traceId})
+                </span>
+              ) : null}
+            </div>
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1 text-sm font-semibold">
+              Visitor name
+              <input
+                type="text"
+                className="focus-ring border border-border bg-background px-3 py-2"
+                value={visitorName}
+                onChange={(e) => setVisitorName(e.target.value)}
+                disabled={isSubmitting}
+                data-testid="visitor-invitation-visitorName"
+                required
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              Host
+              <input
+                type="text"
+                className="focus-ring border border-border bg-background px-3 py-2"
+                value={host}
+                onChange={(e) => setHost(e.target.value)}
+                disabled={isSubmitting}
+                data-testid="visitor-invitation-host"
+                required
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              Unit
+              <input
+                type="text"
+                className="focus-ring border border-border bg-background px-3 py-2"
+                value={unit}
+                onChange={(e) => setUnit(e.target.value)}
+                disabled={isSubmitting}
+                data-testid="visitor-invitation-unit"
+                required
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              Plate (optional)
+              <input
+                type="text"
+                className="focus-ring border border-border bg-background px-3 py-2"
+                value={plate}
+                onChange={(e) => setPlate(e.target.value)}
+                disabled={isSubmitting}
+                data-testid="visitor-invitation-plate"
+              />
+            </label>
+          </div>
+
+          <div>
+            <button
+              type="submit"
+              className="focus-ring border border-primary bg-primary px-4 py-2 font-display text-sm font-bold text-primary-foreground transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!canSubmit}
+              data-testid="visitor-invitation-submit"
+            >
+              {isSubmitting ? "Issuing…" : "Issue QR pass"}
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
   );
 }

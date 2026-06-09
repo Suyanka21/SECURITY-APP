@@ -47,6 +47,11 @@ import {
   handleSoftDeleteVisitorProfile,
   handleRestoreVisitorProfile,
 } from "./routes/visitor-profiles";
+import { handleListShifts } from "./routes/shifts";
+import {
+  handleIssueVisitorInvitation,
+  handlePreviewVisitorInvitation,
+} from "./routes/visitor-invitations";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
 
@@ -237,6 +242,36 @@ export function createApp(db: unknown) {
     strictLimiter,
     requireRole("admin", "senior-guard"),
     handleRestoreVisitorProfile
+  );
+
+  // Feature 5 — Shift Log Aggregation (spec §4, §9).
+  // Read-only aggregation over entry_records + audit_events. Admin or
+  // senior-guard only; guard tokens get 403 AUTH_FORBIDDEN. No mutations,
+  // no audit rows written by the endpoint itself.
+  app.get(
+    "/api/admin/shifts",
+    requireAuth,
+    requireRole("admin", "senior-guard"),
+    handleListShifts
+  );
+
+  // Feature 6 — Guest QR Ticket (spec §6).
+  // Issue: admin + senior-guard only; guard tokens get 403 AUTH_FORBIDDEN.
+  //        Strict-limited because each call mints a single-use credential.
+  // Preview: PUBLIC. The token IN the URL is the auth (256-bit entropy).
+  //          Read-only. Does NOT mark is_used. Strict-limited to deter
+  //          enumeration attempts.
+  app.post(
+    "/api/visitor-invitations",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin", "senior-guard"),
+    handleIssueVisitorInvitation
+  );
+  app.get(
+    "/api/visitor-invitations/:token/preview",
+    strictLimiter,
+    handlePreviewVisitorInvitation
   );
 
   // ─── Error Handler ─────────────────────────────────────────────────

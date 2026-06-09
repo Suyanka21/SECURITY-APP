@@ -7,5 +7,7 @@ export { guardNotificationsApi } from "./notifications";
 export type { GuardNotificationsApi } from "./notifications";
 export { visitorProfilesApi } from "./visitor-profiles";
 export type { VisitorProfilesApi } from "./visitor-profiles";
+export { visitorInvitationsApi } from "./visitor-invitations";
+export type { VisitorInvitationsApi } from "./visitor-invitations";
 export { getAuthToken, setAuthToken, setAuthTokenGetter } from "./auth";
 export type * from "./types";

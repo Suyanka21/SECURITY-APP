@@ -1239,4 +1239,291 @@ describe("gatePassReducer", () => {
       });
     });
   });
+
+  // ─── Feature 5 — Shift log aggregation ────────────────────────────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §7 (reducer contract).
+  describe("shift log slice (Feature 5)", () => {
+    const GUARD_ID = "22222222-2222-4222-8222-222222222222";
+
+    function makeRow(over: Partial<{ entries: number }> = {}) {
+      return {
+        guardId: GUARD_ID,
+        guardName: "A. Okafor",
+        badgeNumber: "G-1042",
+        totals: {
+          entries: over.entries ?? 1,
+          qr: 1,
+          walkIn: 0,
+          override: 0,
+          recognized: 0,
+          auto: 0,
+          approvalsDenied: 0,
+          approvalsExpired: 0,
+          autoApprovalsMatched: 0,
+          overrideAuthorized: 0,
+        },
+      };
+    }
+
+    it("seeds the empty shifts slice on initial state", () => {
+      expect(initialGatePassState.shifts).toEqual({
+        query: {},
+        rows: [],
+        loading: false,
+      });
+    });
+
+    it("SHIFTS_QUERY_CHANGED updates the filter and clears stale lastError", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          ...initialGatePassState.shifts,
+          lastError: { code: "INTERNAL_ERROR", message: "stale" },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "SHIFTS_QUERY_CHANGED",
+        query: {
+          fromIso: "2024-01-15T00:00:00.000Z",
+          toIso: "2024-01-16T00:00:00.000Z",
+          guardId: GUARD_ID,
+        },
+      });
+      expect(next.shifts.query).toEqual({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-16T00:00:00.000Z",
+        guardId: GUARD_ID,
+      });
+      expect(next.shifts.lastError).toBeUndefined();
+      // Rows / loading untouched by query edit.
+      expect(next.shifts.rows).toEqual([]);
+      expect(next.shifts.loading).toBe(false);
+    });
+
+    it("SHIFTS_LIST_STARTED flips loading and clears lastError, preserving prior rows", () => {
+      const prevRows = [makeRow()];
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: {},
+          rows: prevRows,
+          loading: false,
+          lastError: { code: "INTERNAL_ERROR", message: "old" },
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "SHIFTS_LIST_STARTED" });
+      expect(next.shifts.loading).toBe(true);
+      expect(next.shifts.lastError).toBeUndefined();
+      // Prior rows preserved so the UI does not blank during refresh.
+      expect(next.shifts.rows).toBe(prevRows);
+    });
+
+    it("SHIFTS_LIST_LOADED stores window + rows, clears loading and lastError", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: {},
+          rows: [],
+          loading: true,
+          lastError: { code: "INTERNAL_ERROR", message: "old" },
+        },
+      };
+      const rows = [makeRow({ entries: 3 }), makeRow({ entries: 1 })];
+      const next = gatePassReducer(seeded, {
+        type: "SHIFTS_LIST_LOADED",
+        window: {
+          fromIso: "2024-01-15T00:00:00.000Z",
+          toIso: "2024-01-15T18:00:00.000Z",
+        },
+        rows,
+      });
+      expect(next.shifts.loading).toBe(false);
+      expect(next.shifts.lastError).toBeUndefined();
+      expect(next.shifts.window).toEqual({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-15T18:00:00.000Z",
+      });
+      expect(next.shifts.rows).toBe(rows);
+    });
+
+    it("SHIFTS_LIST_FAILED records lastError, clears loading, and KEEPS prior rows (no silent wipe)", () => {
+      const prevRows = [makeRow({ entries: 2 })];
+      const prevWindow = {
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-15T18:00:00.000Z",
+      };
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: {},
+          window: prevWindow,
+          rows: prevRows,
+          loading: true,
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "SHIFTS_LIST_FAILED",
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "An unexpected error occurred",
+          traceId: "trace-x",
+        },
+      });
+      expect(next.shifts.loading).toBe(false);
+      expect(next.shifts.lastError).toEqual({
+        code: "INTERNAL_ERROR",
+        message: "An unexpected error occurred",
+        traceId: "trace-x",
+      });
+      // Prior rows + window preserved — a failure must not look like
+      // a silent empty list.
+      expect(next.shifts.rows).toBe(prevRows);
+      expect(next.shifts.window).toBe(prevWindow);
+    });
+
+    it("RESET_FLOW leaves the shifts slice untouched (admin lifecycle, not walk-in)", () => {
+      const rows = [makeRow()];
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        shifts: {
+          query: { guardId: GUARD_ID },
+          window: {
+            fromIso: "2024-01-15T00:00:00.000Z",
+            toIso: "2024-01-15T18:00:00.000Z",
+          },
+          rows,
+          loading: false,
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
+      expect(next.shifts.rows).toBe(rows);
+      expect(next.shifts.query).toEqual({ guardId: GUARD_ID });
+      expect(next.shifts.window).toEqual({
+        fromIso: "2024-01-15T00:00:00.000Z",
+        toIso: "2024-01-15T18:00:00.000Z",
+      });
+    });
+  });
+
+  // ─── Feature 6 — visitor invitation slice ─────────────────────────
+  // Source: src/docs/specs/guest-qr-ticket.md §7 + gatepassReducer.ts
+  // The default-deny invariant: ISSUE_FAILED must NEVER leave the
+  // slice in "issued" — no path can land the form on a success card
+  // unless the server returned a real 201 with an invitation payload.
+
+  describe("visitor invitation slice", () => {
+    const INVITATION_ID = "66666666-6666-4666-8666-666666666666";
+    const RAW_TOKEN = "TEST_RAW_TOKEN_FORTY_THREE_CHARS_ABCDEFGHIJ";
+    function makeIssued() {
+      return {
+        id: INVITATION_ID,
+        qrToken: RAW_TOKEN,
+        passUrl: `https://gate.example.com/pass/${RAW_TOKEN}`,
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        issuedAt: new Date().toISOString(),
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+        plate: null,
+      };
+    }
+
+    it("initial state is idle with no lastIssued / lastError", () => {
+      expect(initialGatePassState.visitorInvitations).toEqual({
+        status: "idle",
+      });
+    });
+
+    it("VISITOR_INVITATION_ISSUE_STARTED clears prior issued + error and enters submitting", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: {
+          status: "issued",
+          lastIssued: makeIssued(),
+          lastError: { code: "PRIOR", message: "stale" },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_ISSUE_STARTED",
+      });
+      expect(next.visitorInvitations.status).toBe("submitting");
+      expect(next.visitorInvitations.lastIssued).toBeUndefined();
+      expect(next.visitorInvitations.lastError).toBeUndefined();
+    });
+
+    it("VISITOR_INVITATION_ISSUE_SUCCEEDED lands in 'issued' with the full invitation view", () => {
+      const inv = makeIssued();
+      const next = gatePassReducer(initialGatePassState, {
+        type: "VISITOR_INVITATION_ISSUE_SUCCEEDED",
+        invitation: inv,
+      });
+      expect(next.visitorInvitations.status).toBe("issued");
+      expect(next.visitorInvitations.lastIssued).toEqual(inv);
+      expect(next.visitorInvitations.lastError).toBeUndefined();
+    });
+
+    it("VISITOR_INVITATION_ISSUE_FAILED lands in 'failed' with the error (default-deny: NOT in 'issued')", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: { status: "submitting" },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_ISSUE_FAILED",
+        error: {
+          code: "AUTH_FORBIDDEN",
+          message: "Guard tokens cannot mint invitations",
+          traceId: "trace-403",
+        },
+      });
+      expect(next.visitorInvitations.status).toBe("failed");
+      expect(next.visitorInvitations.status).not.toBe("issued");
+      expect(next.visitorInvitations.lastIssued).toBeUndefined();
+      expect(next.visitorInvitations.lastError).toEqual({
+        code: "AUTH_FORBIDDEN",
+        message: "Guard tokens cannot mint invitations",
+        traceId: "trace-403",
+      });
+    });
+
+    it("VISITOR_INVITATION_RESET clears the slice back to idle (drops raw token from memory)", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: {
+          status: "issued",
+          lastIssued: makeIssued(),
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_RESET",
+      });
+      expect(next.visitorInvitations).toEqual({ status: "idle" });
+      // Critical: the raw token is no longer reachable from state.
+      expect(JSON.stringify(next.visitorInvitations)).not.toContain(RAW_TOKEN);
+    });
+
+    it("RESET_FLOW does NOT clear the visitor-invitation slice (admin subview, not per-walk-in)", () => {
+      const inv = makeIssued();
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: { status: "issued", lastIssued: inv },
+      };
+      const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
+      expect(next.visitorInvitations.status).toBe("issued");
+      expect(next.visitorInvitations.lastIssued).toEqual(inv);
+    });
+
+    it("default-deny: an ISSUE_FAILED following a stale ISSUE_SUCCEEDED clears lastIssued", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        visitorInvitations: { status: "issued", lastIssued: makeIssued() },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "VISITOR_INVITATION_ISSUE_FAILED",
+        error: { code: "INTERNAL_ERROR", message: "kaboom" },
+      });
+      // The form MUST NOT display the prior issued card after a failed retry.
+      expect(next.visitorInvitations.lastIssued).toBeUndefined();
+      expect(next.visitorInvitations.status).toBe("failed");
+    });
+  });
 });

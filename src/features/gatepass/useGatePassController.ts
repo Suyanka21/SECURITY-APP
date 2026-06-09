@@ -21,6 +21,8 @@ import { gatePassApi } from "@/lib/api/gatepass";
 import { guardApprovalApi } from "@/lib/api/approvals";
 import { guardNotificationsApi } from "@/lib/api/notifications";
 import { visitorProfilesApi } from "@/lib/api/visitor-profiles";
+import { shiftsApi } from "@/lib/api/shifts";
+import { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
 import type {
   ApiResult,
   ApprovalRequestView,
@@ -28,6 +30,9 @@ import type {
   CreateApprovalResponse,
   CreateEntryResponse,
   CreateVisitorProfileRequest,
+  IssueVisitorInvitationRequest,
+  IssueVisitorInvitationResponse,
+  ListShiftsResponse,
   ListVisitorProfilesResponse,
   NotificationsListResponse,
   NotificationRetryResponse,
@@ -50,6 +55,7 @@ import type {
   GatePassError,
   NotificationDeliveryView,
   PendingApproval,
+  ShiftsQuery,
   Visitor,
 } from "./types";
 import { VISITOR_PROFILE_NEW_KEY } from "./types";
@@ -226,6 +232,32 @@ export interface GatePassController {
   softDeleteVisitorProfile: (id: string) => Promise<void>;
   restoreVisitorProfile: (id: string) => Promise<void>;
   toggleVisitorProfilesIncludeDeleted: () => void;
+  // ─── Shift log aggregation (Feature 5) ────────────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §8. Read-only:
+  // never enqueues a mutation, never writes audit. A failed call lands
+  // on SHIFTS_LIST_FAILED so the UI can surface the error without
+  // wiping the prior rows.
+  /** Update the admin's filter without firing a network call. */
+  setShiftsQuery: (query: ShiftsQuery) => void;
+  /**
+   * Fetch the current window. When `override` is supplied it is sent
+   * verbatim and also stored as the new query (so a subsequent refresh
+   * uses the same window). Without an argument the call uses the
+   * existing `state.shifts.query`.
+   */
+  loadShifts: (override?: ShiftsQuery) => Promise<void>;
+  // ─── Visitor invitations (Feature 6 / Guest QR Ticket) ──────
+  // Source: src/docs/specs/guest-qr-ticket.md §6, §7.
+  // Single mutation surface for the admin invite form. The 2-arg
+  // ApiResult discriminant maps onto exactly one reducer dispatch:
+  // - ok=true  -> VISITOR_INVITATION_ISSUE_SUCCEEDED
+  // - ok=false -> VISITOR_INVITATION_ISSUE_FAILED
+  // No silent success: a non-201 ALWAYS lands on ISSUE_FAILED. The
+  // form's success card is reachable ONLY when the server returned
+  // a real invitation payload.
+  issueVisitorInvitation: (input: IssueVisitorInvitationRequest) => Promise<void>;
+  /** Clear the invite slice back to idle (drops raw token from memory). */
+  resetVisitorInvitation: () => void;
 }
 
 export interface GatePassControllerOptions {
@@ -242,6 +274,16 @@ export interface GatePassControllerOptions {
    * Source: src/docs/specs/visitor-profiles.md §4.
    */
   visitorProfilesApi?: typeof visitorProfilesApi;
+  /**
+   * Optional override for the shift log client surface (Feature 5).
+   * Source: src/docs/specs/shift-log-aggregation.md §4.
+   */
+  shiftsApi?: typeof shiftsApi;
+  /**
+   * Optional override for the visitor-invitation client (Feature 6).
+   * Source: src/docs/specs/guest-qr-ticket.md §6.
+   */
+  visitorInvitationsApi?: typeof visitorInvitationsApi;
   /** Override clock for deterministic tests. */
   now?: () => Date;
   /** Override UUID generator for deterministic tests. */
@@ -267,6 +309,8 @@ export function useGatePassController(
   const approvalApi = options.approvalApi ?? guardApprovalApi;
   const notificationsApi = options.notificationsApi ?? guardNotificationsApi;
   const visitorApi = options.visitorProfilesApi ?? visitorProfilesApi;
+  const shiftsClient = options.shiftsApi ?? shiftsApi;
+  const invitationsApi = options.visitorInvitationsApi ?? visitorInvitationsApi;
   const pollIntervalMs = options.approvalPollIntervalMs ?? 2000;
   const notificationsPollIntervalMs =
     options.notificationsPollIntervalMs ?? 2000;
@@ -1096,6 +1140,75 @@ export function useGatePassController(
     dispatch({ type: "VISITOR_PROFILES_TOGGLE_INCLUDE_DELETED" });
   }, []);
 
+  // ─── Shift log aggregation (Feature 5) ──────────────────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §8. Each method
+  // maps a single ApiResult discriminant onto exactly one reducer
+  // dispatch. No silent success: a failed list call always lands on
+  // SHIFTS_LIST_FAILED.
+
+  const setShiftsQuery = useCallback((query: ShiftsQuery) => {
+    dispatch({ type: "SHIFTS_QUERY_CHANGED", query });
+  }, []);
+
+  const loadShifts = useCallback(
+    async (override?: ShiftsQuery) => {
+      const query: ShiftsQuery =
+        override ?? stateRef.current.shifts.query ?? {};
+      if (override) {
+        dispatch({ type: "SHIFTS_QUERY_CHANGED", query: override });
+      }
+      dispatch({ type: "SHIFTS_LIST_STARTED" });
+      const result: ApiResult<ListShiftsResponse> =
+        await shiftsClient.listShifts(query);
+      if (!result.ok) {
+        dispatch({
+          type: "SHIFTS_LIST_FAILED",
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "SHIFTS_LIST_LOADED",
+        window: result.data.window,
+        rows: result.data.shifts,
+      });
+    },
+    [shiftsClient],
+  );
+
+  // ─── Feature 6 — Visitor invitations ─────────────────────────────
+  // Source: src/docs/specs/guest-qr-ticket.md §6, §7.
+  //
+  // Single mutation surface. The default-deny contract is the
+  // ApiResult discriminant: a non-OK response NEVER lands in
+  // ISSUE_SUCCEEDED. The reducer further pins this on the state side
+  // (gatepassReducer.ts) — the form's success card is reachable
+  // ONLY when the server returned a real 201 with an invitation
+  // payload.
+  const issueVisitorInvitation = useCallback(
+    async (input: IssueVisitorInvitationRequest) => {
+      dispatch({ type: "VISITOR_INVITATION_ISSUE_STARTED" });
+      const result: ApiResult<IssueVisitorInvitationResponse> =
+        await invitationsApi.issueInvitation(input);
+      if (!result.ok) {
+        dispatch({
+          type: "VISITOR_INVITATION_ISSUE_FAILED",
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "VISITOR_INVITATION_ISSUE_SUCCEEDED",
+        invitation: result.data.invitation,
+      });
+    },
+    [invitationsApi],
+  );
+
+  const resetVisitorInvitation = useCallback(() => {
+    dispatch({ type: "VISITOR_INVITATION_RESET" });
+  }, []);
+
   // ─── G1 + G2 — auto-load admin visitor directory ─────────────────────
   // Source: test-report-feature-4.md §Observed gaps.
   //   G1 — On entering admin mode, the panel needs a populated table;
@@ -1114,6 +1227,21 @@ export function useGatePassController(
     void loadVisitorProfiles();
   }, [state.mode, state.visitorProfiles.includeDeleted, loadVisitorProfiles]);
 
+  // ─── Feature 5 — auto-load shift log on admin entry ─────────────
+  // Source: src/docs/specs/shift-log-aggregation.md §8.
+  //
+  // Same discipline as the visitor-profile auto-load above: the admin
+  // sees a populated table on first paint instead of an empty grid
+  // they would misread as "no shifts yet". We intentionally do NOT
+  // refire on `state.shifts.query` changes — that loop belongs to the
+  // explicit Refresh button so the admin's pending edits aren't
+  // submitted on every keystroke. The default-query happy path on
+  // mount is what this effect covers.
+  useEffect(() => {
+    if (state.mode !== "admin") return;
+    void loadShifts();
+  }, [state.mode, loadShifts]);
+
   return useMemo(
     () => ({
       state,
@@ -1131,6 +1259,10 @@ export function useGatePassController(
       softDeleteVisitorProfile,
       restoreVisitorProfile,
       toggleVisitorProfilesIncludeDeleted,
+      setShiftsQuery,
+      loadShifts,
+      issueVisitorInvitation,
+      resetVisitorInvitation,
     }),
     [
       state,
@@ -1147,6 +1279,10 @@ export function useGatePassController(
       softDeleteVisitorProfile,
       restoreVisitorProfile,
       toggleVisitorProfilesIncludeDeleted,
+      setShiftsQuery,
+      loadShifts,
+      issueVisitorInvitation,
+      resetVisitorInvitation,
     ]
   );
 }

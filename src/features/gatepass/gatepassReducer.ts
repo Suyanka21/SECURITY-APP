@@ -103,6 +103,14 @@ export const initialGatePassState: GatePassState = {
     mutationErrors: {},
     includeDeleted: false,
   },
+  visitorInvitations: {
+    status: "idle",
+  },
+  shifts: {
+    query: {},
+    rows: [],
+    loading: false,
+  },
 };
 
 /**
@@ -1123,6 +1131,107 @@ export function gatePassReducer(
           includeDeleted: !state.visitorProfiles.includeDeleted,
           lastError: undefined,
         },
+      };
+
+    // ─── Shift log aggregation (Feature 5) ────────────────────────
+    // Source: src/docs/specs/shift-log-aggregation.md §7 (reducer
+    // contract). Default-deny: a failed load does NOT wipe the
+    // previously-loaded rows; lastError surfaces the failure so the UI
+    // can render a banner without silently dropping the data.
+
+    case "SHIFTS_QUERY_CHANGED":
+      // Pure update of the filter. Clears lastError so the user's next
+      // load doesn't surface a stale error from the previous query.
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          query: action.query,
+          lastError: undefined,
+        },
+      };
+
+    case "SHIFTS_LIST_STARTED":
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          loading: true,
+          lastError: undefined,
+        },
+      };
+
+    case "SHIFTS_LIST_LOADED":
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          loading: false,
+          window: action.window,
+          rows: action.rows,
+          lastError: undefined,
+        },
+      };
+
+    case "SHIFTS_LIST_FAILED":
+      // Keep prior rows. Surfacing the error in lastError is required
+      // by the trustless contract — a 500 must NOT look like a quiet
+      // empty list.
+      return {
+        ...state,
+        shifts: {
+          ...state.shifts,
+          loading: false,
+          lastError: action.error,
+        },
+      };
+
+    // ─── Visitor invitations (Feature 6 / Guest QR Ticket) ──────────
+    // Source: src/docs/specs/guest-qr-ticket.md §7.
+    //
+    // The slice is admin-only. RESET_FLOW does NOT clear it.
+    case "VISITOR_INVITATION_ISSUE_STARTED":
+      return {
+        ...state,
+        visitorInvitations: {
+          status: "submitting",
+          // Clear prior issued + error so the success card/error banner
+          // do not flash stale state during the next submission.
+          lastIssued: undefined,
+          lastError: undefined,
+        },
+      };
+
+    case "VISITOR_INVITATION_ISSUE_SUCCEEDED":
+      return {
+        ...state,
+        visitorInvitations: {
+          status: "issued",
+          lastIssued: action.invitation,
+          lastError: undefined,
+        },
+      };
+
+    case "VISITOR_INVITATION_ISSUE_FAILED":
+      // Default-deny: the form lands in "failed", NOT "issued". No
+      // partial success path. The error is preserved so the form can
+      // re-render the banner without another network call.
+      return {
+        ...state,
+        visitorInvitations: {
+          status: "failed",
+          lastIssued: undefined,
+          lastError: action.error,
+        },
+      };
+
+    case "VISITOR_INVITATION_RESET":
+      // Admin clicked "issue another" or closed the success card.
+      // Clears the raw token from memory so it does not linger after
+      // it has been delivered to the visitor.
+      return {
+        ...state,
+        visitorInvitations: { status: "idle" },
       };
 
     default:
