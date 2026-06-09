@@ -22,6 +22,7 @@ import { guardApprovalApi } from "@/lib/api/approvals";
 import { guardNotificationsApi } from "@/lib/api/notifications";
 import { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import { shiftsApi } from "@/lib/api/shifts";
+import { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
 import type {
   ApiResult,
   ApprovalRequestView,
@@ -29,6 +30,8 @@ import type {
   CreateApprovalResponse,
   CreateEntryResponse,
   CreateVisitorProfileRequest,
+  IssueVisitorInvitationRequest,
+  IssueVisitorInvitationResponse,
   ListShiftsResponse,
   ListVisitorProfilesResponse,
   NotificationsListResponse,
@@ -243,6 +246,18 @@ export interface GatePassController {
    * existing `state.shifts.query`.
    */
   loadShifts: (override?: ShiftsQuery) => Promise<void>;
+  // ─── Visitor invitations (Feature 6 / Guest QR Ticket) ──────
+  // Source: src/docs/specs/guest-qr-ticket.md §6, §7.
+  // Single mutation surface for the admin invite form. The 2-arg
+  // ApiResult discriminant maps onto exactly one reducer dispatch:
+  // - ok=true  -> VISITOR_INVITATION_ISSUE_SUCCEEDED
+  // - ok=false -> VISITOR_INVITATION_ISSUE_FAILED
+  // No silent success: a non-201 ALWAYS lands on ISSUE_FAILED. The
+  // form's success card is reachable ONLY when the server returned
+  // a real invitation payload.
+  issueVisitorInvitation: (input: IssueVisitorInvitationRequest) => Promise<void>;
+  /** Clear the invite slice back to idle (drops raw token from memory). */
+  resetVisitorInvitation: () => void;
 }
 
 export interface GatePassControllerOptions {
@@ -264,6 +279,11 @@ export interface GatePassControllerOptions {
    * Source: src/docs/specs/shift-log-aggregation.md §4.
    */
   shiftsApi?: typeof shiftsApi;
+  /**
+   * Optional override for the visitor-invitation client (Feature 6).
+   * Source: src/docs/specs/guest-qr-ticket.md §6.
+   */
+  visitorInvitationsApi?: typeof visitorInvitationsApi;
   /** Override clock for deterministic tests. */
   now?: () => Date;
   /** Override UUID generator for deterministic tests. */
@@ -290,6 +310,7 @@ export function useGatePassController(
   const notificationsApi = options.notificationsApi ?? guardNotificationsApi;
   const visitorApi = options.visitorProfilesApi ?? visitorProfilesApi;
   const shiftsClient = options.shiftsApi ?? shiftsApi;
+  const invitationsApi = options.visitorInvitationsApi ?? visitorInvitationsApi;
   const pollIntervalMs = options.approvalPollIntervalMs ?? 2000;
   const notificationsPollIntervalMs =
     options.notificationsPollIntervalMs ?? 2000;
@@ -1155,6 +1176,39 @@ export function useGatePassController(
     [shiftsClient],
   );
 
+  // ─── Feature 6 — Visitor invitations ─────────────────────────────
+  // Source: src/docs/specs/guest-qr-ticket.md §6, §7.
+  //
+  // Single mutation surface. The default-deny contract is the
+  // ApiResult discriminant: a non-OK response NEVER lands in
+  // ISSUE_SUCCEEDED. The reducer further pins this on the state side
+  // (gatepassReducer.ts) — the form's success card is reachable
+  // ONLY when the server returned a real 201 with an invitation
+  // payload.
+  const issueVisitorInvitation = useCallback(
+    async (input: IssueVisitorInvitationRequest) => {
+      dispatch({ type: "VISITOR_INVITATION_ISSUE_STARTED" });
+      const result: ApiResult<IssueVisitorInvitationResponse> =
+        await invitationsApi.issueInvitation(input);
+      if (!result.ok) {
+        dispatch({
+          type: "VISITOR_INVITATION_ISSUE_FAILED",
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "VISITOR_INVITATION_ISSUE_SUCCEEDED",
+        invitation: result.data.invitation,
+      });
+    },
+    [invitationsApi],
+  );
+
+  const resetVisitorInvitation = useCallback(() => {
+    dispatch({ type: "VISITOR_INVITATION_RESET" });
+  }, []);
+
   // ─── G1 + G2 — auto-load admin visitor directory ─────────────────────
   // Source: test-report-feature-4.md §Observed gaps.
   //   G1 — On entering admin mode, the panel needs a populated table;
@@ -1207,6 +1261,8 @@ export function useGatePassController(
       toggleVisitorProfilesIncludeDeleted,
       setShiftsQuery,
       loadShifts,
+      issueVisitorInvitation,
+      resetVisitorInvitation,
     }),
     [
       state,
@@ -1225,6 +1281,8 @@ export function useGatePassController(
       toggleVisitorProfilesIncludeDeleted,
       setShiftsQuery,
       loadShifts,
+      issueVisitorInvitation,
+      resetVisitorInvitation,
     ]
   );
 }

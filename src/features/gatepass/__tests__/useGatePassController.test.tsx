@@ -2176,3 +2176,173 @@ describe("useGatePassController — shift log aggregation (Feature 5)", () => {
     expect(shiftsClient.listShifts).not.toHaveBeenCalled();
   });
 });
+
+// ─── Feature 6 — Visitor invitation controller tests ─────────────────
+//
+// Source: src/docs/specs/guest-qr-ticket.md §6 (controller wiring),
+// §7 (default-deny across all non-OK paths).
+//
+// The default-deny contract pinned by these tests:
+//   1) issueInvitation must dispatch exactly one terminal action:
+//      VISITOR_INVITATION_ISSUE_SUCCEEDED on 201, else
+//      VISITOR_INVITATION_ISSUE_FAILED.
+//   2) 403 AUTH_FORBIDDEN (guard token attempting to issue) MUST land
+//      in "failed", never "issued".
+//   3) 5xx server error MUST land in "failed", never "issued".
+//   4) resetVisitorInvitation must clear lastIssued from memory so the
+//      raw QR token does not linger.
+
+import type { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
+import type {
+  IssueVisitorInvitationResponse,
+  VisitorInvitationIssuedView,
+} from "@/lib/api/types";
+
+interface MockInvitationsApi {
+  issueInvitation: ReturnType<typeof vi.fn>;
+  previewInvitation: ReturnType<typeof vi.fn>;
+}
+
+function makeInvitationsApi(): MockInvitationsApi {
+  return {
+    issueInvitation: vi.fn(),
+    previewInvitation: vi.fn(),
+  };
+}
+
+function buildInvitationsController(invitations: MockInvitationsApi) {
+  return renderHook(() =>
+    useGatePassController({
+      visitorInvitationsApi:
+        invitations as unknown as typeof visitorInvitationsApi,
+      now: () => new Date("2024-02-01T00:00:00Z"),
+    }),
+  );
+}
+
+const ISSUED_INVITATION: VisitorInvitationIssuedView = {
+  id: "00000000-0000-4000-8000-0000000000ff",
+  qrToken: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg",
+  passUrl: "https://example.com/pass/ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg",
+  expiresAt: "2024-02-02T00:00:00.000Z",
+  issuedAt: "2024-02-01T00:00:00.000Z",
+  visitorName: "Maya Chen",
+  host: "A. Okafor",
+  unit: "18B",
+  plate: "LND-482",
+};
+
+describe("useGatePassController — visitor invitations (Feature 6)", () => {
+  let invitations: MockInvitationsApi;
+
+  beforeEach(() => {
+    invitations = makeInvitationsApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("issueVisitorInvitation lands in 'issued' with invitation on 201", async () => {
+    invitations.issueInvitation.mockResolvedValue(
+      ok<IssueVisitorInvitationResponse>(
+        { invitation: ISSUED_INVITATION, traceId: "trace-ok" },
+        201,
+      ),
+    );
+    const hook = buildInvitationsController(invitations);
+    expect(hook.result.current.state.visitorInvitations.status).toBe("idle");
+    await act(async () => {
+      await hook.result.current.issueVisitorInvitation({
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+        plate: "LND-482",
+      });
+    });
+    expect(invitations.issueInvitation).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.visitorInvitations.status).toBe("issued");
+    expect(hook.result.current.state.visitorInvitations.lastIssued).toEqual(
+      ISSUED_INVITATION,
+    );
+    expect(
+      hook.result.current.state.visitorInvitations.lastError,
+    ).toBeUndefined();
+  });
+
+  it("issueVisitorInvitation default-denies 403 AUTH_FORBIDDEN (guard token)", async () => {
+    invitations.issueInvitation.mockResolvedValue(
+      fail(
+        403,
+        "AUTH_FORBIDDEN",
+        "Guard tokens cannot issue visitor invitations.",
+      ),
+    );
+    const hook = buildInvitationsController(invitations);
+    await act(async () => {
+      await hook.result.current.issueVisitorInvitation({
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+      });
+    });
+    // Critical default-deny: a guard attempt MUST NOT land in "issued".
+    expect(hook.result.current.state.visitorInvitations.status).toBe("failed");
+    expect(
+      hook.result.current.state.visitorInvitations.lastIssued,
+    ).toBeUndefined();
+    expect(hook.result.current.state.visitorInvitations.lastError?.code).toBe(
+      "AUTH_FORBIDDEN",
+    );
+  });
+
+  it("issueVisitorInvitation default-denies a 500 server error", async () => {
+    invitations.issueInvitation.mockResolvedValue(
+      fail(500, "INTERNAL_ERROR", "Database transaction failed."),
+    );
+    const hook = buildInvitationsController(invitations);
+    await act(async () => {
+      await hook.result.current.issueVisitorInvitation({
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+      });
+    });
+    expect(hook.result.current.state.visitorInvitations.status).toBe("failed");
+    expect(
+      hook.result.current.state.visitorInvitations.lastIssued,
+    ).toBeUndefined();
+    expect(hook.result.current.state.visitorInvitations.lastError?.code).toBe(
+      "INTERNAL_ERROR",
+    );
+  });
+
+  it("resetVisitorInvitation clears the slice back to idle (drops raw QR token from memory)", async () => {
+    invitations.issueInvitation.mockResolvedValue(
+      ok<IssueVisitorInvitationResponse>(
+        { invitation: ISSUED_INVITATION, traceId: "trace-ok" },
+        201,
+      ),
+    );
+    const hook = buildInvitationsController(invitations);
+    await act(async () => {
+      await hook.result.current.issueVisitorInvitation({
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+      });
+    });
+    expect(hook.result.current.state.visitorInvitations.status).toBe("issued");
+    await act(async () => {
+      hook.result.current.resetVisitorInvitation();
+    });
+    expect(hook.result.current.state.visitorInvitations.status).toBe("idle");
+    expect(
+      hook.result.current.state.visitorInvitations.lastIssued,
+    ).toBeUndefined();
+    // No silent persistence — raw token must not be reachable from
+    // the slice after reset.
+    const dump = JSON.stringify(hook.result.current.state.visitorInvitations);
+    expect(dump).not.toContain(ISSUED_INVITATION.qrToken);
+  });
+});
