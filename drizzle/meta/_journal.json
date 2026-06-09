@@ -36,6 +36,13 @@
       "when": 1778719800000,
       "tag": "0005_visitor_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781015568000,
+      "tag": "0006_qr_invitation_audit_enum",
+      "breakpoints": true
     }
   ]
 }
