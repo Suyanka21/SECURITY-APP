@@ -1148,6 +1148,12 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "visitor_profile_updated",
   "visitor_profile_soft_deleted",
   "visitor_profile_restored",
+  // Source: src/docs/specs/guest-qr-ticket.md §6 — Feature 6 issue event.
+  // Written when an admin/senior-guard mints a single-use visitor QR
+  // invitation. Payload contains the qr_token_hash (SHA-256) only —
+  // the raw token is NEVER persisted (see visitor-invitation-service).
+  // Migration: drizzle/0006_qr_invitation_audit_enum.sql.
+  "qr_invitation_issued",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

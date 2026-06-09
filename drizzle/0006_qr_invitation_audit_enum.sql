@@ -1,0 +1,44 @@
+-- GatePass Migration: Feature 6 hotfix — qr_invitation_issued audit enum value
+--
+-- Source: src/server/services/audit-logger.ts §AuditEventType union — the
+--         `qr_invitation_issued` literal was added to the TypeScript type
+--         when Feature 6 (Guest QR Ticket) shipped (PR #9, merged).
+-- Source: src/server/services/visitor-invitation-service.ts — calls
+--         `emitAuditEvent({ type: 'qr_invitation_issued', ... })` on every
+--         successful issuance.
+-- Source: src/db/schema.ts §auditEventTypeEnum — the Postgres enum is the
+--         persisted type the audit-events table column references.
+--
+-- WHY THIS EXISTS:
+-- The Feature 6 PR added the audit event type at the TypeScript layer but
+-- did NOT extend the Postgres enum, so the literal exists in source code
+-- but does NOT exist in the database. The unit tests use an in-memory
+-- audit store and a no-op DB stub, so the test suite never exercised the
+-- real INSERT path and the gap was not caught.
+--
+-- IMPACT WITHOUT THIS MIGRATION:
+-- The first real issuance attempt in production would fail with
+--   ERROR:  invalid input value for enum audit_event_type: "qr_invitation_issued"
+-- causing the entire issuance transaction to roll back. From the caller's
+-- perspective the route would return 500 INTERNAL_ERROR; no invitation
+-- would be created, no audit row written, no QR delivered. The contract
+-- is preserved (default-deny on server error) but the feature is
+-- effectively broken end-to-end on the very first request.
+--
+-- This migration closes that gap by adding the enum value to Postgres.
+-- It is idempotent via `IF NOT EXISTS`, safe to re-apply, and adds zero
+-- behavioural surface beyond the literal value itself.
+--
+-- ROLLBACK:
+-- Postgres does NOT support removing values from an enum. If a rollback
+-- is ever needed, you would have to: (a) ALTER COLUMN to text, (b) drop
+-- the enum, (c) recreate the enum without the value, (d) cast back.
+-- Per Deprecation-and-Migration discipline this is acceptable because
+-- the value will only ever be added to, never removed (Hyrum's Law).
+--
+-- HOW THIS WAS DISCOVERED:
+-- Pre-F7 inspection of the audit-event-type enum revealed that the F6
+-- TypeScript literal had no matching enum entry. Trustless-Auditor's
+-- principle "no silent success" flagged the test-mock gap explicitly.
+
+ALTER TYPE audit_event_type ADD VALUE IF NOT EXISTS 'qr_invitation_issued';

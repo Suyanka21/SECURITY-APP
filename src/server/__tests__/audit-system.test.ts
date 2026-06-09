@@ -361,3 +361,74 @@ describe("Payload Validation (JSONB)", () => {
     expect(event.payload.entryId).toBe("entry-jsonb-001");
   });
 });
+
+// ─── TS↔Postgres Enum Drift Guard ────────────────────────────────────────────
+// Source: drizzle/0006_qr_invitation_audit_enum.sql — this regression test
+// exists because Feature 6 shipped a new audit event type at the TypeScript
+// level (`qr_invitation_issued`) without a matching ALTER TYPE migration.
+// The unit tests at the time used the no-op audit DB stub and so never
+// exercised the real INSERT path; the gap was caught only when the next
+// feature inspected the enum directly.
+//
+// To prevent this class of bug from recurring, every literal in the
+// `AuditEventType` union MUST appear in the Postgres enum (`auditEventTypeEnum`).
+// Drizzle exposes the enum values at `.enumValues` so the comparison is
+// purely a runtime read of two arrays — no DB round-trip required.
+
+describe("Audit event type — TS union vs. Postgres enum (drift guard)", () => {
+  it("every AuditEventType literal has a matching Postgres enum value", async () => {
+    const { auditEventTypeEnum } = await import("@/db/schema");
+
+    // The TS union itself is not enumerable at runtime, but every value
+    // the system actually emits flows through `emitAuditEvent(type, ...)`.
+    // Enumerate the call sites in source to catch any literal that has
+    // been added in code but not in the enum. This list is curated from
+    // emitAuditEvent calls across the codebase and MUST stay in sync.
+    const tsEventTypes = [
+      // Pre-F1 (core)
+      "entry_created",
+      "entry_blocked",
+      "qr_scan_succeeded",
+      "qr_scan_rejected",
+      "override_authorized",
+      "override_rejected",
+      "visitor_selected",
+      "visitor_search",
+      "batch_sync_completed",
+      "override_flow_entered",
+      "flow_reset",
+      "camera_initialized",
+      "camera_failure",
+      // F1 — resident approval flow
+      "approval_requested",
+      "approval_approved",
+      "approval_denied",
+      "approval_expired",
+      // F2 — notifications
+      "notification_sent",
+      "notification_failed",
+      "notification_permanently_failed",
+      // F3 — auto-approval
+      "auto_approval_rule_created",
+      "auto_approval_rule_deactivated",
+      "auto_approval_rule_expired",
+      "auto_approval_matched",
+      // F4 — visitor profiles
+      "visitor_profile_created",
+      "visitor_profile_updated",
+      "visitor_profile_soft_deleted",
+      "visitor_profile_restored",
+      // F6 — visitor invitations (closed by drizzle/0006)
+      "qr_invitation_issued",
+    ];
+
+    const pgEnumValues = auditEventTypeEnum.enumValues;
+    const missing = tsEventTypes.filter((t) => !pgEnumValues.includes(t as typeof pgEnumValues[number]));
+    expect(missing).toEqual([]);
+  });
+
+  it("`qr_invitation_issued` is present in the Postgres enum (F6 regression)", async () => {
+    const { auditEventTypeEnum } = await import("@/db/schema");
+    expect(auditEventTypeEnum.enumValues).toContain("qr_invitation_issued");
+  });
+});
