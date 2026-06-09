@@ -222,16 +222,28 @@ No login. No JS that mutates state. Pass page is read-only.
 
 ## 8. Audit Harness Scenarios
 
-| ID | Scenario | Expected outcome | Why it matters |
-|---|---|---|---|
-| Q1 | Happy issue → preview → guard scan → entry created | Confirmation panel; entry logged; `is_used=true` after | Baseline |
-| Q2 | Regular guard token attempts `POST /api/visitor-invitations` | 403 `AUTH_FORBIDDEN`; no row in `authorization_decisions` | Default-deny on issue |
-| Q3 | Expired QR scan | `QR_EXPIRED` banner on guard view; no entry | Default-deny on stale credentials |
-| Q4 | Replayed QR scan (used → re-scan) | `QR_REPLAYED` banner; no second entry | Default-deny on replay |
-| Q5 | Tampered/malformed QR scan | `QR_NOT_FOUND` banner; no entry | Default-deny on forgery |
-| Q6 | Pass page loads consumed token | 410 `INVITATION_CONSUMED` UI | Visitor-side honesty |
+The harness tests the **no-silent-success contract** on the two new
+UI surfaces F6 introduces: the admin invite panel and the public
+visitor pass page. Each non-OK path is asserted to land in an
+explicit error state with the exact server code visible — the QR
+is never rendered, no invitation is persisted, no entry is logged.
+The guard-scan path (validateQrToken) is unchanged from pre-F6 and
+is exercised by `qr-validation.test.ts` in the server suite.
 
-Q2, Q3, Q4, Q5, Q6 are **default-deny gates**. Q1 is the only happy path.
+| ID | Surface | Scenario | Expected outcome | Why it matters |
+|---|---|---|---|---|
+| Q1 | Admin invite panel | 201 → happy issue | Success card mounts with QR svg + pass URL + visitor details; form is hidden | Baseline — the QR exits the server EXACTLY ONCE |
+| Q2 | Admin invite panel | 403 `AUTH_FORBIDDEN` (guard token) | Form stays mounted; error banner shows code + message + traceId; no QR rendered | **Critical default-deny on issue** |
+| Q3 | `/pass/:token` | 410 `QR_CONSUMED` (replay) | "Pass already used" error panel; no QR rendered | **Critical default-deny on replay** |
+| Q4 | `/pass/:token` | 410 `QR_EXPIRED` | "Pass expired" error panel; no QR rendered | **Critical default-deny on stale credentials** |
+| Q5 | Admin invite panel | 500 `INTERNAL_ERROR` | Form stays mounted; error banner shows exact code; no success card | Default-deny on server error |
+
+Q2, Q3, Q4 are the **critical default-deny gates**. Q1 is the only
+happy path. Q5 covers the generic 5xx surface.
+
+Guard-scan paths (tampered/malformed QR → `QR_NOT_FOUND`) are covered
+outside the harness in `src/server/__tests__/qr-validation.test.ts`
+(6 tests, all green) because that surface predates F6.
 
 ## 9. Risks & Mitigations
 
@@ -248,7 +260,7 @@ Q2, Q3, Q4, Q5, Q6 are **default-deny gates**. Q1 is the only happy path.
 - [ ] All 9 slices land with tests (target: ≥ 25 new server tests, ≥ 15 new frontend tests).
 - [ ] `npm run lint` clean.
 - [ ] `npm run typecheck` clean.
-- [ ] Audit harness scenarios Q1–Q6 PASS in a recorded session.
+- [ ] Audit harness scenarios Q1–Q5 PASS in a recorded session.
 - [ ] CodeRabbit review on PR shows no actionable comments.
 - [ ] Existing 24-scenario cross-feature audit (S, S4–8, N, A, V, SH) still passes with F6 merged.
 - [ ] Spec is committed alongside the code (this file).

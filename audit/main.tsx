@@ -10,23 +10,29 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 import "@/index.css";
 import { GatePassApp } from "@/features/gatepass/GatePassApp";
+import VisitorPass from "@/pages/VisitorPass";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { GatePassApi } from "@/lib/api/gatepass";
 import type { guardApprovalApi } from "@/lib/api/approvals";
 import type { guardNotificationsApi } from "@/lib/api/notifications";
 import type { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import type { shiftsApi } from "@/lib/api/shifts";
+import type { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
+  IssueVisitorInvitationResponse,
   ListShiftsResponse,
   ListVisitorProfilesResponse,
   NotificationRetryResponse,
   NotificationView,
   NotificationsListResponse,
+  PreviewVisitorInvitationResponse,
   RecognizedVisitorsResponse,
   ShiftSummaryView,
+  VisitorInvitationIssuedView,
   VisitorProfileResponse,
   VisitorProfileView,
 } from "@/lib/api/types";
@@ -738,6 +744,96 @@ function makeShiftsApi(scenario: string): typeof shiftsApi {
   return { listShifts } as unknown as typeof shiftsApi;
 }
 
+// ─── Feature 6 — Visitor invitation scenario fixtures ──────────────────
+// Source: src/docs/specs/guest-qr-ticket.md §11 (audit harness Q1-Q5).
+//
+// Q1 — happy path 201       → issued card mounts with QR + pass URL
+// Q2 — 403 AUTH_FORBIDDEN   → critical default-deny (guard token)
+// Q3 — 410 QR_CONSUMED      → replay protection on preview path
+// Q4 — 410 QR_EXPIRED       → TTL expiry on preview path
+// Q5 — 500 INTERNAL_ERROR   → server error must surface, never silent
+//
+// The QR <svg> is rendered ONLY under "issued" — every non-OK path keeps
+// the form mounted and surfaces the explicit error code in a banner.
+
+const SEED_INVITATION: VisitorInvitationIssuedView = {
+  id: "00000000-0000-4000-8000-0000000000ff",
+  qrToken: "AUDITTOKENQ1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q",
+  passUrl: "/pass/AUDITTOKENQ1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q1Q",
+  expiresAt: "2024-02-02T00:00:00.000Z",
+  issuedAt: "2024-02-01T00:00:00.000Z",
+  visitorName: "Maya Chen",
+  host: "A. Okafor",
+  unit: "18B",
+  plate: "LND-482",
+};
+
+function makeVisitorInvitationsApi(
+  scenario: string,
+): typeof visitorInvitationsApi {
+  const issueInvitation = async (): Promise<
+    ApiResult<IssueVisitorInvitationResponse>
+  > => {
+    if (scenario === "invitation-issue-403") {
+      return fail(
+        403,
+        "AUTH_FORBIDDEN",
+        "Guard tokens cannot issue visitor invitations.",
+      );
+    }
+    if (scenario === "invitation-issue-500") {
+      return fail(
+        500,
+        "INTERNAL_ERROR",
+        "Database transaction failed. Please retry.",
+      );
+    }
+    if (
+      scenario === "invitation-issue-200" ||
+      scenario === "invitation-preview-consumed" ||
+      scenario === "invitation-preview-expired"
+    ) {
+      return ok<IssueVisitorInvitationResponse>(
+        { invitation: SEED_INVITATION, traceId: "trace-invite-ok" },
+        201,
+      );
+    }
+    // Other scenarios don't exercise issuance — return a generic error so
+    // the panel surfaces something rather than silently 200-ing.
+    return fail(500, "INTERNAL_ERROR", "Issuance not configured for scenario.");
+  };
+
+  const previewInvitation = async (): Promise<
+    ApiResult<PreviewVisitorInvitationResponse>
+  > => {
+    if (scenario === "invitation-preview-expired") {
+      return fail(410, "QR_EXPIRED", "Pass has expired.");
+    }
+    if (scenario === "invitation-preview-consumed") {
+      return fail(
+        410,
+        "QR_CONSUMED",
+        "Pass has already been used.",
+      );
+    }
+    return ok<PreviewVisitorInvitationResponse>({
+      invitation: {
+        visitorName: SEED_INVITATION.visitorName,
+        host: SEED_INVITATION.host,
+        unit: SEED_INVITATION.unit,
+        plate: SEED_INVITATION.plate,
+        expiresAt: SEED_INVITATION.expiresAt,
+      },
+      traceId: "trace-invite-preview",
+    });
+  };
+
+  return {
+    issueInvitation,
+    previewInvitation,
+  } as unknown as typeof visitorInvitationsApi;
+}
+
 const SCENARIOS = [
   { id: "submit-500", label: "S1 · POST /entries → 500" },
   { id: "submit-422-unit", label: "S2 · POST /entries → 422 (field=unit)" },
@@ -766,6 +862,11 @@ const SCENARIOS = [
   { id: "shifts-filter-guard", label: "SH2 · Shift log → single-guard filter (Feature 5)" },
   { id: "shifts-list-403", label: "SH3 · Shift log → 403 AUTH_FORBIDDEN (Feature 5 — critical default-deny)" },
   { id: "shifts-list-500", label: "SH4 · Shift log → 500 INTERNAL_ERROR (Feature 5)" },
+  { id: "invitation-issue-200", label: "Q1 · Invite visitor → 201 issued + QR card (Feature 6)" },
+  { id: "invitation-issue-403", label: "Q2 · Invite visitor → 403 AUTH_FORBIDDEN (Feature 6 — critical default-deny)" },
+  { id: "invitation-preview-consumed", label: "Q3 · /pass/:token → 410 QR_CONSUMED replay (Feature 6 — critical default-deny)" },
+  { id: "invitation-preview-expired", label: "Q4 · /pass/:token → 410 QR_EXPIRED (Feature 6 — critical default-deny)" },
+  { id: "invitation-issue-500", label: "Q5 · Invite visitor → 500 INTERNAL_ERROR (Feature 6)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
@@ -778,6 +879,7 @@ function Harness() {
   const notificationsApi = makeNotificationsApi(scenario);
   const visitorProfilesApi = makeVisitorProfilesApi(scenario);
   const shiftsApi = makeShiftsApi(scenario);
+  const visitorInvitationsApi = makeVisitorInvitationsApi(scenario);
 
   return (
     <div>
@@ -814,18 +916,36 @@ function Harness() {
           ))}
         </select>
       </div>
-      <GatePassApp
-        key={scenario}
-        controller={{
-          api,
-          approvalApi,
-          notificationsApi,
-          visitorProfilesApi,
-          shiftsApi,
-          approvalPollIntervalMs: 1500,
-          notificationsPollIntervalMs: 1500,
-        }}
-      />
+      {scenario === "invitation-preview-consumed" ||
+      scenario === "invitation-preview-expired" ? (
+        // Q3 / Q4 render the public pass page directly so the auditor can
+        // observe the default-deny error state on the /pass/:token route
+        // without the full GatePass shell around it. The token value here
+        // is irrelevant — the stub previewInvitation() ignores it and
+        // returns the scripted 410 response.
+        <MemoryRouter initialEntries={[`/pass/${SEED_INVITATION.qrToken}`]}>
+          <Routes>
+            <Route
+              path="/pass/:token"
+              element={<VisitorPass api={visitorInvitationsApi} />}
+            />
+          </Routes>
+        </MemoryRouter>
+      ) : (
+        <GatePassApp
+          key={scenario}
+          controller={{
+            api,
+            approvalApi,
+            notificationsApi,
+            visitorProfilesApi,
+            shiftsApi,
+            visitorInvitationsApi,
+            approvalPollIntervalMs: 1500,
+            notificationsPollIntervalMs: 1500,
+          }}
+        />
+      )}
     </div>
   );
 }
