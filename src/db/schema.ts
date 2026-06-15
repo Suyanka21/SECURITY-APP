@@ -301,6 +301,39 @@ export const entryRecords = pgTable(
   ]
 );
 
+// ─── Table 3b: Exit Records ─────────────────────────────────────────────────
+// Source: src/docs/specs/exit-tracking.md §5 (data model)
+// HARD RULES:
+// - One exit per entry (entry_id UNIQUE)
+// - Every exit attributed to a guard (guard_id NOT NULL)
+// - Every exit carries a trace_id for audit correlation
+// - No CASCADE deletes — audit trail must never lose records
+
+export const exitRecords = pgTable("exit_records", {
+  /** Server-generated exit record ID */
+  id: uuid("id").primaryKey().defaultRandom(),
+
+  /** The entry this exit closes — 1:1 relationship */
+  // UNIQUE constraint enforces one exit per entry (no double-exit)
+  entryId: uuid("entry_id")
+    .notNull()
+    .unique()
+    .references(() => entryRecords.id),
+
+  /** Guard who processed the exit — may differ from entry guard */
+  guardId: uuid("guard_id")
+    .notNull()
+    .references(() => guards.id),
+
+  /** Server-generated trace ID for audit correlation */
+  traceId: text("trace_id").notNull(),
+
+  /** Server-generated canonical timestamp — NEVER client-generated */
+  createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // ─── Table 4: Override Events ────────────────────────────────────────────────
 // Source: contract §3.2 (method=override)
 // Source: DEFINITION §2D — "Manual Override: Guard selects Allow, Chooses reason, Entry logged with metadata"
@@ -583,6 +616,8 @@ export const approvalRequests = pgTable(
 export const guardsRelations = relations(guards, ({ many }) => ({
   /** All entries processed by this guard */
   entries: many(entryRecords),
+  /** All exit records processed by this guard */
+  exitRecords: many(exitRecords),
   /** All override events by this guard */
   overrides: many(overrideEvents),
   /** All sync events initiated by this guard */
@@ -617,6 +652,8 @@ export const entryRecordsRelations = relations(
     }),
     /** The override event (if method = override) — 1:1 */
     override: one(overrideEvents),
+    /** The exit record (if visitor has departed) — 1:1 */
+    exit: one(exitRecords),
   })
 );
 
@@ -631,6 +668,22 @@ export const overrideEventsRelations = relations(
     /** The guard who performed the override */
     guard: one(guards, {
       fields: [overrideEvents.guardId],
+      references: [guards.id],
+    }),
+  })
+);
+
+export const exitRecordsRelations = relations(
+  exitRecords,
+  ({ one }) => ({
+    /** The entry this exit closes */
+    entry: one(entryRecords, {
+      fields: [exitRecords.entryId],
+      references: [entryRecords.id],
+    }),
+    /** The guard who processed the exit */
+    guard: one(guards, {
+      fields: [exitRecords.guardId],
       references: [guards.id],
     }),
   })
@@ -1154,6 +1207,13 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   // the raw token is NEVER persisted (see visitor-invitation-service).
   // Migration: drizzle/0006_qr_invitation_audit_enum.sql.
   "qr_invitation_issued",
+  // Source: src/docs/specs/exit-tracking.md §5 — Feature 7 audit events.
+  // exit_recorded is written when a guard successfully records a
+  // visitor's departure. exit_blocked is written when an exit attempt
+  // is rejected (no open entry, already exited).
+  // Migration: drizzle/0007_exit_records.sql.
+  "exit_recorded",
+  "exit_blocked",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

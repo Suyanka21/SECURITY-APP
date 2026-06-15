@@ -43,6 +43,13 @@
       "when": 1781015568000,
       "tag": "0006_qr_invitation_audit_enum",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781015600000,
+      "tag": "0007_exit_records",
+      "breakpoints": true
     }
   ]
 }
