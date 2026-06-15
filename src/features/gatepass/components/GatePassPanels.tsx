@@ -6,6 +6,7 @@ import {
   ExternalLink,
   LayoutDashboard,
   Loader2,
+  LogOut,
   MailCheck,
   QrCode,
   Radar,
@@ -88,6 +89,10 @@ export type GatePassActions = {
   // Source: src/docs/specs/guest-qr-ticket.md §6
   issueVisitorInvitation: (input: IssueVisitorInvitationRequest) => Promise<void> | void;
   resetVisitorInvitation: () => void;
+  // ─── Exit tracking (Feature 7) ────────────────────────
+  // Source: src/docs/specs/exit-tracking.md §8
+  loadOnPremise: () => Promise<void> | void;
+  recordExit: (entryId: string) => Promise<void> | void;
 };
 
 type Props = {
@@ -2052,6 +2057,148 @@ export function VisitorInvitationsAdminPanel({ state, actions }: Props) {
           </div>
         </form>
       )}
+    </section>
+  );
+}
+
+// ─── Feature 7 — On-premise panel + exit affordance ────────────────────
+// Source: src/docs/specs/exit-tracking.md §8.
+//
+// Renders every entry that has NOT yet been exited. Each row has a
+// "Record exit" button that POSTs the exit, removes the row
+// optimistically on success, and surfaces per-row errors on failure.
+// The panel auto-loads on admin mode entry (controller useEffect).
+
+export function OnPremisePanel({ state, actions }: Props) {
+  const slice = state.exitTracking;
+
+  return (
+    <section
+      className="border border-border bg-card p-5 shadow-panel"
+      data-testid="on-premise-panel"
+    >
+      <header className="flex flex-col gap-2 md:flex-row md:items-baseline md:justify-between">
+        <div>
+          <h2 className="font-display text-2xl font-bold">Currently on-premise</h2>
+          <p className="text-sm text-muted-foreground">
+            Visitors who have entered but not yet exited.
+          </p>
+        </div>
+        <button
+          className="focus-ring self-start border border-foreground bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:cursor-not-allowed disabled:opacity-50"
+          data-testid="on-premise-refresh"
+          disabled={slice.loading}
+          onClick={() => void actions.loadOnPremise()}
+        >
+          {slice.loading ? "Loading…" : "Refresh"}
+        </button>
+      </header>
+
+      {slice.lastError && (
+        <div
+          className="mt-4 border border-destructive bg-destructive/10 p-3 text-sm text-destructive"
+          role="alert"
+          data-testid="on-premise-error"
+        >
+          <p className="font-semibold">
+            {slice.lastError.code}: {slice.lastError.message}
+          </p>
+          {slice.lastError.traceId && (
+            <p className="mt-1 text-xs opacity-80">
+              Trace: <code>{slice.lastError.traceId}</code>
+            </p>
+          )}
+        </div>
+      )}
+
+      {slice.lastExit && (
+        <div
+          className="mt-4 flex items-center gap-2 border border-success bg-success/10 p-3 text-sm text-success-foreground"
+          role="status"
+          data-testid="on-premise-exit-success"
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>
+            Exit recorded — trace <code>{slice.lastExit.traceId}</code>
+          </span>
+        </div>
+      )}
+
+      <div className="mt-4 overflow-x-auto">
+        {slice.onPremise.length === 0 && !slice.loading ? (
+          <p
+            className="py-6 text-center text-sm text-muted-foreground"
+            data-testid="on-premise-empty"
+          >
+            No visitors currently on-premise.
+          </p>
+        ) : (
+          <table className="w-full text-left text-sm" data-testid="on-premise-table">
+            <thead>
+              <tr className="border-b border-border text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                <th className="py-2 pr-3">Visitor</th>
+                <th className="py-2 pr-3">Host</th>
+                <th className="py-2 pr-3">Unit</th>
+                <th className="py-2 pr-3">Plate</th>
+                <th className="py-2 pr-3">Method</th>
+                <th className="py-2 pr-3">Entered</th>
+                <th className="py-2 pr-3">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {slice.onPremise.map((entry) => {
+                const inFlight = !!slice.exitInFlight[entry.id];
+                const error = slice.exitErrors[entry.id];
+                return (
+                  <tr
+                    key={entry.id}
+                    className="border-b border-border/50"
+                    data-testid={`on-premise-row-${entry.id}`}
+                  >
+                    <td className="py-2 pr-3 font-semibold">{entry.visitorName}</td>
+                    <td className="py-2 pr-3">{entry.host}</td>
+                    <td className="py-2 pr-3">{entry.unit}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {entry.plate ?? "—"}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <span className="inline-flex items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-xs font-semibold">
+                        {entry.method}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3 text-xs text-muted-foreground">
+                      {entry.createdAt}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <button
+                        className="focus-ring inline-flex items-center gap-1 border border-destructive px-3 py-1 text-xs font-bold text-destructive transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
+                        data-testid={`exit-btn-${entry.id}`}
+                        disabled={inFlight}
+                        onClick={() => void actions.recordExit(entry.id)}
+                      >
+                        {inFlight ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <LogOut className="h-3 w-3" />
+                        )}
+                        {inFlight ? "Working…" : "Record exit"}
+                      </button>
+                      {error && (
+                        <p
+                          className="mt-1 text-xs text-destructive"
+                          data-testid={`exit-error-${entry.id}`}
+                        >
+                          {error.code}: {error.message}
+                        </p>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
     </section>
   );
 }

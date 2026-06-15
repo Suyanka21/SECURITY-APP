@@ -48,6 +48,10 @@ function actionsStub(): GatePassActions {
     toggleVisitorProfilesIncludeDeleted: vi.fn(),
     setShiftsQuery: vi.fn(),
     loadShifts: vi.fn(async () => undefined),
+    issueVisitorInvitation: vi.fn(async () => undefined),
+    resetVisitorInvitation: vi.fn(),
+    loadOnPremise: vi.fn(async () => undefined),
+    recordExit: vi.fn(async () => undefined),
   };
 }
 
