@@ -82,6 +82,26 @@ export const syncResultStatusEnum = pgEnum("sync_result_status", [
   "rejected",
 ]);
 
+/** Entry kind — visitor vs delivery */
+// Source: src/docs/specs/delivery-management.md §3
+export const entryKindEnum = pgEnum("entry_kind", [
+  "visitor",
+  "delivery",
+]);
+
+/** Delivery sub-category — only meaningful when entry_kind = 'delivery' */
+// Source: src/docs/specs/delivery-management.md §3
+export const deliveryCategoryEnum = pgEnum("delivery_category", [
+  "parcel",
+  "food",
+  "ride",
+  "gas",
+  "water",
+  "moving",
+  "maintenance",
+  "other",
+]);
+
 // ─── Table 1: Guards ─────────────────────────────────────────────────────────
 // Source: contract §3.1–3.4 — guardId referenced across all endpoints
 // GATEPASS DEFINITION §2: "guard ID" required for every action
@@ -272,6 +292,16 @@ export const entryRecords = pgTable(
     /** Server-generated trace ID for audit correlation */
     // Source: contract §3.2 response — traceId
     traceId: text("trace_id").notNull(),
+
+    /** Entry kind — visitor (default) or delivery */
+    // Source: src/docs/specs/delivery-management.md §3.2
+    // Default 'visitor' keeps every pre-Feature-8 row valid.
+    entryKind: entryKindEnum("entry_kind").notNull().default("visitor"),
+
+    /** Delivery sub-category — required when entryKind = 'delivery' */
+    // Source: src/docs/specs/delivery-management.md §3.2
+    // NULL for visitor entries; CHECK constraint enforces coherence.
+    deliveryCategory: deliveryCategoryEnum("delivery_category"),
   },
   (table) => [
     // Override entries must have meaningful reason (≥8 chars after trim)
@@ -298,6 +328,12 @@ export const entryRecords = pgTable(
     // Unit must not be empty/whitespace
     // Source: contract §3.2 — "Non-empty after trim"
     check("entry_unit_not_empty", sql`length(trim(${table.unit})) > 0`),
+    // Delivery ↔ category coherence
+    // Source: src/docs/specs/delivery-management.md §3.2
+    check(
+      "entry_delivery_category_coherence",
+      sql`(${table.entryKind} = 'visitor' AND ${table.deliveryCategory} IS NULL) OR (${table.entryKind} = 'delivery' AND ${table.deliveryCategory} IS NOT NULL)`
+    ),
   ]
 );
 
@@ -1214,6 +1250,12 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   // Migration: drizzle/0007_exit_records.sql.
   "exit_recorded",
   "exit_blocked",
+  // Source: src/docs/specs/delivery-management.md §3.3 — Feature 8 audit events.
+  // delivery_entry_logged on successful delivery entry creation.
+  // delivery_entry_blocked when a delivery attempt is rejected.
+  // Migration: drizzle/0008_delivery_management.sql.
+  "delivery_entry_logged",
+  "delivery_entry_blocked",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

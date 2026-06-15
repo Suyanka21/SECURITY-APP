@@ -50,6 +50,13 @@
       "when": 1781015600000,
       "tag": "0007_exit_records",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781537200000,
+      "tag": "0008_delivery_management",
+      "breakpoints": true
     }
   ]
 }
