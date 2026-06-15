@@ -18,19 +18,24 @@ import type { guardNotificationsApi } from "@/lib/api/notifications";
 import type { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import type { shiftsApi } from "@/lib/api/shifts";
 import type { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
+import type { exitTrackingApi } from "@/lib/api/exit-tracking";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
+  ExitRecordView,
   IssueVisitorInvitationResponse,
+  ListOnPremiseResponse,
   ListShiftsResponse,
   ListVisitorProfilesResponse,
   NotificationRetryResponse,
   NotificationView,
   NotificationsListResponse,
+  OnPremiseEntryView,
   PreviewVisitorInvitationResponse,
   RecognizedVisitorsResponse,
+  RecordExitResponse,
   ShiftSummaryView,
   VisitorInvitationIssuedView,
   VisitorProfileResponse,
@@ -834,6 +839,99 @@ function makeVisitorInvitationsApi(
   } as unknown as typeof visitorInvitationsApi;
 }
 
+// ─── Feature 7 — Exit tracking audit stubs ────────────────────────────
+// Source: src/docs/specs/exit-tracking.md §A (audit scenarios E1–E5)
+
+const SEED_ON_PREMISE_ENTRY_A: OnPremiseEntryView = {
+  id: "entry-aaa-111",
+  visitorName: "Maya Chen",
+  host: "A. Okafor",
+  unit: "18B",
+  plate: "LND-482",
+  method: "walk-in",
+  guardId: "guard-west-04",
+  createdAt: "2024-06-01T09:30:00.000Z",
+};
+
+const SEED_ON_PREMISE_ENTRY_B: OnPremiseEntryView = {
+  id: "entry-bbb-222",
+  visitorName: "Dario Miles",
+  host: "N. Patel",
+  unit: "07C",
+  plate: null,
+  method: "qr",
+  guardId: "guard-west-04",
+  createdAt: "2024-06-01T10:15:00.000Z",
+};
+
+const SEED_EXIT_RECORD: ExitRecordView = {
+  id: "exit-0001",
+  entryId: SEED_ON_PREMISE_ENTRY_A.id,
+  guardId: "guard-west-04",
+  createdAt: "2024-06-01T10:30:00.000Z",
+  traceId: "trace-exit-happy",
+};
+
+function makeExitTrackingApi(
+  scenario: string,
+): typeof exitTrackingApi {
+  // Default: happy-path list + successful exit
+  const listOnPremise = async (): Promise<ApiResult<ListOnPremiseResponse>> => {
+    // E4: 403 on list — guard token rejected by RBAC
+    if (scenario === "exit-list-403") {
+      return fail(
+        403,
+        "AUTH_FORBIDDEN",
+        "Insufficient role — admin or senior-guard required.",
+      );
+    }
+    return ok({
+      entries: [SEED_ON_PREMISE_ENTRY_A, SEED_ON_PREMISE_ENTRY_B],
+      count: 2,
+      traceId: "trace-list-on-premise",
+    });
+  };
+
+  const recordExit = async (
+    entryId: string,
+  ): Promise<ApiResult<RecordExitResponse>> => {
+    // E2: no open entry
+    if (scenario === "exit-no-open-entry") {
+      return fail(
+        404,
+        "EXIT_NO_OPEN_ENTRY",
+        "No open entry found for the provided ID.",
+      );
+    }
+    // E3: already exited (replay)
+    if (scenario === "exit-already-recorded") {
+      return fail(
+        409,
+        "EXIT_ALREADY_RECORDED",
+        "An exit has already been recorded for this entry.",
+      );
+    }
+    // E5: server error
+    if (scenario === "exit-server-500") {
+      return fail(
+        500,
+        "INTERNAL_ERROR",
+        "Database transaction failed.",
+      );
+    }
+    // E1: happy exit — return the exit record for the requested entry
+    return ok(
+      {
+        exit: { ...SEED_EXIT_RECORD, entryId },
+        traceId: "trace-exit-happy",
+      },
+      201,
+    );
+  };
+
+  return { recordExit, listOnPremise } as unknown as typeof exitTrackingApi;
+}
+
 const SCENARIOS = [
   { id: "submit-500", label: "S1 · POST /entries → 500" },
   { id: "submit-422-unit", label: "S2 · POST /entries → 422 (field=unit)" },
@@ -867,6 +965,11 @@ const SCENARIOS = [
   { id: "invitation-preview-consumed", label: "Q3 · /pass/:token → 410 QR_CONSUMED replay (Feature 6 — critical default-deny)" },
   { id: "invitation-preview-expired", label: "Q4 · /pass/:token → 410 QR_EXPIRED (Feature 6 — critical default-deny)" },
   { id: "invitation-issue-500", label: "Q5 · Invite visitor → 500 INTERNAL_ERROR (Feature 6)" },
+  { id: "exit-happy", label: "E1 · Record exit → 201 success (Feature 7)" },
+  { id: "exit-no-open-entry", label: "E2 · Record exit → 404 EXIT_NO_OPEN_ENTRY (Feature 7 — default-deny)" },
+  { id: "exit-already-recorded", label: "E3 · Record exit → 409 EXIT_ALREADY_RECORDED replay (Feature 7 — default-deny)" },
+  { id: "exit-list-403", label: "E4 · On-premise list → 403 AUTH_FORBIDDEN (Feature 7 — critical default-deny)" },
+  { id: "exit-server-500", label: "E5 · Record exit → 500 INTERNAL_ERROR (Feature 7)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
@@ -880,6 +983,7 @@ function Harness() {
   const visitorProfilesApi = makeVisitorProfilesApi(scenario);
   const shiftsApi = makeShiftsApi(scenario);
   const visitorInvitationsApi = makeVisitorInvitationsApi(scenario);
+  const exitTrackingApiStub = makeExitTrackingApi(scenario);
 
   return (
     <div>
@@ -941,6 +1045,7 @@ function Harness() {
             visitorProfilesApi,
             shiftsApi,
             visitorInvitationsApi,
+            exitTrackingApi: exitTrackingApiStub,
             approvalPollIntervalMs: 1500,
             notificationsPollIntervalMs: 1500,
           }}
