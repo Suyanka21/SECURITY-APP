@@ -466,3 +466,36 @@ export interface IssueVisitorInvitationResponse {
 export interface PreviewVisitorInvitationResponse {
   invitation: VisitorInvitationPreviewView;
 }
+
+// ─── Exit tracking (Feature 7 — Exit Tracking) ──────────────────────────────
+// Source: src/docs/specs/exit-tracking.md §6
+
+export interface ExitRecordView {
+  id: string;
+  entryId: string;
+  guardId: string;
+  createdAt: string;
+  traceId: string;
+}
+
+export interface RecordExitResponse {
+  exit: ExitRecordView;
+  traceId: string;
+}
+
+export interface OnPremiseEntryView {
+  id: string;
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+  method: EntryMethod;
+  guardId: string;
+  createdAt: string;
+}
+
+export interface ListOnPremiseResponse {
+  entries: OnPremiseEntryView[];
+  count: number;
+  traceId: string;
+}
