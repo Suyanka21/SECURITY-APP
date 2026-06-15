@@ -2346,3 +2346,160 @@ describe("useGatePassController — visitor invitations (Feature 6)", () => {
     expect(dump).not.toContain(ISSUED_INVITATION.qrToken);
   });
 });
+
+// ─── Feature 7 — Exit tracking controller ────────────────────────────
+// Source: src/docs/specs/exit-tracking.md §8.
+//
+// Two surfaces:
+//   loadOnPremise  — dispatches LIST_{STARTED,LOADED|FAILED}
+//   recordExit     — dispatches RECORD_{STARTED,SUCCEEDED|FAILED}
+//
+// Default-deny:
+//   1) 403 AUTH_FORBIDDEN MUST land in LIST_FAILED, never LIST_LOADED.
+//   2) 404 EXIT_NO_OPEN_ENTRY MUST land in RECORD_FAILED, entry stays
+//      in onPremise so the guard sees the row was not exited.
+//   3) 500 server error on recordExit MUST land in RECORD_FAILED.
+
+import type { exitTrackingApi } from "@/lib/api/exit-tracking";
+import type {
+  ListOnPremiseResponse,
+  OnPremiseEntryView,
+  RecordExitResponse,
+  ExitRecordView,
+} from "@/lib/api/types";
+
+interface MockExitTrackingApi {
+  recordExit: ReturnType<typeof vi.fn>;
+  listOnPremise: ReturnType<typeof vi.fn>;
+}
+
+function makeExitTrackingApi(): MockExitTrackingApi {
+  return {
+    recordExit: vi.fn(),
+    listOnPremise: vi.fn(),
+  };
+}
+
+function buildExitTrackingController(exitApi: MockExitTrackingApi) {
+  return renderHook(() =>
+    useGatePassController({
+      exitTrackingApi: exitApi as unknown as typeof exitTrackingApi,
+      now: () => new Date("2024-06-01T10:00:00Z"),
+    }),
+  );
+}
+
+const ENTRY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+const ON_PREMISE_ENTRY: OnPremiseEntryView = {
+  id: ENTRY_ID,
+  visitorName: "Maya Chen",
+  host: "A. Okafor",
+  unit: "18B",
+  plate: "LND-482",
+  method: "walk-in",
+  guardId: "guard-west-04",
+  createdAt: "2024-06-01T09:30:00.000Z",
+};
+
+const EXIT_VIEW: ExitRecordView = {
+  id: "exit-0001",
+  entryId: ENTRY_ID,
+  guardId: "guard-west-04",
+  createdAt: "2024-06-01T10:30:00.000Z",
+  traceId: "trace-exit-1",
+};
+
+describe("useGatePassController — exit tracking (Feature 7)", () => {
+  let exitApi: MockExitTrackingApi;
+
+  beforeEach(() => {
+    exitApi = makeExitTrackingApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("loadOnPremise dispatches LIST_LOADED on success", async () => {
+    exitApi.listOnPremise.mockResolvedValue(
+      ok<ListOnPremiseResponse>({
+        entries: [ON_PREMISE_ENTRY],
+        count: 1,
+        traceId: "trace-list",
+      }),
+    );
+    const hook = buildExitTrackingController(exitApi);
+    await act(async () => {
+      await hook.result.current.loadOnPremise();
+    });
+    expect(exitApi.listOnPremise).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.exitTracking.onPremise).toEqual([ON_PREMISE_ENTRY]);
+    expect(hook.result.current.state.exitTracking.loading).toBe(false);
+    expect(hook.result.current.state.exitTracking.lastError).toBeUndefined();
+  });
+
+  it("loadOnPremise default-denies 403 AUTH_FORBIDDEN", async () => {
+    exitApi.listOnPremise.mockResolvedValue(
+      fail(403, "AUTH_FORBIDDEN", "Insufficient role"),
+    );
+    const hook = buildExitTrackingController(exitApi);
+    await act(async () => {
+      await hook.result.current.loadOnPremise();
+    });
+    expect(hook.result.current.state.exitTracking.onPremise).toEqual([]);
+    expect(hook.result.current.state.exitTracking.lastError?.code).toBe("AUTH_FORBIDDEN");
+  });
+
+  it("recordExit dispatches RECORD_SUCCEEDED and removes entry from onPremise", async () => {
+    exitApi.listOnPremise.mockResolvedValue(
+      ok<ListOnPremiseResponse>({
+        entries: [ON_PREMISE_ENTRY],
+        count: 1,
+        traceId: "trace-list",
+      }),
+    );
+    exitApi.recordExit.mockResolvedValue(
+      ok<RecordExitResponse>({ exit: EXIT_VIEW, traceId: "trace-exit-1" }, 201),
+    );
+    const hook = buildExitTrackingController(exitApi);
+    // Load entries first.
+    await act(async () => {
+      await hook.result.current.loadOnPremise();
+    });
+    expect(hook.result.current.state.exitTracking.onPremise).toHaveLength(1);
+    // Record exit.
+    await act(async () => {
+      await hook.result.current.recordExit(ENTRY_ID);
+    });
+    expect(exitApi.recordExit).toHaveBeenCalledWith(ENTRY_ID);
+    expect(hook.result.current.state.exitTracking.onPremise).toEqual([]);
+    expect(hook.result.current.state.exitTracking.lastExit).toEqual(EXIT_VIEW);
+    expect(hook.result.current.state.exitTracking.exitErrors[ENTRY_ID]).toBeUndefined();
+  });
+
+  it("recordExit default-denies 404 EXIT_NO_OPEN_ENTRY — entry stays in onPremise", async () => {
+    exitApi.listOnPremise.mockResolvedValue(
+      ok<ListOnPremiseResponse>({
+        entries: [ON_PREMISE_ENTRY],
+        count: 1,
+        traceId: "trace-list",
+      }),
+    );
+    exitApi.recordExit.mockResolvedValue(
+      fail(404, "EXIT_NO_OPEN_ENTRY", "No entry found for the provided ID"),
+    );
+    const hook = buildExitTrackingController(exitApi);
+    await act(async () => {
+      await hook.result.current.loadOnPremise();
+    });
+    await act(async () => {
+      await hook.result.current.recordExit(ENTRY_ID);
+    });
+    // Entry must stay in onPremise — not silently removed.
+    expect(hook.result.current.state.exitTracking.onPremise).toEqual([ON_PREMISE_ENTRY]);
+    expect(hook.result.current.state.exitTracking.exitErrors[ENTRY_ID]?.code).toBe(
+      "EXIT_NO_OPEN_ENTRY",
+    );
+  });
+});
