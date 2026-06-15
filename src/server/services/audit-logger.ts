@@ -68,7 +68,12 @@ export type AuditEventType =
   // Written when an admin/senior-guard issues a visitor invitation.
   // The raw QR token is NEVER part of the payload — only the SHA-256
   // hash, mirroring the discipline in qr-service.ts.
-  | "qr_invitation_issued";
+  | "qr_invitation_issued"
+  // Source: src/docs/specs/exit-tracking.md §5 — Feature 7 audit events.
+  // exit_recorded: successful exit (payload: { entryId, exitId }).
+  // exit_blocked: rejected exit attempt (payload: { entryId, code }).
+  | "exit_recorded"
+  | "exit_blocked";
 
 export interface AuditEvent {
   /** Unique immutable event ID */
