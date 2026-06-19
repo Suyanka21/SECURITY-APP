@@ -499,3 +499,63 @@ export interface ListOnPremiseResponse {
   count: number;
   traceId: string;
 }
+
+// ─── Feature 8: Delivery Management ─────────────────────────────────────────
+// Source: src/docs/specs/delivery-management.md §§4–5
+
+export type EntryKind = "visitor" | "delivery";
+export type DeliveryCategory =
+  | "parcel" | "food" | "ride" | "gas"
+  | "water" | "moving" | "maintenance" | "other";
+
+export interface CreateDeliveryEntryRequest {
+  visitorName: string;
+  host?: string;
+  unit: string;
+  plate?: string | null;
+  reason?: string;
+  method?: EntryMethod;
+  createdAt: string;
+  entryKind: EntryKind;
+  deliveryCategory: DeliveryCategory;
+  offlineId?: string;
+}
+
+export interface DeliveryEntryView {
+  id: string;
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+  reason: string;
+  method: string;
+  guardId: string;
+  createdAt: string;
+  status: "logged";
+  syncState: "synced";
+  entryKind: EntryKind;
+  deliveryCategory: DeliveryCategory;
+}
+
+export interface CreateDeliveryEntryResponse {
+  entry: DeliveryEntryView;
+  traceId: string;
+}
+
+export interface DeliveryListEntryView {
+  id: string;
+  visitorName: string;
+  host: string;
+  unit: string;
+  plate: string | null;
+  deliveryCategory: DeliveryCategory;
+  method: string;
+  guardId: string;
+  createdAt: string;
+}
+
+export interface ListDeliveriesResponse {
+  entries: DeliveryListEntryView[];
+  count: number;
+  traceId: string;
+}
