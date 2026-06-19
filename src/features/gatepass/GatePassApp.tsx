@@ -2,6 +2,7 @@ import {
   AdminShell,
   AwaitingApprovalPanel,
   ConfirmationPanel,
+  DeliveryAdminPanel,
   ErrorPanel,
   GuardHome,
   OnPremisePanel,
@@ -50,6 +51,10 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     // Feature 7 — exit tracking wiring.
     loadOnPremise: controller.loadOnPremise,
     recordExit: controller.recordExit,
+    // Feature 8 — delivery management wiring.
+    submitDelivery: controller.submitDelivery,
+    loadDeliveries: controller.loadDeliveries,
+    resetDeliveryForm: controller.resetDeliveryForm,
   };
 
   return (
@@ -134,6 +139,11 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
               actions={actions}
             />
             <OnPremisePanel
+              state={state}
+              dispatch={dispatch}
+              actions={actions}
+            />
+            <DeliveryAdminPanel
               state={state}
               dispatch={dispatch}
               actions={actions}

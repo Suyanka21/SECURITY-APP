@@ -8,6 +8,7 @@ import {
   Loader2,
   LogOut,
   MailCheck,
+  Package,
   QrCode,
   Radar,
   RefreshCw,
@@ -30,7 +31,9 @@ import type {
 } from "../types";
 import { VISITOR_PROFILE_NEW_KEY } from "../types";
 import type {
+  CreateDeliveryEntryRequest,
   CreateVisitorProfileRequest,
+  DeliveryCategory,
   IssueVisitorInvitationRequest,
   UpdateVisitorProfileRequest,
   VisitorProfileView,
@@ -93,6 +96,11 @@ export type GatePassActions = {
   // Source: src/docs/specs/exit-tracking.md §8
   loadOnPremise: () => Promise<void> | void;
   recordExit: (entryId: string) => Promise<void> | void;
+  // ─── Delivery management (Feature 8) ────────────────────
+  // Source: src/docs/specs/delivery-management.md §5
+  submitDelivery: (input: import("@/lib/api/types").CreateDeliveryEntryRequest) => Promise<void> | void;
+  loadDeliveries: () => Promise<void> | void;
+  resetDeliveryForm: () => void;
 };
 
 type Props = {
@@ -2199,6 +2207,279 @@ export function OnPremisePanel({ state, actions }: Props) {
           </table>
         )}
       </div>
+    </section>
+  );
+}
+
+// ─── Feature 8: Delivery Management ─────────────────────────────────────────
+// Source: src/docs/specs/delivery-management.md §5.
+//
+// Guard quick-entry form + admin-only recent deliveries table.
+// The form is a lightweight tile: rider name, unit, category dropdown.
+// Category is required for entryKind='delivery' (spec §4).
+// The admin table auto-loads on admin mode entry via the controller effect.
+
+const DELIVERY_CATEGORIES: { value: DeliveryCategory; label: string }[] = [
+  { value: "parcel", label: "Parcel" },
+  { value: "food", label: "Food" },
+  { value: "ride", label: "Ride" },
+  { value: "gas", label: "Gas" },
+  { value: "water", label: "Water" },
+  { value: "moving", label: "Moving" },
+  { value: "maintenance", label: "Maintenance" },
+  { value: "other", label: "Other" },
+];
+
+export function DeliveryAdminPanel({ state, actions }: Props) {
+  const slice = state.deliveryManagement;
+  const [riderName, setRiderName] = useState("");
+  const [unit, setUnit] = useState("");
+  const [plate, setPlate] = useState("");
+  const [category, setCategory] = useState<DeliveryCategory>("parcel");
+  const [showForm, setShowForm] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const input: CreateDeliveryEntryRequest = {
+      visitorName: riderName.trim(),
+      unit: unit.trim(),
+      plate: plate.trim() || undefined,
+      createdAt: new Date().toISOString(),
+      entryKind: "delivery",
+      deliveryCategory: category,
+    };
+    await actions.submitDelivery(input);
+  };
+
+  const formReset = () => {
+    setRiderName("");
+    setUnit("");
+    setPlate("");
+    setCategory("parcel");
+    setShowForm(false);
+    actions.resetDeliveryForm();
+  };
+
+  return (
+    <section
+      className="border border-border bg-card p-5 shadow-panel"
+      data-testid="delivery-panel"
+    >
+      <header className="flex flex-col gap-2 md:flex-row md:items-baseline md:justify-between">
+        <div>
+          <h2 className="font-display text-2xl font-bold">
+            <Package className="mr-2 inline h-5 w-5" />
+            Deliveries
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Track parcels, food, rides, and service deliveries.
+          </p>
+        </div>
+        <div className="flex gap-2 self-start">
+          <button
+            className="focus-ring border border-foreground bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:cursor-not-allowed disabled:opacity-50"
+            data-testid="delivery-refresh"
+            disabled={slice.loading}
+            onClick={() => void actions.loadDeliveries()}
+          >
+            {slice.loading ? "Loading…" : "Refresh"}
+          </button>
+          {!showForm && !slice.lastEntry && (
+            <button
+              className="focus-ring border border-foreground px-4 py-2 text-sm font-semibold transition-transform hover:-translate-y-0.5"
+              data-testid="delivery-new-btn"
+              onClick={() => setShowForm(true)}
+            >
+              + New delivery
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* ─── Success banner ──────────────────────────────────── */}
+      {slice.lastEntry && !showForm && (
+        <div
+          className="mt-4 flex items-center gap-2 border border-success bg-success/10 p-3 text-sm text-success-foreground"
+          role="status"
+          data-testid="delivery-success"
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>
+            Delivery logged — {slice.lastEntry.visitorName} ({slice.lastEntry.deliveryCategory})
+          </span>
+          <button
+            className="ml-auto text-xs underline"
+            onClick={formReset}
+            data-testid="delivery-dismiss-success"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* ─── Quick-entry form ────────────────────────────────── */}
+      {showForm && (
+        <form
+          className="mt-4 border border-border bg-muted/20 p-4"
+          data-testid="delivery-form"
+          onSubmit={(e) => void handleSubmit(e)}
+        >
+          {slice.lastError && (
+            <div
+              className="mb-3 border border-destructive bg-destructive/10 p-2 text-sm text-destructive"
+              role="alert"
+              data-testid="delivery-form-error"
+            >
+              {slice.lastError.code}: {slice.lastError.message}
+            </div>
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block">
+              <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Rider / Driver name *
+              </span>
+              <input
+                className="mt-1 block w-full border border-border bg-background px-3 py-2 text-sm focus:border-foreground focus:outline-none"
+                data-testid="delivery-rider-name"
+                value={riderName}
+                onChange={(e) => setRiderName(e.target.value)}
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Unit *
+              </span>
+              <input
+                className="mt-1 block w-full border border-border bg-background px-3 py-2 text-sm focus:border-foreground focus:outline-none"
+                data-testid="delivery-unit"
+                value={unit}
+                onChange={(e) => setUnit(e.target.value)}
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Plate (optional)
+              </span>
+              <input
+                className="mt-1 block w-full border border-border bg-background px-3 py-2 text-sm focus:border-foreground focus:outline-none"
+                data-testid="delivery-plate"
+                value={plate}
+                onChange={(e) => setPlate(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Category *
+              </span>
+              <select
+                className="mt-1 block w-full border border-border bg-background px-3 py-2 text-sm focus:border-foreground focus:outline-none"
+                data-testid="delivery-category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value as DeliveryCategory)}
+                required
+              >
+                {DELIVERY_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="mt-4 flex gap-2">
+            <button
+              type="submit"
+              className="focus-ring border border-foreground bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:cursor-not-allowed disabled:opacity-50"
+              data-testid="delivery-submit"
+              disabled={slice.submitting}
+            >
+              {slice.submitting ? "Working…" : "Log delivery"}
+            </button>
+            <button
+              type="button"
+              className="focus-ring border border-border px-4 py-2 text-sm"
+              data-testid="delivery-cancel"
+              onClick={() => {
+                setShowForm(false);
+                actions.resetDeliveryForm();
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* ─── Recent deliveries table ─────────────────────────── */}
+      <div className="mt-4 overflow-x-auto">
+        {slice.entries.length === 0 && !slice.loading ? (
+          <p
+            className="py-6 text-center text-sm text-muted-foreground"
+            data-testid="delivery-empty"
+          >
+            No deliveries recorded yet.
+          </p>
+        ) : (
+          <table className="w-full text-left text-sm" data-testid="delivery-table">
+            <thead>
+              <tr className="border-b border-border text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                <th className="py-2 pr-3">Rider</th>
+                <th className="py-2 pr-3">Unit</th>
+                <th className="py-2 pr-3">Category</th>
+                <th className="py-2 pr-3">Plate</th>
+                <th className="py-2 pr-3">Method</th>
+                <th className="py-2 pr-3">Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {slice.entries.map((entry) => (
+                <tr
+                  key={entry.id}
+                  className="border-b border-border/50"
+                  data-testid={`delivery-row-${entry.id}`}
+                >
+                  <td className="py-2 pr-3 font-semibold">{entry.visitorName}</td>
+                  <td className="py-2 pr-3">{entry.unit}</td>
+                  <td className="py-2 pr-3">
+                    <span className="inline-flex items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-xs font-semibold">
+                      {entry.deliveryCategory}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 font-mono text-xs">
+                    {entry.plate ?? "—"}
+                  </td>
+                  <td className="py-2 pr-3 text-xs">{entry.method}</td>
+                  <td className="py-2 pr-3 text-xs text-muted-foreground">
+                    {entry.createdAt}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* ─── Error banner (list-level) ───────────────────────── */}
+      {slice.lastError && !showForm && (
+        <div
+          className="mt-4 border border-destructive bg-destructive/10 p-3 text-sm text-destructive"
+          role="alert"
+          data-testid="delivery-list-error"
+        >
+          <p className="font-semibold">
+            {slice.lastError.code}: {slice.lastError.message}
+          </p>
+          {slice.lastError.traceId && (
+            <p className="mt-1 text-xs opacity-80">
+              Trace: <code>{slice.lastError.traceId}</code>
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }
