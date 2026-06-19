@@ -24,15 +24,19 @@ import { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import { shiftsApi } from "@/lib/api/shifts";
 import { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
 import { exitTrackingApi } from "@/lib/api/exit-tracking";
+import { deliveryApi } from "@/lib/api/deliveries";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
+  CreateDeliveryEntryRequest,
+  CreateDeliveryEntryResponse,
   CreateEntryResponse,
   CreateVisitorProfileRequest,
   IssueVisitorInvitationRequest,
   IssueVisitorInvitationResponse,
+  ListDeliveriesResponse,
   ListOnPremiseResponse,
   ListShiftsResponse,
   ListVisitorProfilesResponse,
@@ -267,6 +271,14 @@ export interface GatePassController {
   loadOnPremise: () => Promise<void>;
   /** Record an exit for the given entry. Any guard. */
   recordExit: (entryId: string) => Promise<void>;
+  // ─── Delivery management (Feature 8) ────────────────────────
+  // Source: src/docs/specs/delivery-management.md §5.
+  /** Submit a delivery entry. Any guard. */
+  submitDelivery: (input: CreateDeliveryEntryRequest) => Promise<void>;
+  /** Fetch the delivery list. Admin/senior-guard only. */
+  loadDeliveries: () => Promise<void>;
+  /** Reset the delivery form back to idle. */
+  resetDeliveryForm: () => void;
 }
 
 export interface GatePassControllerOptions {
@@ -298,6 +310,11 @@ export interface GatePassControllerOptions {
    * Source: src/docs/specs/exit-tracking.md §6.
    */
   exitTrackingApi?: typeof exitTrackingApi;
+  /**
+   * Optional override for the delivery management client (Feature 8).
+   * Source: src/docs/specs/delivery-management.md §4.
+   */
+  deliveryManagementApi?: typeof deliveryApi;
   /** Override clock for deterministic tests. */
   now?: () => Date;
   /** Override UUID generator for deterministic tests. */
@@ -326,6 +343,7 @@ export function useGatePassController(
   const shiftsClient = options.shiftsApi ?? shiftsApi;
   const invitationsApi = options.visitorInvitationsApi ?? visitorInvitationsApi;
   const exitApi = options.exitTrackingApi ?? exitTrackingApi;
+  const deliveryClient = options.deliveryManagementApi ?? deliveryApi;
   const pollIntervalMs = options.approvalPollIntervalMs ?? 2000;
   const notificationsPollIntervalMs =
     options.notificationsPollIntervalMs ?? 2000;
@@ -1317,6 +1335,59 @@ export function useGatePassController(
     void loadOnPremise();
   }, [state.mode, loadOnPremise]);
 
+  // ─── Feature 8 — Delivery management ────────────────────────────────
+  // Source: src/docs/specs/delivery-management.md §5.
+
+  const submitDelivery = useCallback(
+    async (input: CreateDeliveryEntryRequest) => {
+      dispatch({ type: "DELIVERY_SUBMIT_STARTED" });
+      const result: ApiResult<CreateDeliveryEntryResponse> =
+        await deliveryClient.submitDelivery(input);
+      if (!result.ok) {
+        dispatch({
+          type: "DELIVERY_SUBMIT_FAILED",
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "DELIVERY_SUBMIT_SUCCEEDED",
+        entry: result.data.entry,
+      });
+    },
+    [deliveryClient],
+  );
+
+  const loadDeliveries = useCallback(async () => {
+    dispatch({ type: "DELIVERY_LIST_STARTED" });
+    const result: ApiResult<ListDeliveriesResponse> =
+      await deliveryClient.listDeliveries();
+    if (!result.ok) {
+      dispatch({
+        type: "DELIVERY_LIST_FAILED",
+        error: errorFromApi(result),
+      });
+      return;
+    }
+    dispatch({
+      type: "DELIVERY_LIST_LOADED",
+      entries: result.data.entries,
+      count: result.data.count,
+      traceId: result.data.traceId,
+    });
+  }, [deliveryClient]);
+
+  const resetDeliveryForm = useCallback(() => {
+    dispatch({ type: "DELIVERY_SUBMIT_RESET" });
+  }, []);
+
+  // ─── Feature 8 — auto-load delivery list on admin entry ─────────────
+  // Source: src/docs/specs/delivery-management.md §5.
+  useEffect(() => {
+    if (state.mode !== "admin") return;
+    void loadDeliveries();
+  }, [state.mode, loadDeliveries]);
+
   return useMemo(
     () => ({
       state,
@@ -1340,6 +1411,9 @@ export function useGatePassController(
       resetVisitorInvitation,
       loadOnPremise,
       recordExit,
+      submitDelivery,
+      loadDeliveries,
+      resetDeliveryForm,
     }),
     [
       state,
@@ -1362,6 +1436,9 @@ export function useGatePassController(
       resetVisitorInvitation,
       loadOnPremise,
       recordExit,
+      submitDelivery,
+      loadDeliveries,
+      resetDeliveryForm,
     ]
   );
 }

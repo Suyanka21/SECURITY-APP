@@ -2503,3 +2503,154 @@ describe("useGatePassController — exit tracking (Feature 7)", () => {
     );
   });
 });
+
+// ─── Feature 8: Delivery Management Controller Tests ─────────────────────────
+// Source: src/docs/specs/delivery-management.md §5.
+//
+// Tests:
+//   1) submitDelivery on 201 success → SUBMIT_SUCCEEDED, lastEntry set
+//   2) submitDelivery on 422 DELIVERY_CATEGORY_REQUIRED → SUBMIT_FAILED
+//   3) loadDeliveries on 200 success → LIST_LOADED
+//   4) loadDeliveries on 403 AUTH_FORBIDDEN → LIST_FAILED (default-deny)
+
+import type { deliveryApi as DeliveryApiType } from "@/lib/api/deliveries";
+import type {
+  CreateDeliveryEntryResponse,
+  ListDeliveriesResponse,
+  DeliveryEntryView,
+  DeliveryListEntryView,
+} from "@/lib/api/types";
+
+interface MockDeliveryApi {
+  submitDelivery: ReturnType<typeof vi.fn>;
+  listDeliveries: ReturnType<typeof vi.fn>;
+}
+
+function makeDeliveryApi(): MockDeliveryApi {
+  return {
+    submitDelivery: vi.fn(),
+    listDeliveries: vi.fn(),
+  };
+}
+
+function buildDeliveryController(delApi: MockDeliveryApi) {
+  return renderHook(() =>
+    useGatePassController({
+      deliveryManagementApi: delApi as unknown as typeof DeliveryApiType,
+      now: () => new Date("2024-06-01T10:00:00Z"),
+    }),
+  );
+}
+
+const DELIVERY_ENTRY: DeliveryEntryView = {
+  id: "del-001",
+  visitorName: "Jumia Rider",
+  host: "Reception",
+  unit: "18B",
+  plate: "KDA-123",
+  reason: "",
+  method: "walk-in",
+  guardId: "guard-01",
+  createdAt: "2024-06-01T09:30:00.000Z",
+  status: "logged",
+  syncState: "synced",
+  entryKind: "delivery",
+  deliveryCategory: "parcel",
+};
+
+const DELIVERY_LIST_ENTRY: DeliveryListEntryView = {
+  id: "del-001",
+  visitorName: "Jumia Rider",
+  host: "Reception",
+  unit: "18B",
+  plate: null,
+  deliveryCategory: "parcel",
+  method: "walk-in",
+  guardId: "guard-01",
+  createdAt: "2024-06-01T09:30:00.000Z",
+};
+
+describe("useGatePassController — delivery management (Feature 8)", () => {
+  let delApi: MockDeliveryApi;
+
+  beforeEach(() => {
+    delApi = makeDeliveryApi();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("submitDelivery dispatches SUBMIT_SUCCEEDED on 201", async () => {
+    delApi.submitDelivery.mockResolvedValue(
+      ok<CreateDeliveryEntryResponse>({
+        entry: DELIVERY_ENTRY,
+        traceId: "trace-d1",
+      }, 201),
+    );
+    const hook = buildDeliveryController(delApi);
+    await act(async () => {
+      await hook.result.current.submitDelivery({
+        visitorName: "Jumia Rider",
+        unit: "18B",
+        createdAt: "2024-06-01T09:30:00.000Z",
+        entryKind: "delivery",
+        deliveryCategory: "parcel",
+      });
+    });
+    expect(delApi.submitDelivery).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.deliveryManagement.lastEntry).toEqual(DELIVERY_ENTRY);
+    expect(hook.result.current.state.deliveryManagement.submitting).toBe(false);
+    expect(hook.result.current.state.deliveryManagement.lastError).toBeUndefined();
+  });
+
+  it("submitDelivery default-denies 422 DELIVERY_CATEGORY_REQUIRED", async () => {
+    delApi.submitDelivery.mockResolvedValue(
+      fail(422, "DELIVERY_CATEGORY_REQUIRED", "Delivery entries require a category", "deliveryCategory"),
+    );
+    const hook = buildDeliveryController(delApi);
+    await act(async () => {
+      await hook.result.current.submitDelivery({
+        visitorName: "Rider",
+        unit: "18B",
+        createdAt: new Date().toISOString(),
+        entryKind: "delivery",
+        deliveryCategory: undefined as any,
+      });
+    });
+    expect(hook.result.current.state.deliveryManagement.lastError?.code).toBe(
+      "DELIVERY_CATEGORY_REQUIRED",
+    );
+    expect(hook.result.current.state.deliveryManagement.submitting).toBe(false);
+    expect(hook.result.current.state.deliveryManagement.lastEntry).toBeUndefined();
+  });
+
+  it("loadDeliveries dispatches LIST_LOADED on 200", async () => {
+    delApi.listDeliveries.mockResolvedValue(
+      ok<ListDeliveriesResponse>({
+        entries: [DELIVERY_LIST_ENTRY],
+        count: 1,
+        traceId: "trace-list-d",
+      }),
+    );
+    const hook = buildDeliveryController(delApi);
+    await act(async () => {
+      await hook.result.current.loadDeliveries();
+    });
+    expect(delApi.listDeliveries).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.deliveryManagement.entries).toEqual([DELIVERY_LIST_ENTRY]);
+    expect(hook.result.current.state.deliveryManagement.loading).toBe(false);
+  });
+
+  it("loadDeliveries default-denies 403 AUTH_FORBIDDEN", async () => {
+    delApi.listDeliveries.mockResolvedValue(
+      fail(403, "AUTH_FORBIDDEN", "Insufficient role"),
+    );
+    const hook = buildDeliveryController(delApi);
+    await act(async () => {
+      await hook.result.current.loadDeliveries();
+    });
+    expect(hook.result.current.state.deliveryManagement.entries).toEqual([]);
+    expect(hook.result.current.state.deliveryManagement.lastError?.code).toBe("AUTH_FORBIDDEN");
+  });
+});
