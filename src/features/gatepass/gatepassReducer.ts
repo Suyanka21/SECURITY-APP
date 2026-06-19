@@ -15,6 +15,7 @@ import type {
   EntryDraft,
   EntryMethod,
   EntryRecord,
+  ExitTrackingState,
   GatePassAction,
   GatePassError,
   GatePassMode,
@@ -110,6 +111,12 @@ export const initialGatePassState: GatePassState = {
     query: {},
     rows: [],
     loading: false,
+  },
+  exitTracking: {
+    onPremise: [],
+    loading: false,
+    exitInFlight: {},
+    exitErrors: {},
   },
 };
 
@@ -1232,6 +1239,94 @@ export function gatePassReducer(
       return {
         ...state,
         visitorInvitations: { status: "idle" },
+      };
+
+    // ─── Exit tracking lifecycle (Feature 7) ─────────────────────────
+    // Source: src/docs/specs/exit-tracking.md §8.
+
+    case "EXIT_TRACKING_LIST_STARTED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          loading: true,
+          lastError: undefined,
+        },
+      };
+
+    case "EXIT_TRACKING_LIST_LOADED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          onPremise: action.entries,
+          loading: false,
+          lastError: undefined,
+        },
+      };
+
+    case "EXIT_TRACKING_LIST_FAILED":
+      // Keep cached onPremise so a transient blip doesn't blank the table.
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          loading: false,
+          lastError: action.error,
+        },
+      };
+
+    case "EXIT_RECORD_STARTED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          exitInFlight: {
+            ...state.exitTracking.exitInFlight,
+            [action.entryId]: true,
+          },
+          // Clear any previous error for this entry.
+          exitErrors: (() => {
+            const next = { ...state.exitTracking.exitErrors };
+            delete next[action.entryId];
+            return next;
+          })(),
+        },
+      };
+
+    case "EXIT_RECORD_SUCCEEDED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          // Remove the entry from the on-premise list.
+          onPremise: state.exitTracking.onPremise.filter(
+            (e) => e.id !== action.entryId,
+          ),
+          exitInFlight: (() => {
+            const next = { ...state.exitTracking.exitInFlight };
+            delete next[action.entryId];
+            return next;
+          })(),
+          lastExit: action.exit,
+        },
+      };
+
+    case "EXIT_RECORD_FAILED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          exitInFlight: (() => {
+            const next = { ...state.exitTracking.exitInFlight };
+            delete next[action.entryId];
+            return next;
+          })(),
+          exitErrors: {
+            ...state.exitTracking.exitErrors,
+            [action.entryId]: action.error,
+          },
+        },
       };
 
     default:

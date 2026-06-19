@@ -52,6 +52,10 @@ import {
   handleIssueVisitorInvitation,
   handlePreviewVisitorInvitation,
 } from "./routes/visitor-invitations";
+import {
+  handleRecordExit,
+  handleListOnPremise,
+} from "./routes/exit-tracking";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
 
@@ -253,6 +257,24 @@ export function createApp(db: unknown) {
     requireAuth,
     requireRole("admin", "senior-guard"),
     handleListShifts
+  );
+
+  // Feature 7 — Exit Tracking (spec §6).
+  // Record exit: any authenticated guard can record an exit.
+  // On-premise list: admin + senior-guard only; guard tokens get 403.
+  // Route order matters: /on-premise MUST be registered before /:entryId/exit
+  // so Express doesn't treat "on-premise" as an entryId param.
+  app.get(
+    "/api/entries/on-premise",
+    requireAuth,
+    requireRole("admin", "senior-guard"),
+    handleListOnPremise
+  );
+  app.post(
+    "/api/entries/:entryId/exit",
+    requireAuth,
+    strictLimiter,
+    handleRecordExit
   );
 
   // Feature 6 — Guest QR Ticket (spec §6).

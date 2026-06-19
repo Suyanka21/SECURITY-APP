@@ -1,5 +1,7 @@
 import type {
   ApiErrorBody,
+  ExitRecordView,
+  OnPremiseEntryView,
   RecognizedVisitorItem,
   ShiftSummaryView,
   SyncEntryResult,
@@ -281,6 +283,34 @@ export type ShiftsState = {
   lastError?: GatePassError;
 };
 
+/**
+ * Admin-only exit tracking state (Feature 7).
+ * Source: src/docs/specs/exit-tracking.md §8.
+ *
+ * Lifecycle:
+ *   EXIT_TRACKING_LIST_STARTED
+ *     → EXIT_TRACKING_LIST_LOADED  (replaces onPremise + count, clears loading)
+ *     | EXIT_TRACKING_LIST_FAILED  (sets lastError, keeps cached onPremise)
+ *
+ *   EXIT_RECORD_STARTED (entryId)
+ *     → EXIT_RECORD_SUCCEEDED (removes entry from onPremise, sets lastExit)
+ *     | EXIT_RECORD_FAILED   (sets per-entry error, no silent failure)
+ *
+ * RESET_FLOW does NOT clear this slice — it belongs to the admin
+ * subview, not the per-walk-in lifecycle.
+ */
+export type ExitTrackingState = {
+  onPremise: OnPremiseEntryView[];
+  loading: boolean;
+  lastError?: GatePassError;
+  /** Per-entry exit-in-flight flag. */
+  exitInFlight: Record<string, boolean>;
+  /** Per-entry exit error. */
+  exitErrors: Record<string, GatePassError>;
+  /** Last successfully recorded exit (for the confirmation banner). */
+  lastExit?: ExitRecordView;
+};
+
 export type GatePassState = {
   mode: GatePassMode;
   guardId: string;
@@ -341,6 +371,11 @@ export type GatePassState = {
    * subview, not the per-walk-in lifecycle.
    */
   shifts: ShiftsState;
+  /**
+   * Admin-only exit tracking state (Feature 7).
+   * Source: src/docs/specs/exit-tracking.md §8.
+   */
+  exitTracking: ExitTrackingState;
 };
 
 export type GatePassAction =
@@ -501,7 +536,20 @@ export type GatePassAction =
       invitation: VisitorInvitationIssuedView;
     }
   | { type: "VISITOR_INVITATION_ISSUE_FAILED"; error: GatePassError }
-  | { type: "VISITOR_INVITATION_RESET" };
+  | { type: "VISITOR_INVITATION_RESET" }
+  // ─── Exit tracking lifecycle (Feature 7) ───────────────────────
+  // Source: src/docs/specs/exit-tracking.md §8.
+  | { type: "EXIT_TRACKING_LIST_STARTED" }
+  | {
+      type: "EXIT_TRACKING_LIST_LOADED";
+      entries: OnPremiseEntryView[];
+      count: number;
+      traceId: string;
+    }
+  | { type: "EXIT_TRACKING_LIST_FAILED"; error: GatePassError }
+  | { type: "EXIT_RECORD_STARTED"; entryId: string }
+  | { type: "EXIT_RECORD_SUCCEEDED"; exit: ExitRecordView; entryId: string }
+  | { type: "EXIT_RECORD_FAILED"; entryId: string; error: GatePassError };
 
 /** Re-exported for callers that already typed against the API shape. */
 export type { ApiErrorBody, RecognizedVisitorItem };

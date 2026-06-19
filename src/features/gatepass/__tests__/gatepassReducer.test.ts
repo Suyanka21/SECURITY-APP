@@ -1526,4 +1526,163 @@ describe("gatePassReducer", () => {
       expect(next.visitorInvitations.status).toBe("failed");
     });
   });
+
+  // ─── Feature 7 — Exit tracking lifecycle ─────────────────────────────
+  // Source: src/docs/specs/exit-tracking.md §8.
+
+  describe("Exit tracking lifecycle (Feature 7)", () => {
+    const ENTRY_ID = "entry-aaa-111";
+    const EXIT_VIEW = {
+      id: "exit-1",
+      entryId: ENTRY_ID,
+      guardId: DEFAULT_GUARD_ID,
+      createdAt: "2024-06-01T10:30:00.000Z",
+      traceId: "trace-exit-1",
+    };
+    const ON_PREMISE_ENTRY = {
+      id: ENTRY_ID,
+      visitorName: "Maya Chen",
+      host: "A. Okafor",
+      unit: "18B",
+      plate: "LND-482" as string | null,
+      method: "walk-in" as const,
+      guardId: DEFAULT_GUARD_ID,
+      createdAt: "2024-06-01T10:00:00.000Z",
+    };
+
+    it("EXIT_TRACKING_LIST_STARTED sets loading=true and clears lastError", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: {
+          ...initialGatePassState.exitTracking,
+          lastError: { code: "OLD", message: "stale" },
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "EXIT_TRACKING_LIST_STARTED" });
+      expect(next.exitTracking.loading).toBe(true);
+      expect(next.exitTracking.lastError).toBeUndefined();
+    });
+
+    it("EXIT_TRACKING_LIST_LOADED replaces onPremise and clears loading", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: { ...initialGatePassState.exitTracking, loading: true },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "EXIT_TRACKING_LIST_LOADED",
+        entries: [ON_PREMISE_ENTRY],
+        count: 1,
+        traceId: "trace-list",
+      });
+      expect(next.exitTracking.onPremise).toEqual([ON_PREMISE_ENTRY]);
+      expect(next.exitTracking.loading).toBe(false);
+      expect(next.exitTracking.lastError).toBeUndefined();
+    });
+
+    it("EXIT_TRACKING_LIST_FAILED sets lastError but keeps cached onPremise", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: {
+          ...initialGatePassState.exitTracking,
+          onPremise: [ON_PREMISE_ENTRY],
+          loading: true,
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "EXIT_TRACKING_LIST_FAILED",
+        error: { code: "INTERNAL_ERROR", message: "boom" },
+      });
+      expect(next.exitTracking.loading).toBe(false);
+      expect(next.exitTracking.lastError?.code).toBe("INTERNAL_ERROR");
+      // Cached rows survive.
+      expect(next.exitTracking.onPremise).toEqual([ON_PREMISE_ENTRY]);
+    });
+
+    it("EXIT_RECORD_STARTED sets exitInFlight and clears previous error for that entry", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: {
+          ...initialGatePassState.exitTracking,
+          exitErrors: { [ENTRY_ID]: { code: "OLD", message: "stale" } },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "EXIT_RECORD_STARTED",
+        entryId: ENTRY_ID,
+      });
+      expect(next.exitTracking.exitInFlight[ENTRY_ID]).toBe(true);
+      expect(next.exitTracking.exitErrors[ENTRY_ID]).toBeUndefined();
+    });
+
+    it("EXIT_RECORD_SUCCEEDED removes entry from onPremise and sets lastExit", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: {
+          ...initialGatePassState.exitTracking,
+          onPremise: [ON_PREMISE_ENTRY],
+          exitInFlight: { [ENTRY_ID]: true },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "EXIT_RECORD_SUCCEEDED",
+        exit: EXIT_VIEW,
+        entryId: ENTRY_ID,
+      });
+      expect(next.exitTracking.onPremise).toEqual([]);
+      expect(next.exitTracking.exitInFlight[ENTRY_ID]).toBeUndefined();
+      expect(next.exitTracking.lastExit).toEqual(EXIT_VIEW);
+    });
+
+    it("EXIT_RECORD_FAILED clears exitInFlight and sets per-entry error", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: {
+          ...initialGatePassState.exitTracking,
+          onPremise: [ON_PREMISE_ENTRY],
+          exitInFlight: { [ENTRY_ID]: true },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "EXIT_RECORD_FAILED",
+        entryId: ENTRY_ID,
+        error: { code: "EXIT_NO_OPEN_ENTRY", message: "No entry found" },
+      });
+      expect(next.exitTracking.exitInFlight[ENTRY_ID]).toBeUndefined();
+      expect(next.exitTracking.exitErrors[ENTRY_ID]?.code).toBe("EXIT_NO_OPEN_ENTRY");
+      // On-premise list is NOT modified on failure.
+      expect(next.exitTracking.onPremise).toEqual([ON_PREMISE_ENTRY]);
+    });
+
+    it("EXIT_RECORD_SUCCEEDED does not remove other entries from onPremise", () => {
+      const otherEntry = { ...ON_PREMISE_ENTRY, id: "entry-bbb-222", visitorName: "Dario Miles" };
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: {
+          ...initialGatePassState.exitTracking,
+          onPremise: [ON_PREMISE_ENTRY, otherEntry],
+          exitInFlight: { [ENTRY_ID]: true },
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "EXIT_RECORD_SUCCEEDED",
+        exit: EXIT_VIEW,
+        entryId: ENTRY_ID,
+      });
+      expect(next.exitTracking.onPremise).toEqual([otherEntry]);
+    });
+
+    it("RESET_FLOW does NOT clear exitTracking (admin subview, not per-walk-in)", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        exitTracking: {
+          ...initialGatePassState.exitTracking,
+          onPremise: [ON_PREMISE_ENTRY],
+          lastExit: EXIT_VIEW,
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
+      expect(next.exitTracking.onPremise).toEqual([ON_PREMISE_ENTRY]);
+      expect(next.exitTracking.lastExit).toEqual(EXIT_VIEW);
+    });
+  });
 });

@@ -23,6 +23,7 @@ import { guardNotificationsApi } from "@/lib/api/notifications";
 import { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import { shiftsApi } from "@/lib/api/shifts";
 import { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
+import { exitTrackingApi } from "@/lib/api/exit-tracking";
 import type {
   ApiResult,
   ApprovalRequestView,
@@ -32,12 +33,14 @@ import type {
   CreateVisitorProfileRequest,
   IssueVisitorInvitationRequest,
   IssueVisitorInvitationResponse,
+  ListOnPremiseResponse,
   ListShiftsResponse,
   ListVisitorProfilesResponse,
   NotificationsListResponse,
   NotificationRetryResponse,
   QrValidateResponse,
   RecognizedVisitorsResponse,
+  RecordExitResponse,
   ServerEntry,
   SyncBatchResponse,
   SyncEntryRequest,
@@ -258,6 +261,12 @@ export interface GatePassController {
   issueVisitorInvitation: (input: IssueVisitorInvitationRequest) => Promise<void>;
   /** Clear the invite slice back to idle (drops raw token from memory). */
   resetVisitorInvitation: () => void;
+  // ─── Exit tracking (Feature 7) ────────────────────────────────
+  // Source: src/docs/specs/exit-tracking.md §8.
+  /** Fetch the currently-on-premise list. Admin/senior-guard only. */
+  loadOnPremise: () => Promise<void>;
+  /** Record an exit for the given entry. Any guard. */
+  recordExit: (entryId: string) => Promise<void>;
 }
 
 export interface GatePassControllerOptions {
@@ -284,6 +293,11 @@ export interface GatePassControllerOptions {
    * Source: src/docs/specs/guest-qr-ticket.md §6.
    */
   visitorInvitationsApi?: typeof visitorInvitationsApi;
+  /**
+   * Optional override for the exit-tracking client (Feature 7).
+   * Source: src/docs/specs/exit-tracking.md §6.
+   */
+  exitTrackingApi?: typeof exitTrackingApi;
   /** Override clock for deterministic tests. */
   now?: () => Date;
   /** Override UUID generator for deterministic tests. */
@@ -311,6 +325,7 @@ export function useGatePassController(
   const visitorApi = options.visitorProfilesApi ?? visitorProfilesApi;
   const shiftsClient = options.shiftsApi ?? shiftsApi;
   const invitationsApi = options.visitorInvitationsApi ?? visitorInvitationsApi;
+  const exitApi = options.exitTrackingApi ?? exitTrackingApi;
   const pollIntervalMs = options.approvalPollIntervalMs ?? 2000;
   const notificationsPollIntervalMs =
     options.notificationsPollIntervalMs ?? 2000;
@@ -1209,6 +1224,56 @@ export function useGatePassController(
     dispatch({ type: "VISITOR_INVITATION_RESET" });
   }, []);
 
+  // ─── Feature 7 — Exit tracking ───────────────────────────────────────
+  // Source: src/docs/specs/exit-tracking.md §8.
+  //
+  // Two surfaces: loadOnPremise (GET) and recordExit (POST). Both
+  // follow the same ApiResult → STARTED/LOADED|FAILED pattern as all
+  // other controller methods. recordExit optimistically removes the
+  // row from onPremise on success; on failure the row stays so the
+  // guard can retry.
+
+  const loadOnPremise = useCallback(async () => {
+    dispatch({ type: "EXIT_TRACKING_LIST_STARTED" });
+    const result: ApiResult<ListOnPremiseResponse> =
+      await exitApi.listOnPremise();
+    if (!result.ok) {
+      dispatch({
+        type: "EXIT_TRACKING_LIST_FAILED",
+        error: errorFromApi(result),
+      });
+      return;
+    }
+    dispatch({
+      type: "EXIT_TRACKING_LIST_LOADED",
+      entries: result.data.entries,
+      count: result.data.count,
+      traceId: result.data.traceId,
+    });
+  }, [exitApi]);
+
+  const recordExit = useCallback(
+    async (entryId: string) => {
+      dispatch({ type: "EXIT_RECORD_STARTED", entryId });
+      const result: ApiResult<RecordExitResponse> =
+        await exitApi.recordExit(entryId);
+      if (!result.ok) {
+        dispatch({
+          type: "EXIT_RECORD_FAILED",
+          entryId,
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "EXIT_RECORD_SUCCEEDED",
+        exit: result.data.exit,
+        entryId,
+      });
+    },
+    [exitApi],
+  );
+
   // ─── G1 + G2 — auto-load admin visitor directory ─────────────────────
   // Source: test-report-feature-4.md §Observed gaps.
   //   G1 — On entering admin mode, the panel needs a populated table;
@@ -1242,6 +1307,16 @@ export function useGatePassController(
     void loadShifts();
   }, [state.mode, loadShifts]);
 
+  // ─── Feature 7 — auto-load on-premise list on admin entry ──────────
+  // Source: src/docs/specs/exit-tracking.md §8.
+  //
+  // Same discipline as shift log and visitor profile auto-loads: the
+  // admin sees a populated "currently on-premise" table immediately.
+  useEffect(() => {
+    if (state.mode !== "admin") return;
+    void loadOnPremise();
+  }, [state.mode, loadOnPremise]);
+
   return useMemo(
     () => ({
       state,
@@ -1263,6 +1338,8 @@ export function useGatePassController(
       loadShifts,
       issueVisitorInvitation,
       resetVisitorInvitation,
+      loadOnPremise,
+      recordExit,
     }),
     [
       state,
@@ -1283,6 +1360,8 @@ export function useGatePassController(
       loadShifts,
       issueVisitorInvitation,
       resetVisitorInvitation,
+      loadOnPremise,
+      recordExit,
     ]
   );
 }

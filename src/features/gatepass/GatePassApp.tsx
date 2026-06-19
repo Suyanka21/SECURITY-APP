@@ -4,6 +4,7 @@ import {
   ConfirmationPanel,
   ErrorPanel,
   GuardHome,
+  OnPremisePanel,
   OverridePanel,
   QrScanPanel,
   SearchPanel,
@@ -46,6 +47,9 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     // Feature 6 — visitor invitation wiring.
     issueVisitorInvitation: controller.issueVisitorInvitation,
     resetVisitorInvitation: controller.resetVisitorInvitation,
+    // Feature 7 — exit tracking wiring.
+    loadOnPremise: controller.loadOnPremise,
+    recordExit: controller.recordExit,
   };
 
   return (
@@ -125,6 +129,11 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
               actions={actions}
             />
             <ShiftLogPanel
+              state={state}
+              dispatch={dispatch}
+              actions={actions}
+            />
+            <OnPremisePanel
               state={state}
               dispatch={dispatch}
               actions={actions}

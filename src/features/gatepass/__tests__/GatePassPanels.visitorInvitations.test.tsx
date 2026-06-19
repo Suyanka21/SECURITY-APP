@@ -46,6 +46,8 @@ function actionsStub(): GatePassActions {
     loadShifts: vi.fn(async () => undefined),
     issueVisitorInvitation: vi.fn(async () => undefined),
     resetVisitorInvitation: vi.fn(),
+    loadOnPremise: vi.fn(async () => undefined),
+    recordExit: vi.fn(async () => undefined),
   };
 }
 
