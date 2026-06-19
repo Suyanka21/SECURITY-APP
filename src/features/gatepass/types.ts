@@ -1,5 +1,8 @@
 import type {
   ApiErrorBody,
+  DeliveryCategory,
+  DeliveryListEntryView,
+  DeliveryEntryView,
   ExitRecordView,
   OnPremiseEntryView,
   RecognizedVisitorItem,
@@ -311,6 +314,29 @@ export type ExitTrackingState = {
   lastExit?: ExitRecordView;
 };
 
+/**
+ * Admin-only delivery management state (Feature 8).
+ * Source: src/docs/specs/delivery-management.md §5.
+ *
+ * Lifecycle:
+ *   DELIVERY_SUBMIT_STARTED
+ *     → DELIVERY_SUBMIT_SUCCEEDED (sets lastEntry, clears form)
+ *     | DELIVERY_SUBMIT_FAILED   (sets lastError, form stays open)
+ *
+ *   DELIVERY_LIST_STARTED
+ *     → DELIVERY_LIST_LOADED  (replaces entries list)
+ *     | DELIVERY_LIST_FAILED  (sets lastError, keeps cached entries)
+ *
+ * RESET_FLOW does NOT clear this slice.
+ */
+export type DeliveryManagementState = {
+  entries: DeliveryListEntryView[];
+  loading: boolean;
+  submitting: boolean;
+  lastError?: GatePassError;
+  lastEntry?: DeliveryEntryView;
+};
+
 export type GatePassState = {
   mode: GatePassMode;
   guardId: string;
@@ -376,6 +402,11 @@ export type GatePassState = {
    * Source: src/docs/specs/exit-tracking.md §8.
    */
   exitTracking: ExitTrackingState;
+  /**
+   * Admin-only delivery management state (Feature 8).
+   * Source: src/docs/specs/delivery-management.md §5.
+   */
+  deliveryManagement: DeliveryManagementState;
 };
 
 export type GatePassAction =
@@ -549,7 +580,24 @@ export type GatePassAction =
   | { type: "EXIT_TRACKING_LIST_FAILED"; error: GatePassError }
   | { type: "EXIT_RECORD_STARTED"; entryId: string }
   | { type: "EXIT_RECORD_SUCCEEDED"; exit: ExitRecordView; entryId: string }
-  | { type: "EXIT_RECORD_FAILED"; entryId: string; error: GatePassError };
+  | { type: "EXIT_RECORD_FAILED"; entryId: string; error: GatePassError }
+  // ─── Delivery management lifecycle (Feature 8) ───────────────
+  // Source: src/docs/specs/delivery-management.md §5.
+  | { type: "DELIVERY_SUBMIT_STARTED" }
+  | {
+      type: "DELIVERY_SUBMIT_SUCCEEDED";
+      entry: DeliveryEntryView;
+    }
+  | { type: "DELIVERY_SUBMIT_FAILED"; error: GatePassError }
+  | { type: "DELIVERY_SUBMIT_RESET" }
+  | { type: "DELIVERY_LIST_STARTED" }
+  | {
+      type: "DELIVERY_LIST_LOADED";
+      entries: DeliveryListEntryView[];
+      count: number;
+      traceId: string;
+    }
+  | { type: "DELIVERY_LIST_FAILED"; error: GatePassError };
 
 /** Re-exported for callers that already typed against the API shape. */
 export type { ApiErrorBody, RecognizedVisitorItem };
