@@ -205,8 +205,8 @@ These are the non-negotiable contracts F7 must preserve:
 
 | # | Invariant | Layer | Verification |
 |---|---|---|---|
-| D1 | An exit cannot exist without a matching open entry. | Service + DB UNIQUE | E2 audit scenario |
-| D2 | A double-exit is rejected with `EXIT_ALREADY_RECORDED`. | Service + DB UNIQUE | E3 audit scenario |
+| D1 | An exit cannot exist without a matching open entry. | Service + DB FK on `entry_id` | E2 audit scenario |
+| D2 | A double-exit is rejected with `EXIT_ALREADY_RECORDED`. | Service + UNIQUE constraint on `entry_id` | E3 audit scenario |
 | D3 | Server 5xx on exit → UI stays mounted, error banner visible, no exit row created. | Route + reducer + UI | E5 audit scenario |
 | D4 | Guard-role token on the on-premise list → 403 `AUTH_FORBIDDEN`. | `requireRole` middleware | E4 audit scenario |
 | D5 | Every exit attempt (success or failure) emits an audit event. | Service | Unit tests |
@@ -250,7 +250,7 @@ export type ExitTrackingState = {
 
 ### New actions
 
-```
+```typescript
 EXIT_TRACKING_LIST_STARTED
 EXIT_TRACKING_LIST_LOADED   { entries, count, traceId }
 EXIT_TRACKING_LIST_FAILED   { error }

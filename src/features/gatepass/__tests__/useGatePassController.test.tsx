@@ -2615,7 +2615,7 @@ describe("useGatePassController — delivery management (Feature 8)", () => {
         unit: "18B",
         createdAt: new Date().toISOString(),
         entryKind: "delivery",
-        deliveryCategory: undefined as any,
+        deliveryCategory: undefined,
       });
     });
     expect(hook.result.current.state.deliveryManagement.lastError?.code).toBe(

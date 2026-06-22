@@ -199,10 +199,11 @@ describe("recordExit", () => {
     try {
       await recordExit("nonexistent-id", GUARD_ID, db);
       expect.fail("should have thrown");
-    } catch (err: any) {
-      expect(err.statusCode).toBe(404);
-      expect(err.code).toBe(ExitErrorCodes.EXIT_NO_OPEN_ENTRY);
-      expect(err.field).toBe("entryId");
+    } catch (err: unknown) {
+      const sErr = err as import("../services/errors").ServiceError;
+      expect(sErr.statusCode).toBe(404);
+      expect(sErr.code).toBe(ExitErrorCodes.EXIT_NO_OPEN_ENTRY);
+      expect(sErr.field).toBe("entryId");
     }
   });
 
@@ -246,9 +247,10 @@ describe("recordExit", () => {
     try {
       await recordExit(ENTRY_ID, GUARD_ID, db);
       expect.fail("should have thrown");
-    } catch (err: any) {
-      expect(err.statusCode).toBe(409);
-      expect(err.code).toBe(ExitErrorCodes.EXIT_ALREADY_RECORDED);
+    } catch (err: unknown) {
+      const sErr = err as import("../services/errors").ServiceError;
+      expect(sErr.statusCode).toBe(409);
+      expect(sErr.code).toBe(ExitErrorCodes.EXIT_ALREADY_RECORDED);
     }
   });
 

@@ -176,11 +176,15 @@ describe("DeliveryAdminPanel", () => {
 
   it("surfaces form-level error with code and message (no-silent-success)", () => {
     const actions = actionsStub();
-    renderPanel(buildState(), actions);
-    fireEvent.click(screen.getByTestId("delivery-new-btn"));
+    const { rerender } = renderPanel(buildState(), actions);
 
-    // Re-render with error state while form is open.
-    const { rerender } = render(
+    // Open the form.
+    fireEvent.click(screen.getByTestId("delivery-new-btn"));
+    expect(screen.getByTestId("delivery-form")).toBeInTheDocument();
+
+    // Re-render the SAME component tree with an error in state.
+    // Using the same render root preserves the local showForm state.
+    rerender(
       <DeliveryAdminPanel
         state={buildState({
           lastError: {
@@ -192,23 +196,12 @@ describe("DeliveryAdminPanel", () => {
         actions={actions}
       />,
     );
-    // The form should be shown when we re-render with showForm still open
-    // Since showForm is local state, we need to re-render with the error.
-    // The test verifies the error banner exists when lastError is set.
-    // To avoid local-state issues, test with a fresh render that opens form.
-    const actions2 = actionsStub();
-    rerender(
-      <DeliveryAdminPanel
-        state={buildState({
-          lastError: {
-            code: "DELIVERY_CATEGORY_REQUIRED",
-            message: "Delivery entries require a category",
-          },
-        })}
-        dispatch={vi.fn()}
-        actions={actions2}
-      />,
-    );
+
+    // Assert: in-form error banner is visible with the correct code and message.
+    const errorBanner = screen.getByTestId("delivery-form-error");
+    expect(errorBanner).toBeInTheDocument();
+    expect(errorBanner).toHaveTextContent("DELIVERY_CATEGORY_REQUIRED");
+    expect(errorBanner).toHaveTextContent("Delivery entries require a category");
   });
 
   it("surfaces list-level error when not in form mode", () => {

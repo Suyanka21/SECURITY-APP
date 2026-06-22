@@ -128,10 +128,12 @@ Server validation:
 - If `deliveryCategory` is present but `entryKind` ≠ `'delivery'`
   → 422 `CATEGORY_WITHOUT_DELIVERY_KIND`.
 
-### 4.2 GET /api/entries/on-premise (extended)
+### 4.2 GET /api/entries/on-premise (visitor-only)
 
-Response entries now include `entryKind` and `deliveryCategory` so the
-admin panel can display delivery-specific badges.
+The on-premise list is **filtered to visitor entries only**
+(`entry_kind = 'visitor'`). Delivery entries are managed separately
+via `GET /api/entries/deliveries`. The `OnPremiseEntryView` does not
+include `entryKind` or `deliveryCategory` fields.
 
 ### 4.3 New: GET /api/entries/deliveries (admin only)
 
@@ -175,31 +177,29 @@ type DeliveryCategory =
 
 ```typescript
 interface DeliveryManagementState {
-  submitStatus: 'idle' | 'submitting' | 'succeeded' | 'failed';
-  lastDelivery: DeliveryEntryView | null;
-  error: GatePassError | null;
-  // Admin: recent deliveries list
-  recentDeliveries: DeliveryEntryView[];
-  listStatus: 'idle' | 'loading' | 'loaded' | 'failed';
-  listError: GatePassError | null;
-  listTraceId: string | null;
+  entries: DeliveryListEntryView[];
+  loading: boolean;
+  submitting: boolean;
+  lastEntry?: DeliveryEntryView;
+  lastError?: GatePassError;
 }
 ```
 
 Actions:
-- `DELIVERY_SUBMIT_STARTED`
-- `DELIVERY_SUBMIT_SUCCEEDED` → sets `lastDelivery`, clears error
-- `DELIVERY_SUBMIT_FAILED` → sets error with explicit code
-- `DELIVERY_LIST_STARTED`
-- `DELIVERY_LIST_LOADED` → sets `recentDeliveries`
-- `DELIVERY_LIST_FAILED` → sets `listError`
-- `RESET_FLOW` → resets `submitStatus` to idle (matches existing pattern)
+- `DELIVERY_SUBMIT_STARTED` → sets `submitting: true`
+- `DELIVERY_SUBMIT_SUCCEEDED` → sets `lastEntry`, clears error, `submitting: false`
+- `DELIVERY_SUBMIT_FAILED` → sets `lastError` with explicit code, `submitting: false`
+- `DELIVERY_LIST_STARTED` → sets `loading: true`
+- `DELIVERY_LIST_LOADED` → sets `entries`, `loading: false`
+- `DELIVERY_LIST_FAILED` → sets `lastError`, `loading: false`
+- `DELIVERY_RESET_FORM` → clears `lastEntry` and `lastError`
 
 ### 5.3 Controller Methods
 
 ```typescript
-submitDelivery(draft: DeliveryDraft): Promise<void>
-loadRecentDeliveries(): Promise<void>
+submitDelivery(input: CreateDeliveryEntryRequest): Promise<void>
+loadDeliveries(): Promise<void>
+resetDeliveryForm(): void
 ```
 
 ### 5.4 UI Components

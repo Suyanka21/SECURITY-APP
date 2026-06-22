@@ -56,7 +56,7 @@ interface MockDBOpts {
   guardExists?: boolean;
   offlineIdExists?: boolean;
   insertFail?: boolean;
-  deliveryRows?: any[];
+  deliveryRows?: Record<string, unknown>[];
 }
 
 function makeMockDB(opts: MockDBOpts = {}) {
@@ -99,7 +99,8 @@ function makeMockDB(opts: MockDBOpts = {}) {
   const txInsertMock = vi.fn().mockReturnValue({
     values: vi.fn().mockResolvedValue(undefined),
   });
-  const transactionMock = vi.fn().mockImplementation(async (fn: any) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const transactionMock = vi.fn().mockImplementation(async (fn: (tx: any) => Promise<void>) => {
     if (insertFail) {
       await fn({
         insert: vi.fn().mockReturnValue({
@@ -191,19 +192,19 @@ describe("delivery-service — createDeliveryEntry", () => {
     });
   });
 
-  it("rejects CATEGORY_WITHOUT_DELIVERY_KIND when visitor sends category", async () => {
+  it("rejects INVALID_ENTRY_KIND when 'visitor' is sent to delivery endpoint", async () => {
     const { db } = makeMockDB();
     const input = baseInput({ entryKind: "visitor", deliveryCategory: "parcel" });
 
     await expect(createDeliveryEntry(input, db)).rejects.toMatchObject({
-      code: DeliveryErrorCodes.CATEGORY_WITHOUT_DELIVERY_KIND,
+      code: DeliveryErrorCodes.INVALID_ENTRY_KIND,
       statusCode: 422,
-      field: "deliveryCategory",
+      field: "entryKind",
     });
 
     const blocked = getAuditEventsByType("delivery_entry_blocked");
     expect(blocked).toHaveLength(1);
-    expect(blocked[0].payload.reason).toBe("CATEGORY_WITHOUT_DELIVERY_KIND");
+    expect(blocked[0].payload.reason).toBe("INVALID_ENTRY_KIND");
   });
 
   it("rejects GUARD_SESSION_EXPIRED for unknown guard", async () => {

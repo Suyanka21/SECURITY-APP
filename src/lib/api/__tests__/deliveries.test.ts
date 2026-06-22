@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deliveryApi } from "../deliveries";
 import { setAuthTokenGetter } from "../auth";
+import type { DeliveryCategory, EntryKind } from "../types";
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
@@ -99,7 +100,7 @@ describe("deliveryApi.submitDelivery", () => {
       unit: "18B",
       createdAt: new Date().toISOString(),
       entryKind: "delivery",
-      deliveryCategory: undefined as any,
+      deliveryCategory: undefined as unknown as DeliveryCategory,
     });
 
     expect(result.ok).toBe(false);
@@ -124,7 +125,7 @@ describe("deliveryApi.submitDelivery", () => {
       visitorName: "Rider",
       unit: "18B",
       createdAt: new Date().toISOString(),
-      entryKind: "spaceship" as any,
+      entryKind: "spaceship" as unknown as EntryKind,
       deliveryCategory: "parcel",
     });
 
