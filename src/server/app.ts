@@ -56,6 +56,10 @@ import {
   handleRecordExit,
   handleListOnPremise,
 } from "./routes/exit-tracking";
+import {
+  handleCreateDeliveryEntry,
+  handleListDeliveries,
+} from "./routes/deliveries";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
 
@@ -275,6 +279,25 @@ export function createApp(db: unknown) {
     requireAuth,
     strictLimiter,
     handleRecordExit
+  );
+
+  // Feature 8 — Delivery Management (spec §4).
+  // Create delivery entry: any authenticated guard. Separate endpoint from
+  // POST /api/entries so delivery-specific validation runs without altering
+  // the existing visitor entry path.
+  // List deliveries: admin + senior-guard only; guard tokens get 403.
+  // Route order: GET must be registered before POST to avoid param conflicts.
+  app.get(
+    "/api/entries/deliveries",
+    requireAuth,
+    requireRole("admin", "senior-guard"),
+    handleListDeliveries
+  );
+  app.post(
+    "/api/entries/deliveries",
+    requireAuth,
+    strictLimiter,
+    handleCreateDeliveryEntry
   );
 
   // Feature 6 — Guest QR Ticket (spec §6).

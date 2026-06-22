@@ -73,7 +73,12 @@ export type AuditEventType =
   // exit_recorded: successful exit (payload: { entryId, exitId }).
   // exit_blocked: rejected exit attempt (payload: { entryId, code }).
   | "exit_recorded"
-  | "exit_blocked";
+  | "exit_blocked"
+  // Source: src/docs/specs/delivery-management.md §3.3 — Feature 8 audit events.
+  // delivery_entry_logged: successful delivery entry creation.
+  // delivery_entry_blocked: rejected delivery attempt.
+  | "delivery_entry_logged"
+  | "delivery_entry_blocked";
 
 export interface AuditEvent {
   /** Unique immutable event ID */

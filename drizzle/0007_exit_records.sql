@@ -47,7 +47,7 @@ ALTER TABLE "exit_records" ADD CONSTRAINT "exit_records_entry_id_entry_records_i
 ALTER TABLE "exit_records" ADD CONSTRAINT "exit_records_guard_id_guards_id_fk" FOREIGN KEY ("guard_id") REFERENCES "public"."guards"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 
 -- Step 4: Indices for common query paths.
--- On-premise query (LEFT JOIN exclusion on entry_id):
-CREATE INDEX "exit_records_entry_id_idx" ON "exit_records" USING btree ("entry_id");--> statement-breakpoint
+-- entry_id already has a unique index from the UNIQUE constraint above;
+-- no separate btree index needed.
 -- Guard attribution:
 CREATE INDEX "exit_records_guard_id_idx" ON "exit_records" USING btree ("guard_id");

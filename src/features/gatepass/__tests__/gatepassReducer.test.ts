@@ -1685,4 +1685,160 @@ describe("gatePassReducer", () => {
       expect(next.exitTracking.lastExit).toEqual(EXIT_VIEW);
     });
   });
+
+  // ─── Feature 8: Delivery Management ───────────────────────────────
+  // Source: src/docs/specs/delivery-management.md §5.
+  describe("Delivery management", () => {
+    const DELIVERY_ENTRY = {
+      id: "del-001",
+      visitorName: "Jumia Rider",
+      host: "Reception",
+      unit: "18B",
+      plate: "KDA-123" as string | null,
+      reason: "",
+      method: "walk-in",
+      guardId: "guard-01",
+      createdAt: "2024-06-01T09:30:00.000Z",
+      status: "logged" as const,
+      syncState: "synced" as const,
+      entryKind: "delivery" as const,
+      deliveryCategory: "parcel" as const,
+    };
+
+    const DELIVERY_LIST_ENTRY = {
+      id: "del-001",
+      visitorName: "Jumia Rider",
+      host: "Reception",
+      unit: "18B",
+      plate: null as string | null,
+      deliveryCategory: "parcel" as const,
+      method: "walk-in",
+      guardId: "guard-01",
+      createdAt: "2024-06-01T09:30:00.000Z",
+    };
+
+    it("DELIVERY_SUBMIT_STARTED sets submitting=true and clears lastError", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        deliveryManagement: {
+          ...initialGatePassState.deliveryManagement,
+          lastError: { code: "OLD_ERR", message: "old" },
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "DELIVERY_SUBMIT_STARTED" });
+      expect(next.deliveryManagement.submitting).toBe(true);
+      expect(next.deliveryManagement.lastError).toBeUndefined();
+    });
+
+    it("DELIVERY_SUBMIT_SUCCEEDED sets lastEntry and clears submitting", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        deliveryManagement: {
+          ...initialGatePassState.deliveryManagement,
+          submitting: true,
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "DELIVERY_SUBMIT_SUCCEEDED",
+        entry: DELIVERY_ENTRY,
+      });
+      expect(next.deliveryManagement.submitting).toBe(false);
+      expect(next.deliveryManagement.lastEntry).toEqual(DELIVERY_ENTRY);
+      expect(next.deliveryManagement.lastError).toBeUndefined();
+    });
+
+    it("DELIVERY_SUBMIT_FAILED sets lastError and clears submitting", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        deliveryManagement: {
+          ...initialGatePassState.deliveryManagement,
+          submitting: true,
+        },
+      };
+      const error = { code: "DELIVERY_CATEGORY_REQUIRED", message: "Category required" };
+      const next = gatePassReducer(seeded, {
+        type: "DELIVERY_SUBMIT_FAILED",
+        error,
+      });
+      expect(next.deliveryManagement.submitting).toBe(false);
+      expect(next.deliveryManagement.lastError).toEqual(error);
+    });
+
+    it("DELIVERY_SUBMIT_RESET clears lastEntry and lastError", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        deliveryManagement: {
+          ...initialGatePassState.deliveryManagement,
+          lastEntry: DELIVERY_ENTRY,
+          lastError: { code: "ERR", message: "err" },
+          submitting: true,
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "DELIVERY_SUBMIT_RESET" });
+      expect(next.deliveryManagement.submitting).toBe(false);
+      expect(next.deliveryManagement.lastEntry).toBeUndefined();
+      expect(next.deliveryManagement.lastError).toBeUndefined();
+    });
+
+    it("DELIVERY_LIST_STARTED sets loading=true", () => {
+      const next = gatePassReducer(initialGatePassState, {
+        type: "DELIVERY_LIST_STARTED",
+      });
+      expect(next.deliveryManagement.loading).toBe(true);
+      expect(next.deliveryManagement.lastError).toBeUndefined();
+    });
+
+    it("DELIVERY_LIST_LOADED replaces entries and clears loading", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        deliveryManagement: {
+          ...initialGatePassState.deliveryManagement,
+          loading: true,
+        },
+      };
+      const next = gatePassReducer(seeded, {
+        type: "DELIVERY_LIST_LOADED",
+        entries: [DELIVERY_LIST_ENTRY],
+        count: 1,
+        traceId: "trace-list",
+      });
+      expect(next.deliveryManagement.loading).toBe(false);
+      expect(next.deliveryManagement.entries).toEqual([DELIVERY_LIST_ENTRY]);
+      expect(next.deliveryManagement.lastError).toBeUndefined();
+    });
+
+    it("DELIVERY_LIST_FAILED sets lastError but keeps cached entries", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        deliveryManagement: {
+          ...initialGatePassState.deliveryManagement,
+          entries: [DELIVERY_LIST_ENTRY],
+          loading: true,
+        },
+      };
+      const error = { code: "AUTH_FORBIDDEN", message: "Insufficient role" };
+      const next = gatePassReducer(seeded, {
+        type: "DELIVERY_LIST_FAILED",
+        error,
+      });
+      expect(next.deliveryManagement.loading).toBe(false);
+      expect(next.deliveryManagement.lastError).toEqual(error);
+      expect(next.deliveryManagement.entries).toEqual([DELIVERY_LIST_ENTRY]);
+    });
+
+    it("RESET_FLOW does NOT clear deliveryManagement", () => {
+      const seeded: GatePassState = {
+        ...initialGatePassState,
+        deliveryManagement: {
+          entries: [DELIVERY_LIST_ENTRY],
+          loading: false,
+          submitting: false,
+          lastEntry: DELIVERY_ENTRY,
+        },
+      };
+      const next = gatePassReducer(seeded, { type: "RESET_FLOW" });
+      expect(next.deliveryManagement.entries).toEqual([DELIVERY_LIST_ENTRY]);
+      expect(next.deliveryManagement.lastEntry).toEqual(DELIVERY_ENTRY);
+    });
+  });
 });

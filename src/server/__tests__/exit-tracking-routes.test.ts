@@ -21,6 +21,7 @@ import {
 } from "../routes/exit-tracking";
 import * as service from "../services/exit-tracking-service";
 import { ServiceError } from "../services/errors";
+import type { RecordExitResponse, ListOnPremiseResponse } from "../validation/exit-tracking-schemas";
 
 // ─── Mock helpers ────────────────────────────────────────────────────────────
 
@@ -126,7 +127,7 @@ describe("Route: POST /api/entries/:entryId/exit", () => {
     await handleRecordExit(ctx.req, ctx.res, ctx.next);
 
     expect(ctx.getStatus()).toBe(201);
-    const body = ctx.getJson() as any;
+    const body = ctx.getJson() as RecordExitResponse;
     expect(body.exit.id).toBe("exit-id-1");
     expect(body.exit.entryId).toBe(ENTRY_ID);
     expect(body.exit.guardId).toBe(GUARD_ID);
@@ -235,7 +236,7 @@ describe("Route: GET /api/entries/on-premise", () => {
     await handleListOnPremise(ctx.req, ctx.res, ctx.next);
 
     expect(ctx.getStatus()).toBe(200);
-    const body = ctx.getJson() as any;
+    const body = ctx.getJson() as ListOnPremiseResponse;
     expect(body.entries).toHaveLength(1);
     expect(body.entries[0].visitorName).toBe("Maya Chen");
     expect(body.count).toBe(1);
@@ -253,7 +254,7 @@ describe("Route: GET /api/entries/on-premise", () => {
     await handleListOnPremise(ctx.req, ctx.res, ctx.next);
 
     expect(ctx.getStatus()).toBe(200);
-    const body = ctx.getJson() as any;
+    const body = ctx.getJson() as ListOnPremiseResponse;
     expect(body.entries).toEqual([]);
     expect(body.count).toBe(0);
   });

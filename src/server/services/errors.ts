@@ -15,7 +15,8 @@ export class ServiceError extends Error {
     public readonly code: string,
     message: string,
     public readonly statusCode: number,
-    public readonly field?: string
+    public readonly field?: string,
+    public readonly traceId?: string,
   ) {
     super(message);
     this.name = "ServiceError";

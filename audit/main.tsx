@@ -19,13 +19,19 @@ import type { visitorProfilesApi } from "@/lib/api/visitor-profiles";
 import type { shiftsApi } from "@/lib/api/shifts";
 import type { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
 import type { exitTrackingApi } from "@/lib/api/exit-tracking";
+import type { deliveryApi } from "@/lib/api/deliveries";
 import type {
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
   CreateApprovalResponse,
+  CreateDeliveryEntryRequest,
+  CreateDeliveryEntryResponse,
+  DeliveryEntryView,
+  DeliveryListEntryView,
   ExitRecordView,
   IssueVisitorInvitationResponse,
+  ListDeliveriesResponse,
   ListOnPremiseResponse,
   ListShiftsResponse,
   ListVisitorProfilesResponse,
@@ -932,6 +938,116 @@ function makeExitTrackingApi(
   return { recordExit, listOnPremise } as unknown as typeof exitTrackingApi;
 }
 
+// ─── Feature 8 — Delivery management audit stubs ────────────────────────
+// Source: src/docs/specs/delivery-management.md §A (audit scenarios D1–D5)
+
+const SEED_DELIVERY_ENTRY: DeliveryEntryView = {
+  id: "del-audit-001",
+  visitorName: "Jumia Rider",
+  host: "Reception",
+  unit: "18B",
+  plate: "KDA-123",
+  reason: "",
+  method: "walk-in",
+  guardId: "guard-west-04",
+  createdAt: "2024-06-01T09:30:00.000Z",
+  status: "logged",
+  syncState: "synced",
+  entryKind: "delivery",
+  deliveryCategory: "parcel",
+};
+
+const SEED_DELIVERY_LIST_ENTRIES: DeliveryListEntryView[] = [
+  {
+    id: "del-audit-001",
+    visitorName: "Jumia Rider",
+    host: "Reception",
+    unit: "18B",
+    plate: "KDA-123",
+    deliveryCategory: "parcel",
+    method: "walk-in",
+    guardId: "guard-west-04",
+    createdAt: "2024-06-01T09:30:00.000Z",
+  },
+  {
+    id: "del-audit-002",
+    visitorName: "Uber Eats Driver",
+    host: "Reception",
+    unit: "07C",
+    plate: null,
+    deliveryCategory: "food",
+    method: "walk-in",
+    guardId: "guard-west-04",
+    createdAt: "2024-06-01T10:15:00.000Z",
+  },
+];
+
+function makeDeliveryApi(
+  scenario: string,
+): typeof deliveryApi {
+  const submitDelivery = async (
+    input: CreateDeliveryEntryRequest,
+  ): Promise<ApiResult<CreateDeliveryEntryResponse>> => {
+    // D2: missing category → 422 DELIVERY_CATEGORY_REQUIRED
+    if (scenario === "delivery-missing-category") {
+      return fail(
+        422,
+        "DELIVERY_CATEGORY_REQUIRED",
+        "Delivery entries require a category.",
+        "deliveryCategory",
+      );
+    }
+    // D3: invalid category value → 422
+    if (scenario === "delivery-invalid-category") {
+      return fail(
+        422,
+        "DELIVERY_CATEGORY_REQUIRED",
+        "Invalid delivery category value.",
+        "deliveryCategory",
+      );
+    }
+    // D5: server 500
+    if (scenario === "delivery-server-500") {
+      return fail(
+        500,
+        "INTERNAL_ERROR",
+        "Database transaction failed.",
+      );
+    }
+    // D1: happy delivery
+    return ok(
+      {
+        entry: {
+          ...SEED_DELIVERY_ENTRY,
+          visitorName: input.visitorName,
+          unit: input.unit,
+          deliveryCategory: input.deliveryCategory ?? "parcel",
+        },
+        traceId: "trace-delivery-happy",
+      },
+      201,
+    );
+  };
+
+  const listDeliveries = async (): Promise<ApiResult<ListDeliveriesResponse>> => {
+    // D4: 403 guard RBAC on GET /deliveries
+    if (scenario === "delivery-list-403") {
+      return fail(
+        403,
+        "AUTH_FORBIDDEN",
+        "Insufficient role — admin or senior-guard required.",
+      );
+    }
+    return ok({
+      entries: SEED_DELIVERY_LIST_ENTRIES,
+      count: SEED_DELIVERY_LIST_ENTRIES.length,
+      traceId: "trace-delivery-list",
+    });
+  };
+
+  return { submitDelivery, listDeliveries } as unknown as typeof deliveryApi;
+}
+
 const SCENARIOS = [
   { id: "submit-500", label: "S1 · POST /entries → 500" },
   { id: "submit-422-unit", label: "S2 · POST /entries → 422 (field=unit)" },
@@ -970,6 +1086,11 @@ const SCENARIOS = [
   { id: "exit-already-recorded", label: "E3 · Record exit → 409 EXIT_ALREADY_RECORDED replay (Feature 7 — default-deny)" },
   { id: "exit-list-403", label: "E4 · On-premise list → 403 AUTH_FORBIDDEN (Feature 7 — critical default-deny)" },
   { id: "exit-server-500", label: "E5 · Record exit → 500 INTERNAL_ERROR (Feature 7)" },
+  { id: "delivery-happy", label: "D1 · Delivery submit → 201 success (Feature 8)" },
+  { id: "delivery-missing-category", label: "D2 · Delivery submit → 422 DELIVERY_CATEGORY_REQUIRED (Feature 8 — default-deny)" },
+  { id: "delivery-invalid-category", label: "D3 · Delivery submit → 422 invalid category (Feature 8 — default-deny)" },
+  { id: "delivery-list-403", label: "D4 · Delivery list → 403 AUTH_FORBIDDEN (Feature 8 — critical default-deny)" },
+  { id: "delivery-server-500", label: "D5 · Delivery submit → 500 INTERNAL_ERROR (Feature 8)" },
   { id: "happy", label: "Happy path (sanity)" },
 ];
 
@@ -984,6 +1105,7 @@ function Harness() {
   const shiftsApi = makeShiftsApi(scenario);
   const visitorInvitationsApi = makeVisitorInvitationsApi(scenario);
   const exitTrackingApiStub = makeExitTrackingApi(scenario);
+  const deliveryApiStub = makeDeliveryApi(scenario);
 
   return (
     <div>
@@ -1046,6 +1168,7 @@ function Harness() {
             shiftsApi,
             visitorInvitationsApi,
             exitTrackingApi: exitTrackingApiStub,
+            deliveryManagementApi: deliveryApiStub,
             approvalPollIntervalMs: 1500,
             notificationsPollIntervalMs: 1500,
           }}

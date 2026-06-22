@@ -12,6 +12,7 @@
  */
 
 import type {
+  DeliveryManagementState,
   EntryDraft,
   EntryMethod,
   EntryRecord,
@@ -117,6 +118,11 @@ export const initialGatePassState: GatePassState = {
     loading: false,
     exitInFlight: {},
     exitErrors: {},
+  },
+  deliveryManagement: {
+    entries: [],
+    loading: false,
+    submitting: false,
   },
 };
 
@@ -1326,6 +1332,82 @@ export function gatePassReducer(
             ...state.exitTracking.exitErrors,
             [action.entryId]: action.error,
           },
+        },
+      };
+
+    // ─── Feature 8: Delivery Management ─────────────────────────────
+    // Source: src/docs/specs/delivery-management.md §5.
+
+    case "DELIVERY_SUBMIT_STARTED":
+      return {
+        ...state,
+        deliveryManagement: {
+          ...state.deliveryManagement,
+          submitting: true,
+          lastError: undefined,
+        },
+      };
+
+    case "DELIVERY_SUBMIT_SUCCEEDED":
+      return {
+        ...state,
+        deliveryManagement: {
+          ...state.deliveryManagement,
+          submitting: false,
+          lastEntry: action.entry,
+          lastError: undefined,
+        },
+      };
+
+    case "DELIVERY_SUBMIT_FAILED":
+      return {
+        ...state,
+        deliveryManagement: {
+          ...state.deliveryManagement,
+          submitting: false,
+          lastError: action.error,
+        },
+      };
+
+    case "DELIVERY_SUBMIT_RESET":
+      return {
+        ...state,
+        deliveryManagement: {
+          ...state.deliveryManagement,
+          submitting: false,
+          lastEntry: undefined,
+          lastError: undefined,
+        },
+      };
+
+    case "DELIVERY_LIST_STARTED":
+      return {
+        ...state,
+        deliveryManagement: {
+          ...state.deliveryManagement,
+          loading: true,
+          lastError: undefined,
+        },
+      };
+
+    case "DELIVERY_LIST_LOADED":
+      return {
+        ...state,
+        deliveryManagement: {
+          ...state.deliveryManagement,
+          entries: action.entries,
+          loading: false,
+          lastError: undefined,
+        },
+      };
+
+    case "DELIVERY_LIST_FAILED":
+      return {
+        ...state,
+        deliveryManagement: {
+          ...state.deliveryManagement,
+          loading: false,
+          lastError: action.error,
         },
       };
 
