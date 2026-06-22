@@ -12,7 +12,7 @@
  *   2. listOnPremise(db) — return all entries with no matching exit.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 import { entryRecords, exitRecords, guards } from "@/db/schema";
@@ -72,11 +72,13 @@ export async function recordExit(
 ): Promise<{ exit: ExitRecordRow; traceId: string }> {
   const traceId = `trace-${randomUUID()}`;
 
-  // Step 1: Verify the entry exists.
+  // Step 1: Verify the entry exists and is a visitor entry.
+  // Exit tracking is visitor-only; delivery entries have their own lifecycle.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const entryRows = await (db as any)
     .select({ id: entryRecords.id })
     .from(entryRecords)
-    .where(eq(entryRecords.id, entryId))
+    .where(and(eq(entryRecords.id, entryId), eq(entryRecords.entryKind, "visitor")))
     .limit(1);
 
   if (!entryRows || entryRows.length === 0) {
@@ -93,6 +95,7 @@ export async function recordExit(
   }
 
   // Step 2: Verify no exit already exists for this entry.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const existingExit = await (db as any)
     .select({ id: exitRecords.id })
     .from(exitRecords)
@@ -113,16 +116,36 @@ export async function recordExit(
   }
 
   // Step 3: Insert the exit record.
+  // Race-safe: if a concurrent request wins the INSERT (UNIQUE violation),
+  // catch the error, re-verify, and emit exit_blocked instead of a 500.
   const exitId = randomUUID();
   const now = new Date();
 
-  await (db as any).insert(exitRecords).values({
-    id: exitId,
-    entryId,
-    guardId,
-    traceId,
-    createdAt: now,
-  });
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (db as any).insert(exitRecords).values({
+      id: exitId,
+      entryId,
+      guardId,
+      traceId,
+      createdAt: now,
+    });
+  } catch (insertErr: unknown) {
+    const msg = insertErr instanceof Error ? insertErr.message : String(insertErr);
+    if (msg.includes("unique") || msg.includes("duplicate") || msg.includes("UNIQUE")) {
+      await emitAuditEvent("exit_blocked", guardId, traceId, {
+        entryId,
+        code: ExitErrorCodes.EXIT_ALREADY_RECORDED,
+      });
+      throw new ServiceError(
+        ExitErrorCodes.EXIT_ALREADY_RECORDED,
+        "An exit has already been recorded for this entry",
+        409,
+        "entryId",
+      );
+    }
+    throw insertErr;
+  }
 
   // Step 4: Emit audit event.
   await emitAuditEvent("exit_recorded", guardId, traceId, {
@@ -157,6 +180,7 @@ export async function listOnPremise(
 ): Promise<{ entries: OnPremiseEntryRow[]; count: number; traceId: string }> {
   const traceId = `trace-${randomUUID()}`;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows = await (db as any).execute(
     sql`SELECT
           e.id,
@@ -169,7 +193,7 @@ export async function listOnPremise(
           e.created_at AS "createdAt"
         FROM entry_records e
         LEFT JOIN exit_records x ON e.id = x.entry_id
-        WHERE x.id IS NULL
+        WHERE x.id IS NULL AND e.entry_kind = 'visitor'
         ORDER BY e.created_at DESC`
   );
 
