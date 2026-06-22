@@ -47,6 +47,7 @@ export async function handleCreateDeliveryEntry(
     }
 
     const guardId = (req as AuthenticatedRequest).guardId;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (req as any).db;
 
     const { response, statusCode } = await createDeliveryEntry(
@@ -57,13 +58,12 @@ export async function handleCreateDeliveryEntry(
     res.status(statusCode).json(response);
   } catch (err) {
     if (err instanceof ServiceError) {
-      const traceId = `trace-${randomUUID()}`;
       res.status(err.statusCode).json({
         error: {
           code: err.code,
           message: err.message,
           ...(err.field && { field: err.field }),
-          traceId,
+          traceId: err.traceId ?? `trace-${randomUUID()}`,
         },
       });
       return;
@@ -80,6 +80,7 @@ export async function handleListDeliveries(
   next: NextFunction,
 ): Promise<void> {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (req as any).db;
 
     const result = await listDeliveries(db);

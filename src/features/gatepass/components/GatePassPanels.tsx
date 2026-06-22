@@ -2251,6 +2251,14 @@ export function DeliveryAdminPanel({ state, actions }: Props) {
     await actions.submitDelivery(input);
   };
 
+  // Close form after successful submit so the success banner becomes visible.
+  const lastEntryId = slice.lastEntry?.id;
+  useEffect(() => {
+    if (lastEntryId) {
+      setShowForm(false);
+    }
+  }, [lastEntryId]);
+
   const formReset = () => {
     setRiderName("");
     setUnit("");

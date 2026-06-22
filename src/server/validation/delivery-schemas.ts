@@ -117,12 +117,21 @@ export function validateDeliveryEntry(
   };
 }
 
-function mapFieldToErrorCode(field: string | undefined, _message: string): string {
+function mapFieldToErrorCode(field: string | undefined, message: string): string {
   if (!field) return "VALIDATION_ERROR";
 
+  if (field === "entryKind") {
+    return DeliveryValidationErrorCodes.INVALID_ENTRY_KIND;
+  }
+
+  if (field === "deliveryCategory") {
+    if (message.includes("only be set when entryKind is 'delivery'")) {
+      return DeliveryValidationErrorCodes.CATEGORY_WITHOUT_DELIVERY_KIND;
+    }
+    return DeliveryValidationErrorCodes.DELIVERY_CATEGORY_REQUIRED;
+  }
+
   const fieldCodeMap: Record<string, string> = {
-    entryKind: DeliveryValidationErrorCodes.INVALID_ENTRY_KIND,
-    deliveryCategory: DeliveryValidationErrorCodes.DELIVERY_CATEGORY_REQUIRED,
     visitorName: "VISITOR_NAME_REQUIRED",
     unit: "UNIT_REQUIRED",
   };

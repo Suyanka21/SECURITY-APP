@@ -517,7 +517,7 @@ export interface CreateDeliveryEntryRequest {
   method?: EntryMethod;
   createdAt: string;
   entryKind: EntryKind;
-  deliveryCategory: DeliveryCategory;
+  deliveryCategory?: DeliveryCategory;
   offlineId?: string;
 }
 

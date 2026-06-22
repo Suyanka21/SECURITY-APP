@@ -34,7 +34,7 @@ export const DeliveryErrorCodes = {
 
 // ─── Valid Enum Values ──────────────────────────────────────────────────────
 
-const VALID_ENTRY_KINDS = ["visitor", "delivery"] as const;
+const VALID_ENTRY_KINDS = ["delivery"] as const;
 const VALID_DELIVERY_CATEGORIES = [
   "parcel", "food", "ride", "gas",
   "water", "moving", "maintenance", "other",
@@ -174,6 +174,7 @@ export async function createDeliveryEntry(
   }
 
   // ── Gate 4: Verify guard exists and is active ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const guard = await (db as any)
     .select({ id: guards.id, isActive: guards.isActive })
     .from(guards)
@@ -181,6 +182,10 @@ export async function createDeliveryEntry(
     .limit(1);
 
   if (!guard || guard.length === 0) {
+    await emitAuditEvent("delivery_entry_blocked", input.guardId, traceId, {
+      reason: EntryErrorCodes.GUARD_SESSION_EXPIRED,
+      detail: "guard not found",
+    });
     throw new ServiceError(
       EntryErrorCodes.GUARD_SESSION_EXPIRED,
       "Guard identity not found or session expired",
@@ -189,6 +194,10 @@ export async function createDeliveryEntry(
     );
   }
   if (!guard[0].isActive) {
+    await emitAuditEvent("delivery_entry_blocked", input.guardId, traceId, {
+      reason: EntryErrorCodes.GUARD_SESSION_EXPIRED,
+      detail: "guard inactive",
+    });
     throw new ServiceError(
       EntryErrorCodes.GUARD_SESSION_EXPIRED,
       "Guard session is no longer active",
@@ -199,6 +208,7 @@ export async function createDeliveryEntry(
 
   // ── Gate 5: Check offlineId uniqueness ──
   if (input.offlineId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const existing = await (db as any)
       .select({ id: entryRecords.id })
       .from(entryRecords)
@@ -206,6 +216,10 @@ export async function createDeliveryEntry(
       .limit(1);
 
     if (existing && existing.length > 0) {
+      await emitAuditEvent("delivery_entry_blocked", input.guardId, traceId, {
+        reason: EntryErrorCodes.DUPLICATE_ENTRY,
+        offlineId: input.offlineId,
+      });
       throw new ServiceError(
         EntryErrorCodes.DUPLICATE_ENTRY,
         "An entry with this offlineId already exists",
@@ -216,7 +230,22 @@ export async function createDeliveryEntry(
   }
 
   // ── Gate 6: Validate preApprovalId for QR entries ──
+  // Default-deny: QR method REQUIRES a preApprovalId.
+  if (input.method === "qr" && !input.preApprovalId) {
+    await emitAuditEvent("delivery_entry_blocked", input.guardId, traceId, {
+      reason: EntryErrorCodes.PRE_APPROVAL_NOT_FOUND,
+      detail: "QR method requires preApprovalId",
+    });
+    throw new ServiceError(
+      EntryErrorCodes.PRE_APPROVAL_NOT_FOUND,
+      "QR entries require a pre-approval ID",
+      422,
+      "preApprovalId",
+    );
+  }
+
   if (input.method === "qr" && input.preApprovalId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const approval = await (db as any)
       .select({ id: authorizationDecisions.id })
       .from(authorizationDecisions)
@@ -224,6 +253,10 @@ export async function createDeliveryEntry(
       .limit(1);
 
     if (!approval || approval.length === 0) {
+      await emitAuditEvent("delivery_entry_blocked", input.guardId, traceId, {
+        reason: EntryErrorCodes.PRE_APPROVAL_NOT_FOUND,
+        preApprovalId: input.preApprovalId,
+      });
       throw new ServiceError(
         EntryErrorCodes.PRE_APPROVAL_NOT_FOUND,
         "Pre-approval record not found for the provided ID",
@@ -257,6 +290,7 @@ export async function createDeliveryEntry(
     deliveryCategory: input.deliveryCategory as DeliveryCategory,
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (db as any).transaction(async (tx: any) => {
     await tx.insert(entryRecords).values(entryRow);
 
@@ -309,7 +343,8 @@ export async function listDeliveries(
 ): Promise<ListDeliveriesResponse> {
   const traceId = generateTraceId();
 
-  const rows: any[] = await (db as any).execute(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = await (db as any).execute(
     sql`SELECT id, visitor_name, host, unit, plate, delivery_category,
                method, guard_id, created_at
         FROM entry_records
@@ -318,20 +353,27 @@ export async function listDeliveries(
         LIMIT 100`,
   );
 
-  const entries: DeliveryEntryView[] = (rows ?? []).map((r: any) => ({
-    id: r.id,
-    visitorName: r.visitor_name,
-    host: r.host,
-    unit: r.unit,
-    plate: r.plate,
-    deliveryCategory: r.delivery_category,
-    method: r.method,
-    guardId: r.guard_id,
-    createdAt:
-      r.created_at instanceof Date
-        ? r.created_at.toISOString()
-        : String(r.created_at),
-  }));
+  // PostgreSQL drivers return { rows: [...] }, not a raw array.
+  const rows: unknown[] =
+    Array.isArray(raw) ? raw : Array.isArray((raw as Record<string, unknown>)?.rows) ? (raw as Record<string, unknown>).rows as unknown[] : [];
+
+  const entries: DeliveryEntryView[] = rows.map((r: unknown) => {
+    const row = r as Record<string, unknown>;
+    return {
+      id: row.id as string,
+      visitorName: row.visitor_name as string,
+      host: row.host as string,
+      unit: row.unit as string,
+      plate: (row.plate as string | null) ?? null,
+      deliveryCategory: row.delivery_category as DeliveryCategory,
+      method: row.method as string,
+      guardId: row.guard_id as string,
+      createdAt:
+        row.created_at instanceof Date
+          ? row.created_at.toISOString()
+          : String(row.created_at),
+    };
+  });
 
   return { entries, count: entries.length, traceId };
 }
