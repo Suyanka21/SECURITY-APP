@@ -5,12 +5,24 @@ import { getGuardSteps } from "./steps/guardSteps";
 import { getResidentSteps } from "./steps/residentSteps";
 import { getAdminSteps } from "./steps/adminSteps";
 
+const VALID_ROLES: ReadonlySet<string> = new Set<string>(["guard", "resident", "admin"]);
+
 function readStorage(): OnboardingState {
   try {
-    const role = localStorage.getItem(STORAGE_KEYS.role) as StakeholderRole | null;
+    const rawRole = localStorage.getItem(STORAGE_KEYS.role);
+    const role: StakeholderRole | null =
+      rawRole !== null && VALID_ROLES.has(rawRole)
+        ? (rawRole as StakeholderRole)
+        : null;
     const completed = localStorage.getItem(STORAGE_KEYS.completed) === "true";
-    const step = parseInt(localStorage.getItem(STORAGE_KEYS.step) ?? "0", 10);
-    return { role, completed, currentStep: isNaN(step) ? 0 : step };
+    const rawStep = parseInt(localStorage.getItem(STORAGE_KEYS.step) ?? "0", 10);
+    const parsedStep = isNaN(rawStep) ? 0 : rawStep;
+
+    // Clamp currentStep to valid range for the resolved role
+    const maxStep = role ? getStepsForRole(role).length - 1 : 0;
+    const currentStep = Math.max(0, Math.min(parsedStep, maxStep));
+
+    return { role, completed, currentStep };
   } catch {
     return { role: null, completed: false, currentStep: 0 };
   }

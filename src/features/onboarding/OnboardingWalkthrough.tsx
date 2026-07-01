@@ -26,6 +26,7 @@ export function OnboardingWalkthrough({
   onComplete,
 }: OnboardingWalkthroughProps) {
   const step = steps[currentStepIndex];
+  // Defensive no-op: useOnboarding guarantees a clamped index, so this is unreachable
   if (!step) return null;
 
   const isFirst = currentStepIndex === 0;
