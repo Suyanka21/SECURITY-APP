@@ -57,6 +57,13 @@
       "when": 1781537200000,
       "tag": "0008_delivery_management",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783702200000,
+      "tag": "0009_guards_supabase_user_id",
+      "breakpoints": true
     }
   ]
 }
