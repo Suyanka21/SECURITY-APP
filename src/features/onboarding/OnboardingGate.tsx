@@ -3,8 +3,18 @@ import { useState } from "react";
 import { HelpCircle } from "lucide-react";
 import { useOnboarding } from "./useOnboarding";
 import { RoleSelection } from "./RoleSelection";
+import { SplashScreen } from "./SplashScreen";
 import { OnboardingWalkthrough } from "./OnboardingWalkthrough";
 import { HelpCenter } from "./HelpCenter";
+import { STORAGE_KEYS } from "./types";
+
+function readWelcomed(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.welcomed) === "true";
+  } catch {
+    return false;
+  }
+}
 
 type OnboardingGateProps = {
   children: ReactNode;
@@ -28,6 +38,23 @@ export function OnboardingGate({ children }: OnboardingGateProps) {
   } = useOnboarding();
 
   const [showHelp, setShowHelp] = useState(false);
+  const [welcomed, setWelcomed] = useState(readWelcomed);
+
+  // Phase 0: First-ever launch → introduce the product before the role picker.
+  if (!state.role && !welcomed) {
+    return (
+      <SplashScreen
+        onContinue={() => {
+          try {
+            localStorage.setItem(STORAGE_KEYS.welcomed, "true");
+          } catch {
+            // localStorage unavailable — still advance for this session
+          }
+          setWelcomed(true);
+        }}
+      />
+    );
+  }
 
   // Phase 1: No role selected → show role picker
   if (!state.role) {

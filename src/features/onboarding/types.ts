@@ -26,4 +26,5 @@ export const STORAGE_KEYS = {
   role: "gatepass_role",
   completed: "gatepass_onboarding_complete",
   step: "gatepass_onboarding_step",
+  welcomed: "gatepass_welcomed",
 } as const;

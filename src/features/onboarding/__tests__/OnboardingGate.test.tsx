@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { OnboardingGate } from "../OnboardingGate";
@@ -8,6 +8,7 @@ function clearStorage() {
   localStorage.removeItem(STORAGE_KEYS.role);
   localStorage.removeItem(STORAGE_KEYS.completed);
   localStorage.removeItem(STORAGE_KEYS.step);
+  localStorage.removeItem(STORAGE_KEYS.welcomed);
 }
 
 function renderGate() {
@@ -21,11 +22,26 @@ function renderGate() {
 }
 
 describe("OnboardingGate", () => {
+  // Existing role/onboarding tests start past the one-time welcome splash.
+  beforeEach(() => {
+    localStorage.setItem(STORAGE_KEYS.welcomed, "true");
+  });
   afterEach(clearStorage);
+
+  it("shows the welcome splash on the very first launch", () => {
+    localStorage.removeItem(STORAGE_KEYS.welcomed);
+    renderGate();
+    expect(screen.getByTestId("splash-continue")).toBeInTheDocument();
+    // Role picker is not shown until the splash is dismissed.
+    expect(screen.queryByTestId("role-guard")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("splash-continue"));
+    expect(screen.getByText("How will you be using GatePass?")).toBeInTheDocument();
+    expect(screen.getByTestId("role-guard")).toBeInTheDocument();
+  });
 
   it("shows role selection on first launch", () => {
     renderGate();
-    expect(screen.getByText("Who are you?")).toBeInTheDocument();
+    expect(screen.getByText("How will you be using GatePass?")).toBeInTheDocument();
     expect(screen.getByTestId("role-guard")).toBeInTheDocument();
     expect(screen.getByTestId("role-resident")).toBeInTheDocument();
     expect(screen.getByTestId("role-admin")).toBeInTheDocument();
