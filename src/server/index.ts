@@ -2,7 +2,7 @@
  * GatePass — Server Entry Point
  *
  * Starts the Express server on port 3001.
- * Runs alongside Vite dev server (port 8080).
+ * Runs alongside Vite dev server (port 5173).
  *
  * Source: Security-and-Hardening skill — "Use environment variables for secrets"
  */
