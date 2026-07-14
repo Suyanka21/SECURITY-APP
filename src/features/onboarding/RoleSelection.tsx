@@ -32,13 +32,14 @@ export function RoleSelection({ onSelect }: RoleSelectionProps) {
       <div className="mx-auto w-full max-w-2xl">
         <header className="mb-8 text-center">
           <p className="text-xs font-bold uppercase tracking-widest text-primary">
-            GatePass
+            Welcome to GatePass
           </p>
           <h1 className="mt-2 font-display text-3xl font-bold text-foreground md:text-4xl">
-            Who are you?
+            How will you be using GatePass?
           </h1>
           <p className="mt-3 text-sm text-muted-foreground">
-            Select your role to begin a guided walkthrough of GatePass.
+            Pick the role that fits you and we&apos;ll tailor a short, guided
+            walkthrough — you can revisit it anytime from the Help Center.
           </p>
         </header>
 
