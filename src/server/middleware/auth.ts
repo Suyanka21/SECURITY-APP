@@ -17,6 +17,12 @@
 import type { Request, Response, NextFunction } from "express";
 import { randomUUID } from "crypto";
 import * as jwt from "jsonwebtoken";
+import { eq } from "drizzle-orm";
+import { guards } from "@/db/schema";
+import {
+  isSupabaseAuthConfigured,
+  verifySupabaseToken,
+} from "../auth/supabase-jwt";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -99,7 +105,11 @@ export function getJWTSecret(): string {
  *
  * @returns void — attaches guardId to req, or sends 401/403 error
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const traceId = `trace-${randomUUID()}`;
 
   // Extract Bearer token from Authorization header
@@ -131,6 +141,18 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
   const token = parts[1];
 
+  // ─── Supabase mode ─────────────────────────────────────────────────────────
+  // When SUPABASE_URL is configured, tokens are Supabase-issued (asymmetric,
+  // verified against the project JWKS). The token's `sub` is the Supabase user
+  // UUID — we resolve it to a guard row via guards.supabase_user_id and inject
+  // that guard's canonical id, so requireRole (which reads guards.role by id)
+  // stays structurally unchanged. Role is NEVER taken from the token.
+  if (isSupabaseAuthConfigured()) {
+    await requireAuthSupabase(req, res, next, token, traceId);
+    return;
+  }
+
+  // ─── Legacy self-issued mode (development / tests) ───────────────────────────
   try {
     // Verify JWT signature and expiration
     const payload = jwt.verify(token, JWT_SECRET, {
@@ -189,6 +211,72 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 }
 
+/**
+ * Supabase-issued token path for requireAuth.
+ *
+ * Verifies the token against the Supabase JWKS, then maps the Supabase user
+ * UUID (`sub`) to a guard row via guards.supabase_user_id. A verified Supabase
+ * user with no linked guard row is authenticated-but-not-a-guard → 403.
+ */
+async function requireAuthSupabase(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  token: string,
+  traceId: string,
+): Promise<void> {
+  let supabaseUserId: string;
+  try {
+    const verified = await verifySupabaseToken(token);
+    supabaseUserId = verified.sub;
+  } catch (err) {
+    const code =
+      err && typeof err === "object" && (err as { code?: string }).code === "ERR_JWT_EXPIRED"
+        ? { status: 401, code: "AUTH_TOKEN_EXPIRED", message: "Authentication token has expired. Please re-authenticate." }
+        : { status: 401, code: "AUTH_TOKEN_INVALID", message: "Authentication token is invalid or corrupted." };
+    res.status(code.status).json({ error: { code: code.code, message: code.message, traceId } });
+    return;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = (req as any).db as DrizzleDBHandle | undefined;
+  if (!db) {
+    res.status(500).json({
+      error: { code: "INTERNAL_ERROR", message: "Database handle missing on request", traceId },
+    });
+    return;
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = (await (db as any)
+      .select()
+      .from(guards)
+      .where(eq(guards.supabaseUserId, supabaseUserId))) as { id: string }[];
+
+    const guard = rows?.[0];
+    if (!guard) {
+      // Authenticated with Supabase but no guard profile is linked. This is an
+      // authorization failure, not an authentication one — default-deny.
+      res.status(403).json({
+        error: {
+          code: "AUTH_NO_GUARD_LINK",
+          message: "This account is not linked to a guard profile.",
+          traceId,
+        },
+      });
+      return;
+    }
+
+    (req as AuthenticatedRequest).guardId = guard.id;
+    next();
+  } catch {
+    res.status(500).json({
+      error: { code: "INTERNAL_ERROR", message: "Authentication lookup failed", traceId },
+    });
+  }
+}
+
 // ─── Token Generation (for development/testing) ─────────────────────────────
 
 /**
@@ -219,9 +307,7 @@ export function generateGuardToken(
 // in app.ts.
 //
 // The middleware MUST run AFTER requireAuth so req.guardId is set.
-
-import { eq } from "drizzle-orm";
-import { guards } from "@/db/schema";
+// (eq + guards are imported at the top of this file.)
 
 interface DrizzleDBHandle {
   select: (...args: unknown[]) => unknown;

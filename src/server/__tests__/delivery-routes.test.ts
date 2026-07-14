@@ -216,7 +216,13 @@ describe("handleCreateDeliveryEntry", () => {
     expect(ctx.getNextErr()).toBe(genericErr);
   });
 
-  it("returns 422 when visitor sends deliveryCategory", async () => {
+  it("returns 422 CATEGORY_WITHOUT_DELIVERY_KIND when visitor sends deliveryCategory", async () => {
+    // Spec: delivery-management.md §4.1 — "If deliveryCategory is present but
+    // entryKind ≠ 'delivery' → 422 CATEGORY_WITHOUT_DELIVERY_KIND" (gate
+    // D-MISMATCH). This case is a category set WITHOUT the delivery kind, which
+    // is distinct from DELIVERY_CATEGORY_REQUIRED (category MISSING on a
+    // delivery). The implementation returns CATEGORY_WITHOUT_DELIVERY_KIND per
+    // the spec; the prior assertion expected the wrong code.
     const ctx = makeCtx({
       body: {
         visitorName: "John",
@@ -232,7 +238,7 @@ describe("handleCreateDeliveryEntry", () => {
 
     expect(ctx.getStatus()).toBe(422);
     const json = ctx.getJson() as any;
-    expect(json.error.code).toBe("DELIVERY_CATEGORY_REQUIRED");
+    expect(json.error.code).toBe("CATEGORY_WITHOUT_DELIVERY_KIND");
   });
 
   it("returns 422 for invalid deliveryCategory value", async () => {

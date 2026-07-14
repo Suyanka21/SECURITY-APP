@@ -132,6 +132,22 @@ export const guards = pgTable("guards", {
    */
   role: text("role").notNull().default("guard"),
 
+  /**
+   * Link to the Supabase Auth user (auth.users.id) that signs in as this guard.
+   *
+   * Source: auth-and-role-routing.md §7 + ADR 0001. After Supabase Auth lands,
+   * the verified JWT's `sub` is the Supabase user UUID; requireAuth resolves it
+   * to this guard row via this column, then requireRole reads guards.role. The
+   * role is NEVER taken from the token/metadata — only from guards.role.
+   *
+   * Nullable so pre-existing guard rows (and test fixtures using the legacy
+   * self-issued JWT where sub === guards.id) remain valid without a backfill.
+   * The cross-schema FK to auth.users(id) is added in migration 0009 (guarded
+   * so it only applies where the Supabase `auth` schema exists) because Drizzle
+   * cannot express a reference to the Supabase-managed auth schema here.
+   */
+  supabaseUserId: uuid("supabase_user_id").unique(),
+
   /** Server-generated creation timestamp */
   createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
     .notNull()

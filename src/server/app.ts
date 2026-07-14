@@ -60,6 +60,7 @@ import {
   handleCreateDeliveryEntry,
   handleListDeliveries,
 } from "./routes/deliveries";
+import { handleGetMe } from "./routes/auth";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
 
@@ -155,6 +156,12 @@ export function createApp(db: unknown) {
   // ─── Layer 6: Stricter Rate Limiters (endpoint-specific) ───────────
   // Source: TRUSTLESS-AUDIT-REPORT [C2] — "brute-force QR tokens or flood the entry endpoint"
   const strictLimiter = rateLimit(STRICT_RATE_LIMIT);
+
+  // ─── Auth identity ─────────────────────────────────────────────────
+  // Returns the caller's DB-verified role so the client can route to the
+  // correct interface. Any authenticated guard role may call it; the role is
+  // read from guards.role (auth-and-role-routing.md §7), never from the token.
+  app.get("/api/auth/me", requireAuth, handleGetMe);
 
   // ─── Protected Routes ──────────────────────────────────────────────
   // Auth + stricter rate limits on mutation endpoints
