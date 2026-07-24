@@ -1272,6 +1272,10 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   // Migration: drizzle/0008_delivery_management.sql.
   "delivery_entry_logged",
   "delivery_entry_blocked",
+  // Source: src/docs/adr/0001-...md — Stage 1 (A1) admin account provisioning.
+  // Written when an admin creates a guard/admin account.
+  // Migration: drizzle/0010_account_provisioned_audit_enum.sql.
+  "account_provisioned",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

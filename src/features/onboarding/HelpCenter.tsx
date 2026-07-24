@@ -51,8 +51,8 @@ const HELP_SECTIONS: HelpSection[] = [
       "When a visitor arrives, you receive a WhatsApp/SMS notification.",
       "Tap the link to see visitor details and choose Approve or Deny.",
       "If denying, provide a brief reason so the guard can inform the visitor.",
-      "Create auto-approval rules for frequent visitors (cleaners, family, tutors).",
-      "Issue QR passes for expected guests — they skip the approval wait.",
+      "Each link decides one arrival — there's no resident account or dashboard.",
+      "For frequent or expected visitors, ask your administrator about auto-approvals or QR passes.",
     ],
   },
   {
@@ -100,7 +100,7 @@ const HELP_SECTIONS: HelpSection[] = [
     icon: QrCode,
     content: [
       "QR passes are single-use, time-limited credentials for expected visitors.",
-      "Residents or admins issue them from the 'Invite visitor' form.",
+      "Estate staff (admins/senior guards) issue them from the 'Invite visitor' form.",
       "The visitor shows the QR at the gate; the guard scans it.",
       "If valid: entry is confirmed instantly.",
       "If expired: QR_EXPIRED error. Visitor needs a new pass.",

@@ -69,25 +69,25 @@ export function getResidentSteps(): OnboardingStep[] {
       icon: Bell,
     },
 
-    // ── Topic 3: Auto-Approval Rules ───────────────────────────────
+    // ── Topic 3: Frequent Visitors ─────────────────────────────────
     {
       id: "resident-auto-approval",
-      title: "Topic 3 — Auto-Approval Rules",
+      title: "Topic 3 — Frequent Visitors",
       explanation:
-        "For frequent visitors (cleaners, tutors, family members), you can create " +
-        "auto-approval rules. When these visitors arrive, entry is approved automatically " +
-        "— no phone call needed.",
+        "Have someone who visits regularly (a cleaner, tutor, or family member)? " +
+        "Estate administrators can set up a time-limited auto-approval on your behalf " +
+        "so those arrivals don't need a fresh approval every time.",
       details: [
-        "Create a rule: 'Allow [visitor name] visiting [your unit] until [expiry date]'.",
-        "When the visitor arrives, the guard sees an AUTO badge — entry is instant.",
-        "Rules expire on the date you set for security hygiene.",
-        "You can view and manage all your active rules.",
+        "Ask your estate administrator to arrange auto-approval for a frequent visitor.",
+        "When that visitor arrives, the guard sees an AUTO badge — entry is instant.",
+        "Auto-approvals are time-limited and expire for security hygiene.",
+        "You don't manage these yourself — there's no resident dashboard in GatePass.",
         "Auto-approved entries are fully logged and auditable — they're not invisible.",
       ],
       practicePrompt:
-        "Think of one person who visits you regularly. An auto-approval rule would save them waiting at the gate every time.",
+        "Think of one person who visits you regularly — that's who an administrator-arranged auto-approval helps.",
       successMessage:
-        "Auto-approval is safe because it's logged and time-limited. Your administrator can always audit it.",
+        "Auto-approval is safe because it's logged, time-limited, and administrator-controlled.",
       icon: Timer,
     },
 
@@ -96,20 +96,20 @@ export function getResidentSteps(): OnboardingStep[] {
       id: "resident-qr",
       title: "Topic 4 — QR Passes for Guests",
       explanation:
-        "Expecting a visitor? Issue a QR pass and share it with them before they arrive. " +
-        "At the gate, they show the QR code and the guard scans it — entry is confirmed instantly.",
+        "Expecting a guest? Estate staff can issue a single-use QR pass so your visitor " +
+        "skips the approval wait. At the gate they show the QR code, the guard scans it, " +
+        "and entry is confirmed instantly.",
       details: [
-        "Go to the Admin panel and use 'Invite visitor' to issue a QR pass.",
-        "Enter the visitor's name, your unit, and optionally their vehicle plate.",
-        "A QR code and shareable link are generated.",
-        "Share the QR code or link with your visitor via WhatsApp, email, or text.",
+        "Ask your estate administrator to issue a QR pass for a planned visit.",
+        "The visitor's name and unit — and optionally a vehicle plate — are recorded on the pass.",
+        "The visitor receives a QR code / shareable link to present at the gate.",
         "QR codes are single-use and time-limited — expired or reused codes are rejected.",
-        "This is the fastest entry method, best for planned visits.",
+        "Issuing passes is a staff action; residents don't issue them from this app.",
       ],
       practicePrompt:
-        "Next time you expect a guest, issue a QR pass beforehand — they'll breeze through the gate.",
+        "Next time you expect a guest, ask your administrator to issue a QR pass beforehand.",
       successMessage:
-        "QR passes save time for you, the guard, and your visitor. No waiting, no phone calls.",
+        "QR passes save time for you, the guard, and your visitor — no waiting, no phone calls.",
       icon: QrCode,
     },
 
@@ -135,12 +135,13 @@ export function getResidentSteps(): OnboardingStep[] {
       id: "resident-complete",
       title: "You are set up to manage visitor access",
       explanation:
-        "You now understand how GatePass protects your home. Approvals, notifications, " +
-        "auto-rules, and QR passes — you have full control over who enters the estate.",
+        "You now understand how GatePass protects your home. Every visitor waits for " +
+        "your approval, and you decide from a one-off link on your phone — no account " +
+        "or dashboard to manage.",
       details: [
         "If you ever need a refresher, tap the Help icon (?) in the navigation bar.",
         "Approve quickly to keep visitors moving; deny firmly when something feels wrong.",
-        "Auto-approval rules and QR passes save time for frequent or expected visitors.",
+        "For frequent or expected visitors, ask your administrator about auto-approvals or QR passes.",
       ],
       icon: CheckCircle2,
     },

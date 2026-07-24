@@ -87,3 +87,88 @@ informational state — not a console.
   console.
 - Removing the resident "not available" state and pointing the resident route at
   `GatePassApp` (or a fabricated resident dashboard) violates this ADR.
+
+## Decision 3 — Accounts are admin-provisioned (A1); no public signup; role is server-controlled
+
+- Status: Accepted (Stage 1, 2026-05-13). Confirmed by product ("A1 + B1, confirmed").
+- Related: `src/server/routes/accounts.ts`, `src/server/services/account-service.ts`,
+  `scripts/bootstrap-first-admin.mjs`, `src/docs/deploy/first-admin-bootstrap.md`.
+
+### Decision
+
+Guard / senior-guard / admin accounts are created **only** by an authenticated
+admin through `POST /api/admin/accounts` (gated `requireAuth` → strict limiter →
+`requireRole("admin")`). The **role is chosen by the server**, validated against
+the closed set `{guard, senior-guard, admin}`, and persisted in `guards.role`.
+
+- There is **no public signup route** — not a live one, not a dormant one, not a
+  hidden UI. The onboarding role-picker remains cosmetic (see Decision 1) and
+  grants no access.
+- End users never select their own authorization role. A client may only *request*
+  one of the allowed values; the server re-validates it and is the sole authority.
+- The **first admin** is created by a one-time, manually-invoked bootstrap
+  (`npm run bootstrap:admin`), because under A1 no admin exists yet to create one.
+  The bootstrap is **idempotent**: if any `guards.role='admin'` row already exists,
+  it refuses and no-ops — it can never mint a second "first" admin.
+
+### Why
+
+- **Least privilege / no client-controlled escalation.** Options A2 (self-signup +
+  pending approval) and A3 (user-picked role) were rejected: A3 is client-controlled
+  privilege escalation outright; A2 still creates an unauthenticated write surface
+  and a dormant "pending" account model the product does not need.
+- **Single source of truth.** Keeping role assignment server-side preserves the
+  Decision 1 invariant (authorization keys off `guards.role`, never client input).
+- **Secrets stay server-side.** Account creation needs Supabase **Admin Auth**
+  (service-role key). That key lives only in the server / bootstrap process; it is
+  never `VITE_`-prefixed, never returned by an API, never logged, never sent to the
+  browser.
+
+### One-time credential handling
+
+`POST /api/admin/accounts` accepts an optional admin-chosen password. If omitted,
+the server generates a strong password and returns it **once** in the response for
+the admin to relay out-of-band; it is never persisted in plaintext and never
+logged. This is the explicitly-adopted one-time credential design (an emailed
+invite/OTP flow is a possible future refinement, out of Stage 1 scope).
+
+### Consequences
+
+- Provisioning is a privileged, audited action: every success writes an
+  `account_provisioned` audit event (created guard id, badge, role, email — **no**
+  password/token/secret in the payload).
+- Cross-system creation (Supabase Auth user + `guards` row) uses a compensating
+  delete: if the DB insert fails after the Auth user is created, the Auth user is
+  deleted so no orphaned auth identity is left behind.
+- A future change that adds a self-signup endpoint, lets the client pick its own
+  persisted role, or ships the service-role key to the browser violates this ADR.
+
+## Decision 4 — Residents remain magic-link-only (B1); persistent portal (B2) deferred, not rejected
+
+- Status: Accepted (Stage 1, 2026-05-13). Confirmed by product ("A1 + B1, confirmed").
+
+### Decision
+
+B1 is adopted: residents keep the one-off magic-link model from Decision 2. The
+resident onboarding/help copy has been corrected so it **only** describes what that
+flow actually does — approve or deny a specific visitor from a per-arrival link.
+
+- Resident-managed **auto-approval rules** and resident-issued **QR passes** are
+  **not** part of the resident model. Those remain admin/senior-guard actions; copy
+  now says residents *ask an administrator* for them rather than self-serving.
+- **B2** (a full authenticated resident portal with self-service rules/passes and a
+  "my visitors" dashboard) is **explicitly deferred, not rejected**. It would
+  reverse Decision 2 and needs its own specification cycle (new `residents` identity
+  linkage, resident-scoped endpoints, and a security review) before any build.
+
+### Why
+
+- The prior copy over-promised features the backend cannot deliver for residents
+  (no resident identity row, no resident-scoped endpoints). Truthful copy avoids
+  implying access that would 401 or require client-trusted identity.
+
+### Consequences
+
+- No resident-facing account, dashboard, or self-service rule/pass management ships
+  in v1. Reintroducing those promises in copy without the backing endpoints — or
+  building B2 without its own ADR/spec — violates this ADR.

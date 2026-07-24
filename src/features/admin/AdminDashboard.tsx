@@ -23,6 +23,7 @@ import { exitTrackingApi } from "@/lib/api/exit-tracking";
 import { deliveryApi } from "@/lib/api/deliveries";
 import { autoApprovalApi } from "@/lib/api/auto-approval";
 import { useAuth } from "@/features/auth/AuthContext";
+import { AccountProvisioningPanel } from "./AccountProvisioningPanel";
 
 type PanelState<T> =
   | { status: "loading" }
@@ -166,6 +167,8 @@ export function AdminDashboard() {
       </header>
 
       <main className="mx-auto grid max-w-5xl grid-cols-1 gap-4 p-4 md:grid-cols-2">
+        <AccountProvisioningPanel />
+
         <Panel
           title="Currently on premise"
           subtitle="Visitors who entered but have not exited"
