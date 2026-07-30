@@ -35,6 +35,17 @@ export interface OnPremiseEntryView {
   method: string;
   guardId: string;
   createdAt: string;
+  /** Guard notes attached to this entry (Feature 9). Empty when none. */
+  notes: OnPremiseNoteView[];
+}
+
+/** A guard note as surfaced on an on-premise row (Feature 9). */
+export interface OnPremiseNoteView {
+  id: string;
+  tag: string;
+  text: string | null;
+  guardId: string;
+  createdAt: string;
 }
 
 export interface ListOnPremiseResponse {

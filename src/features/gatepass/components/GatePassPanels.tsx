@@ -8,7 +8,9 @@ import {
   Loader2,
   LogOut,
   MailCheck,
+  MessageSquarePlus,
   Package,
+  StickyNote,
   QrCode,
   Radar,
   RefreshCw,
@@ -31,12 +33,18 @@ import type {
 } from "../types";
 import { VISITOR_PROFILE_NEW_KEY } from "../types";
 import type {
+  AddGuardNoteRequest,
   CreateDeliveryEntryRequest,
   CreateVisitorProfileRequest,
   DeliveryCategory,
+  GuardNoteTag,
   IssueVisitorInvitationRequest,
   UpdateVisitorProfileRequest,
   VisitorProfileView,
+} from "@/lib/api/types";
+import {
+  GUARD_NOTE_TAG_LABELS,
+  GUARD_NOTE_TEXT_MAX,
 } from "@/lib/api/types";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -96,6 +104,12 @@ export type GatePassActions = {
   // Source: src/docs/specs/exit-tracking.md §8
   loadOnPremise: () => Promise<void> | void;
   recordExit: (entryId: string) => Promise<void> | void;
+  // ─── Guard notes (Feature 9) ──────────────────────────
+  // Source: src/docs/specs/guard-notes.md §4
+  addEntryNote: (
+    entryId: string,
+    body: import("@/lib/api/types").AddGuardNoteRequest,
+  ) => Promise<void> | void;
   // ─── Delivery management (Feature 8) ────────────────────
   // Source: src/docs/specs/delivery-management.md §5
   submitDelivery: (input: import("@/lib/api/types").CreateDeliveryEntryRequest) => Promise<void> | void;
@@ -2069,6 +2083,190 @@ export function VisitorInvitationsAdminPanel({ state, actions }: Props) {
   );
 }
 
+// ─── Feature 9 — Guard notes ───────────────────────────────────────────
+// Source: src/docs/specs/guard-notes.md §4.
+//
+// Ordered, standardised tags a guard can attach to an entry. Free-text is
+// only allowed (and required) for the "other" tag, capped at
+// GUARD_NOTE_TEXT_MAX characters — mirrors the server-side Zod schema.
+
+const GUARD_NOTE_TAG_ORDER: GuardNoteTag[] = [
+  "delivered_parcel",
+  "left_id_at_gate",
+  "escorted_by_resident",
+  "other",
+];
+
+type EntryNotesCellProps = {
+  entry: import("../types").GatePassState["exitTracking"]["onPremise"][number];
+  inFlight: boolean;
+  error?: import("../types").GatePassError;
+  onAdd: (body: AddGuardNoteRequest) => Promise<void> | void;
+};
+
+// Per-entry note cell: renders existing note badges plus a small
+// add-note form. The free-text field only appears for "other" and is
+// character-capped in lockstep with the server contract.
+function EntryNotesCell({ entry, inFlight, error, onAdd }: EntryNotesCellProps) {
+  const [open, setOpen] = useState(false);
+  const [tag, setTag] = useState<GuardNoteTag>("delivered_parcel");
+  const [text, setText] = useState("");
+
+  const isOther = tag === "other";
+  const trimmed = text.trim();
+  const canSubmit =
+    !inFlight && (isOther ? trimmed.length > 0 && trimmed.length <= GUARD_NOTE_TEXT_MAX : true);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    const body: AddGuardNoteRequest = isOther
+      ? { tag, text: trimmed }
+      : { tag };
+    await onAdd(body);
+  };
+
+  // Collapse the form and clear the draft once the note lands (in-flight
+  // clears and no error means the dispatch succeeded).
+  const noteCount = entry.notes.length;
+  useEffect(() => {
+    setOpen(false);
+    setText("");
+    setTag("delivered_parcel");
+  }, [noteCount]);
+
+  return (
+    <div className="flex flex-col gap-1.5" data-testid={`notes-cell-${entry.id}`}>
+      {entry.notes.length > 0 ? (
+        <ul className="flex flex-col gap-1" data-testid={`notes-list-${entry.id}`}>
+          {entry.notes.map((n) => (
+            <li
+              key={n.id}
+              className="inline-flex items-center gap-1 text-xs"
+              data-testid={`note-${n.id}`}
+            >
+              <StickyNote className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <span className="rounded-sm border border-border px-1.5 py-0.5 font-semibold">
+                {GUARD_NOTE_TAG_LABELS[n.tag]}
+              </span>
+              {n.text && (
+                <span className="text-muted-foreground">{n.text}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <span
+          className="text-xs text-muted-foreground"
+          data-testid={`notes-empty-${entry.id}`}
+        >
+          No notes
+        </span>
+      )}
+
+      {open ? (
+        <form
+          className="flex flex-col gap-1.5"
+          data-testid={`note-form-${entry.id}`}
+          onSubmit={(e) => void handleSubmit(e)}
+        >
+          <label className="sr-only" htmlFor={`note-tag-${entry.id}`}>
+            Note tag
+          </label>
+          <select
+            id={`note-tag-${entry.id}`}
+            className="focus-ring border border-border bg-background px-2 py-1 text-xs"
+            data-testid={`note-tag-${entry.id}`}
+            value={tag}
+            disabled={inFlight}
+            onChange={(e) => setTag(e.target.value as GuardNoteTag)}
+          >
+            {GUARD_NOTE_TAG_ORDER.map((t) => (
+              <option key={t} value={t}>
+                {GUARD_NOTE_TAG_LABELS[t]}
+              </option>
+            ))}
+          </select>
+
+          {isOther && (
+            <div className="flex flex-col gap-0.5">
+              <label className="sr-only" htmlFor={`note-text-${entry.id}`}>
+                Note text
+              </label>
+              <textarea
+                id={`note-text-${entry.id}`}
+                className="focus-ring border border-border bg-background px-2 py-1 text-xs"
+                data-testid={`note-text-${entry.id}`}
+                rows={2}
+                maxLength={GUARD_NOTE_TEXT_MAX}
+                value={text}
+                disabled={inFlight}
+                placeholder="Describe the note…"
+                onChange={(e) => setText(e.target.value)}
+              />
+              <span
+                className="text-right text-[10px] text-muted-foreground"
+                data-testid={`note-count-${entry.id}`}
+              >
+                {trimmed.length}/{GUARD_NOTE_TEXT_MAX}
+              </span>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              className="focus-ring inline-flex items-center gap-1 border border-foreground bg-foreground px-2 py-1 text-xs font-semibold text-background disabled:cursor-not-allowed disabled:opacity-50"
+              data-testid={`note-save-${entry.id}`}
+              disabled={!canSubmit}
+            >
+              {inFlight ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <MessageSquarePlus className="h-3 w-3" />
+              )}
+              {inFlight ? "Saving…" : "Save note"}
+            </button>
+            <button
+              type="button"
+              className="focus-ring text-xs underline"
+              data-testid={`note-cancel-${entry.id}`}
+              disabled={inFlight}
+              onClick={() => {
+                setOpen(false);
+                setText("");
+                setTag("delivered_parcel");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+
+          {error && (
+            <p
+              className="text-xs text-destructive"
+              role="alert"
+              data-testid={`note-error-${entry.id}`}
+            >
+              {error.code}: {error.message}
+            </p>
+          )}
+        </form>
+      ) : (
+        <button
+          type="button"
+          className="focus-ring inline-flex items-center gap-1 self-start border border-border px-2 py-1 text-xs font-semibold transition-transform hover:-translate-y-0.5"
+          data-testid={`note-add-btn-${entry.id}`}
+          onClick={() => setOpen(true)}
+        >
+          <MessageSquarePlus className="h-3 w-3" />
+          Add note
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Feature 7 — On-premise panel + exit affordance ────────────────────
 // Source: src/docs/specs/exit-tracking.md §8.
 //
@@ -2150,6 +2348,7 @@ export function OnPremisePanel({ state, actions }: Props) {
                 <th className="py-2 pr-3">Plate</th>
                 <th className="py-2 pr-3">Method</th>
                 <th className="py-2 pr-3">Entered</th>
+                <th className="py-2 pr-3">Notes</th>
                 <th className="py-2 pr-3">Action</th>
               </tr>
             </thead>
@@ -2157,6 +2356,8 @@ export function OnPremisePanel({ state, actions }: Props) {
               {slice.onPremise.map((entry) => {
                 const inFlight = !!slice.exitInFlight[entry.id];
                 const error = slice.exitErrors[entry.id];
+                const noteInFlight = !!slice.noteInFlight[entry.id];
+                const noteError = slice.noteErrors[entry.id];
                 return (
                   <tr
                     key={entry.id}
@@ -2177,7 +2378,15 @@ export function OnPremisePanel({ state, actions }: Props) {
                     <td className="py-2 pr-3 text-xs text-muted-foreground">
                       {entry.createdAt}
                     </td>
-                    <td className="py-2 pr-3">
+                    <td className="py-2 pr-3 align-top">
+                      <EntryNotesCell
+                        entry={entry}
+                        inFlight={noteInFlight}
+                        error={noteError}
+                        onAdd={(body) => actions.addEntryNote(entry.id, body)}
+                      />
+                    </td>
+                    <td className="py-2 pr-3 align-top">
                       <button
                         className="focus-ring inline-flex items-center gap-1 border border-destructive px-3 py-1 text-xs font-bold text-destructive transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
                         data-testid={`exit-btn-${entry.id}`}

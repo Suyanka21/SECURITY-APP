@@ -4,6 +4,7 @@ import type {
   DeliveryListEntryView,
   DeliveryEntryView,
   ExitRecordView,
+  GuardNoteView,
   OnPremiseEntryView,
   RecognizedVisitorItem,
   ShiftSummaryView,
@@ -312,6 +313,10 @@ export type ExitTrackingState = {
   exitErrors: Record<string, GatePassError>;
   /** Last successfully recorded exit (for the confirmation banner). */
   lastExit?: ExitRecordView;
+  /** Per-entry guard-note-in-flight flag (Feature 9). */
+  noteInFlight: Record<string, boolean>;
+  /** Per-entry guard-note error (Feature 9). */
+  noteErrors: Record<string, GatePassError>;
 };
 
 /**
@@ -581,6 +586,15 @@ export type GatePassAction =
   | { type: "EXIT_RECORD_STARTED"; entryId: string }
   | { type: "EXIT_RECORD_SUCCEEDED"; exit: ExitRecordView; entryId: string }
   | { type: "EXIT_RECORD_FAILED"; entryId: string; error: GatePassError }
+  // ─── Guard notes lifecycle (Feature 9) ───────────────────────
+  // Source: src/docs/specs/guard-notes.md §4.
+  | { type: "GUARD_NOTE_ADD_STARTED"; entryId: string }
+  | {
+      type: "GUARD_NOTE_ADD_SUCCEEDED";
+      entryId: string;
+      note: GuardNoteView;
+    }
+  | { type: "GUARD_NOTE_ADD_FAILED"; entryId: string; error: GatePassError }
   // ─── Delivery management lifecycle (Feature 8) ───────────────
   // Source: src/docs/specs/delivery-management.md §5.
   | { type: "DELIVERY_SUBMIT_STARTED" }

@@ -118,6 +118,8 @@ export const initialGatePassState: GatePassState = {
     loading: false,
     exitInFlight: {},
     exitErrors: {},
+    noteInFlight: {},
+    noteErrors: {},
   },
   deliveryManagement: {
     entries: [],
@@ -1330,6 +1332,74 @@ export function gatePassReducer(
           })(),
           exitErrors: {
             ...state.exitTracking.exitErrors,
+            [action.entryId]: action.error,
+          },
+        },
+      };
+
+    // ─── Guard notes lifecycle (Feature 9) ───────────────────────────
+    // Source: src/docs/specs/guard-notes.md §4.
+
+    case "GUARD_NOTE_ADD_STARTED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          noteInFlight: {
+            ...state.exitTracking.noteInFlight,
+            [action.entryId]: true,
+          },
+          noteErrors: (() => {
+            const next = { ...state.exitTracking.noteErrors };
+            delete next[action.entryId];
+            return next;
+          })(),
+        },
+      };
+
+    case "GUARD_NOTE_ADD_SUCCEEDED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          // Append the new note to its entry's note list in place.
+          onPremise: state.exitTracking.onPremise.map((e) =>
+            e.id === action.entryId
+              ? {
+                  ...e,
+                  notes: [
+                    ...e.notes,
+                    {
+                      id: action.note.id,
+                      tag: action.note.tag,
+                      text: action.note.text,
+                      guardId: action.note.guardId,
+                      createdAt: action.note.createdAt,
+                    },
+                  ],
+                }
+              : e,
+          ),
+          noteInFlight: (() => {
+            const next = { ...state.exitTracking.noteInFlight };
+            delete next[action.entryId];
+            return next;
+          })(),
+        },
+      };
+
+    case "GUARD_NOTE_ADD_FAILED":
+      return {
+        ...state,
+        exitTracking: {
+          ...state.exitTracking,
+          noteInFlight: (() => {
+            const next = { ...state.exitTracking.noteInFlight };
+            delete next[action.entryId];
+            return next;
+          })(),
+          noteErrors: {
+            ...state.exitTracking.noteErrors,
             [action.entryId]: action.error,
           },
         },

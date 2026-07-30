@@ -225,6 +225,7 @@ describe("Route: GET /api/entries/on-premise", () => {
           method: "walk-in",
           guardId: GUARD_ID,
           createdAt: "2024-06-01T10:30:00.000Z",
+          notes: [],
         },
       ],
       count: 1,

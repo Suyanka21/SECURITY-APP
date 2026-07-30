@@ -82,7 +82,12 @@ export type AuditEventType =
   // Source: src/docs/adr/0001-...md — Stage 1 (A1) admin account provisioning.
   // Written when an admin creates a guard/admin account. Payload carries the
   // created guard id, badge, role, and email — NEVER a password/token/secret.
-  | "account_provisioned";
+  | "account_provisioned"
+  // Source: src/docs/specs/guard-notes.md — Feature 9 (Stage 2). Written when a
+  // guard attaches a note to an entry/exit record. Payload carries the note id,
+  // target (entryId/exitId), and the standardised tag — NEVER the free text,
+  // which may contain PII.
+  | "guard_note_added";
 
 export interface AuditEvent {
   /** Unique immutable event ID */

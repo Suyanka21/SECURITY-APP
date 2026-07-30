@@ -47,6 +47,7 @@ function actionsStub(): GatePassActions {
     resetVisitorInvitation: vi.fn(),
     loadOnPremise: vi.fn(async () => undefined),
     recordExit: vi.fn(async () => undefined),
+    addEntryNote: vi.fn(async () => undefined),
   };
 }
 
@@ -59,6 +60,7 @@ const ENTRY_A: OnPremiseEntryView = {
   method: "walk-in",
   guardId: "guard-west-04",
   createdAt: "2024-06-01T09:30:00.000Z",
+  notes: [],
 };
 
 const ENTRY_B: OnPremiseEntryView = {
@@ -70,6 +72,7 @@ const ENTRY_B: OnPremiseEntryView = {
   method: "qr",
   guardId: "guard-west-04",
   createdAt: "2024-06-01T10:15:00.000Z",
+  notes: [],
 };
 
 const EXIT_VIEW: ExitRecordView = {
@@ -259,5 +262,185 @@ describe("OnPremisePanel — Feature 7 admin UI", () => {
     const btn = screen.getByTestId("on-premise-refresh");
     fireEvent.click(btn);
     expect(actions.loadOnPremise).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Feature 9 — Guard notes UI ─────────────────────────────────────────
+// Source: src/docs/specs/guard-notes.md §4.
+//
+// The Notes cell renders existing notes, exposes a tag selector, only
+// shows the free-text field for the "other" tag (capped at 280), and
+// calls actions.addEntryNote with a guardId-free body (server derives it).
+
+describe("OnPremisePanel — Feature 9 guard notes", () => {
+  it("renders 'No notes' when an entry has no notes", () => {
+    const actions = actionsStub();
+    render(
+      <OnPremisePanel
+        state={stateWith({ onPremise: [ENTRY_A] })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    expect(screen.getByTestId("notes-empty-entry-aaa")).toBeTruthy();
+  });
+
+  it("renders existing note badges and free text", () => {
+    const actions = actionsStub();
+    const entry: OnPremiseEntryView = {
+      ...ENTRY_A,
+      notes: [
+        {
+          id: "note-1",
+          tag: "delivered_parcel",
+          text: null,
+          guardId: "guard-west-04",
+          createdAt: "2024-06-01T09:35:00.000Z",
+        },
+        {
+          id: "note-2",
+          tag: "other",
+          text: "Wore a hi-vis vest",
+          guardId: "guard-west-04",
+          createdAt: "2024-06-01T09:36:00.000Z",
+        },
+      ],
+    };
+    render(
+      <OnPremisePanel
+        state={stateWith({ onPremise: [entry] })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    expect(screen.getByTestId("note-note-1").textContent).toContain(
+      "Delivered parcel",
+    );
+    const other = screen.getByTestId("note-note-2");
+    expect(other.textContent).toContain("Other");
+    expect(other.textContent).toContain("Wore a hi-vis vest");
+  });
+
+  it("only shows the free-text field for the 'other' tag", () => {
+    const actions = actionsStub();
+    render(
+      <OnPremisePanel
+        state={stateWith({ onPremise: [ENTRY_A] })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("note-add-btn-entry-aaa"));
+    // Predefined tag: no text field.
+    expect(screen.queryByTestId("note-text-entry-aaa")).toBeNull();
+    fireEvent.change(screen.getByTestId("note-tag-entry-aaa"), {
+      target: { value: "other" },
+    });
+    // "other" reveals the capped text field.
+    const textarea = screen.getByTestId(
+      "note-text-entry-aaa",
+    ) as HTMLTextAreaElement;
+    expect(textarea).toBeTruthy();
+    expect(textarea.maxLength).toBe(280);
+  });
+
+  it("submits a predefined tag with no text (guardId omitted)", () => {
+    const actions = actionsStub();
+    render(
+      <OnPremisePanel
+        state={stateWith({ onPremise: [ENTRY_A] })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("note-add-btn-entry-aaa"));
+    fireEvent.change(screen.getByTestId("note-tag-entry-aaa"), {
+      target: { value: "left_id_at_gate" },
+    });
+    fireEvent.click(screen.getByTestId("note-save-entry-aaa"));
+    expect(actions.addEntryNote).toHaveBeenCalledWith("entry-aaa", {
+      tag: "left_id_at_gate",
+    });
+  });
+
+  it("submits 'other' with trimmed text", () => {
+    const actions = actionsStub();
+    render(
+      <OnPremisePanel
+        state={stateWith({ onPremise: [ENTRY_A] })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("note-add-btn-entry-aaa"));
+    fireEvent.change(screen.getByTestId("note-tag-entry-aaa"), {
+      target: { value: "other" },
+    });
+    fireEvent.change(screen.getByTestId("note-text-entry-aaa"), {
+      target: { value: "  needs escort  " },
+    });
+    fireEvent.click(screen.getByTestId("note-save-entry-aaa"));
+    expect(actions.addEntryNote).toHaveBeenCalledWith("entry-aaa", {
+      tag: "other",
+      text: "needs escort",
+    });
+  });
+
+  it("disables save for 'other' with empty text", () => {
+    const actions = actionsStub();
+    render(
+      <OnPremisePanel
+        state={stateWith({ onPremise: [ENTRY_A] })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("note-add-btn-entry-aaa"));
+    fireEvent.change(screen.getByTestId("note-tag-entry-aaa"), {
+      target: { value: "other" },
+    });
+    expect(screen.getByTestId("note-save-entry-aaa")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("note-save-entry-aaa"));
+    expect(actions.addEntryNote).not.toHaveBeenCalled();
+  });
+
+  it("disables the save button while a note is in flight", () => {
+    const actions = actionsStub();
+    render(
+      <OnPremisePanel
+        state={stateWith({
+          onPremise: [ENTRY_A],
+          noteInFlight: { "entry-aaa": true },
+        })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("note-add-btn-entry-aaa"));
+    const save = screen.getByTestId("note-save-entry-aaa");
+    expect(save).toBeDisabled();
+    expect(save.textContent).toContain("Saving…");
+  });
+
+  it("surfaces a per-entry note error", () => {
+    const actions = actionsStub();
+    render(
+      <OnPremisePanel
+        state={stateWith({
+          onPremise: [ENTRY_A],
+          noteErrors: {
+            "entry-aaa": {
+              code: "GUARD_NOTE_INVALID_INPUT",
+              message: "text is required when tag is 'other'",
+            },
+          },
+        })}
+        dispatch={vi.fn()}
+        actions={actions}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("note-add-btn-entry-aaa"));
+    const err = screen.getByTestId("note-error-entry-aaa");
+    expect(err.textContent).toContain("GUARD_NOTE_INVALID_INPUT");
   });
 });

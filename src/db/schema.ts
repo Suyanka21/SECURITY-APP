@@ -102,6 +102,17 @@ export const deliveryCategoryEnum = pgEnum("delivery_category", [
   "other",
 ]);
 
+/** Predefined guard-note tags (Feature 9). Standardised enum so notes are
+ *  reportable/aggregatable, never free-form strings. 'other' unlocks a single
+ *  capped free-text field. */
+// Source: src/docs/specs/guard-notes.md §3
+export const guardNoteTagEnum = pgEnum("guard_note_tag", [
+  "delivered_parcel",
+  "left_id_at_gate",
+  "escorted_by_resident",
+  "other",
+]);
+
 // ─── Table 1: Guards ─────────────────────────────────────────────────────────
 // Source: contract §3.1–3.4 — guardId referenced across all endpoints
 // GATEPASS DEFINITION §2: "guard ID" required for every action
@@ -385,6 +396,61 @@ export const exitRecords = pgTable("exit_records", {
     .notNull()
     .defaultNow(),
 });
+
+// ─── Table 3c: Guard Notes ──────────────────────────────────────────────────
+// Source: src/docs/specs/guard-notes.md §§3–5 (Feature 9).
+// HARD RULES (DB-enforced):
+// - A note attaches to exactly one target: an entry OR an exit (XOR).
+// - Every note is attributed to a guard (guard_id NOT NULL + FK).
+// - tag is a standardised enum — reportable, never a raw string.
+// - Free text is allowed ONLY for tag='other', is required there, and is
+//   capped at 280 chars after trim. Non-'other' tags carry no free text.
+// - No CASCADE deletes — the audit trail must never lose a note.
+
+export const guardNotes = pgTable(
+  "guard_notes",
+  {
+    /** Server-generated note ID */
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** The entry this note annotates — XOR with exit_id */
+    entryId: uuid("entry_id").references(() => entryRecords.id),
+
+    /** The exit this note annotates — XOR with entry_id */
+    exitId: uuid("exit_id").references(() => exitRecords.id),
+
+    /** Guard who attached the note — MANDATORY */
+    guardId: uuid("guard_id")
+      .notNull()
+      .references(() => guards.id),
+
+    /** Standardised tag (enum) */
+    tag: guardNoteTagEnum("tag").notNull(),
+
+    /** Free text — only for tag='other', capped at 280 chars */
+    noteText: text("note_text"),
+
+    /** Server-generated trace ID for audit correlation */
+    traceId: text("trace_id").notNull(),
+
+    /** Server-generated canonical timestamp — NEVER client-generated */
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // Exactly one target (entry XOR exit).
+    check(
+      "guard_note_target_xor",
+      sql`(${table.entryId} IS NOT NULL AND ${table.exitId} IS NULL) OR (${table.entryId} IS NULL AND ${table.exitId} IS NOT NULL)`
+    ),
+    // Free text coherence: required + bounded for 'other', absent otherwise.
+    check(
+      "guard_note_text_coherence",
+      sql`(${table.tag} = 'other' AND ${table.noteText} IS NOT NULL AND length(trim(${table.noteText})) BETWEEN 1 AND 280) OR (${table.tag} != 'other' AND ${table.noteText} IS NULL)`
+    ),
+  ]
+);
 
 // ─── Table 4: Override Events ────────────────────────────────────────────────
 // Source: contract §3.2 (method=override)
@@ -674,6 +740,8 @@ export const guardsRelations = relations(guards, ({ many }) => ({
   overrides: many(overrideEvents),
   /** All sync events initiated by this guard */
   syncEvents: many(syncEvents),
+  /** All guard notes attached by this guard */
+  guardNotes: many(guardNotes),
 }));
 
 export const authorizationDecisionsRelations = relations(
@@ -691,7 +759,7 @@ export const authorizationDecisionsRelations = relations(
 
 export const entryRecordsRelations = relations(
   entryRecords,
-  ({ one }) => ({
+  ({ one, many }) => ({
     /** The guard who processed this entry */
     guard: one(guards, {
       fields: [entryRecords.guardId],
@@ -706,6 +774,8 @@ export const entryRecordsRelations = relations(
     override: one(overrideEvents),
     /** The exit record (if visitor has departed) — 1:1 */
     exit: one(exitRecords),
+    /** Guard notes attached to this entry */
+    notes: many(guardNotes),
   })
 );
 
@@ -727,7 +797,7 @@ export const overrideEventsRelations = relations(
 
 export const exitRecordsRelations = relations(
   exitRecords,
-  ({ one }) => ({
+  ({ one, many }) => ({
     /** The entry this exit closes */
     entry: one(entryRecords, {
       fields: [exitRecords.entryId],
@@ -738,8 +808,28 @@ export const exitRecordsRelations = relations(
       fields: [exitRecords.guardId],
       references: [guards.id],
     }),
+    /** Guard notes attached to this exit */
+    notes: many(guardNotes),
   })
 );
+
+export const guardNotesRelations = relations(guardNotes, ({ one }) => ({
+  /** The entry this note annotates (if any) */
+  entry: one(entryRecords, {
+    fields: [guardNotes.entryId],
+    references: [entryRecords.id],
+  }),
+  /** The exit this note annotates (if any) */
+  exit: one(exitRecords, {
+    fields: [guardNotes.exitId],
+    references: [exitRecords.id],
+  }),
+  /** The guard who attached the note */
+  guard: one(guards, {
+    fields: [guardNotes.guardId],
+    references: [guards.id],
+  }),
+}));
 
 export const syncEventsRelations = relations(syncEvents, ({ one }) => ({
   /** The guard who initiated this sync */
@@ -1276,6 +1366,10 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   // Written when an admin creates a guard/admin account.
   // Migration: drizzle/0010_account_provisioned_audit_enum.sql.
   "account_provisioned",
+  // Source: src/docs/specs/guard-notes.md — Feature 9 (Stage 2).
+  // Written when a guard attaches a note (tag) to an entry/exit record.
+  // Migration: drizzle/0011_guard_notes.sql.
+  "guard_note_added",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

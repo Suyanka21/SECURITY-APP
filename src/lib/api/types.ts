@@ -492,10 +492,67 @@ export interface OnPremiseEntryView {
   method: EntryMethod;
   guardId: string;
   createdAt: string;
+  /** Guard notes attached to this entry (Feature 9). Empty when none. */
+  notes: OnPremiseNoteView[];
+}
+
+/** A guard note as surfaced on an on-premise row (Feature 9). */
+export interface OnPremiseNoteView {
+  id: string;
+  tag: GuardNoteTag;
+  text: string | null;
+  guardId: string;
+  createdAt: string;
 }
 
 export interface ListOnPremiseResponse {
   entries: OnPremiseEntryView[];
+  count: number;
+  traceId: string;
+}
+
+// ─── Guard notes (Feature 9 — Guard Notes) ──────────────────────────────────
+// Source: src/docs/specs/guard-notes.md §§3–4
+
+export type GuardNoteTag =
+  | "delivered_parcel"
+  | "left_id_at_gate"
+  | "escorted_by_resident"
+  | "other";
+
+/** Human-readable labels for the predefined tags (client display). */
+export const GUARD_NOTE_TAG_LABELS: Record<GuardNoteTag, string> = {
+  delivered_parcel: "Delivered parcel",
+  left_id_at_gate: "Left ID at gate",
+  escorted_by_resident: "Escorted by resident",
+  other: "Other",
+};
+
+export const GUARD_NOTE_TEXT_MAX = 280;
+
+export interface GuardNoteView {
+  id: string;
+  entryId: string | null;
+  exitId: string | null;
+  guardId: string;
+  tag: GuardNoteTag;
+  text: string | null;
+  createdAt: string;
+  traceId: string;
+}
+
+export interface AddGuardNoteRequest {
+  tag: GuardNoteTag;
+  text?: string;
+}
+
+export interface AddGuardNoteResponse {
+  note: GuardNoteView;
+  traceId: string;
+}
+
+export interface ListGuardNotesResponse {
+  notes: GuardNoteView[];
   count: number;
   traceId: string;
 }
