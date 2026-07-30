@@ -51,6 +51,8 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     // Feature 7 — exit tracking wiring.
     loadOnPremise: controller.loadOnPremise,
     recordExit: controller.recordExit,
+    // Feature 9 — guard notes wiring.
+    addEntryNote: controller.addEntryNote,
     // Feature 8 — delivery management wiring.
     submitDelivery: controller.submitDelivery,
     loadDeliveries: controller.loadDeliveries,

@@ -25,7 +25,10 @@ import { shiftsApi } from "@/lib/api/shifts";
 import { visitorInvitationsApi } from "@/lib/api/visitor-invitations";
 import { exitTrackingApi } from "@/lib/api/exit-tracking";
 import { deliveryApi } from "@/lib/api/deliveries";
+import { guardNotesApi } from "@/lib/api/guard-notes";
 import type {
+  AddGuardNoteRequest,
+  AddGuardNoteResponse,
   ApiResult,
   ApprovalRequestView,
   ApprovalStatusResponse,
@@ -311,6 +314,11 @@ export interface GatePassControllerOptions {
    */
   exitTrackingApi?: typeof exitTrackingApi;
   /**
+   * Optional override for the guard-notes client (Feature 9).
+   * Source: src/docs/specs/guard-notes.md §4.
+   */
+  guardNotesApi?: typeof guardNotesApi;
+  /**
    * Optional override for the delivery management client (Feature 8).
    * Source: src/docs/specs/delivery-management.md §4.
    */
@@ -343,6 +351,7 @@ export function useGatePassController(
   const shiftsClient = options.shiftsApi ?? shiftsApi;
   const invitationsApi = options.visitorInvitationsApi ?? visitorInvitationsApi;
   const exitApi = options.exitTrackingApi ?? exitTrackingApi;
+  const notesApi = options.guardNotesApi ?? guardNotesApi;
   const deliveryClient = options.deliveryManagementApi ?? deliveryApi;
   const pollIntervalMs = options.approvalPollIntervalMs ?? 2000;
   const notificationsPollIntervalMs =
@@ -1292,6 +1301,35 @@ export function useGatePassController(
     [exitApi],
   );
 
+  // ─── Feature 9 — Guard notes ─────────────────────────────────────────
+  // Source: src/docs/specs/guard-notes.md §4.
+  //
+  // Attaches a standardised note to an on-premise entry. guardId is never
+  // sent — the server derives it from the JWT. On success the note is
+  // appended to the entry's list in place; on failure a per-entry error
+  // surfaces so the guard can retry.
+  const addEntryNote = useCallback(
+    async (entryId: string, body: AddGuardNoteRequest) => {
+      dispatch({ type: "GUARD_NOTE_ADD_STARTED", entryId });
+      const result: ApiResult<AddGuardNoteResponse> =
+        await notesApi.addEntryNote(entryId, body);
+      if (!result.ok) {
+        dispatch({
+          type: "GUARD_NOTE_ADD_FAILED",
+          entryId,
+          error: errorFromApi(result),
+        });
+        return;
+      }
+      dispatch({
+        type: "GUARD_NOTE_ADD_SUCCEEDED",
+        entryId,
+        note: result.data.note,
+      });
+    },
+    [notesApi],
+  );
+
   // ─── G1 + G2 — auto-load admin visitor directory ─────────────────────
   // Source: test-report-feature-4.md §Observed gaps.
   //   G1 — On entering admin mode, the panel needs a populated table;
@@ -1411,6 +1449,7 @@ export function useGatePassController(
       resetVisitorInvitation,
       loadOnPremise,
       recordExit,
+      addEntryNote,
       submitDelivery,
       loadDeliveries,
       resetDeliveryForm,
@@ -1436,6 +1475,7 @@ export function useGatePassController(
       resetVisitorInvitation,
       loadOnPremise,
       recordExit,
+      addEntryNote,
       submitDelivery,
       loadDeliveries,
       resetDeliveryForm,

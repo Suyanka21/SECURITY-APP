@@ -36,6 +36,15 @@ export interface ExitRecordRow {
   createdAt: string;
 }
 
+/** A guard note as surfaced on an on-premise row (Feature 9). */
+export interface OnPremiseNote {
+  id: string;
+  tag: string;
+  text: string | null;
+  guardId: string;
+  createdAt: string;
+}
+
 export interface OnPremiseEntryRow {
   id: string;
   visitorName: string;
@@ -45,6 +54,8 @@ export interface OnPremiseEntryRow {
   method: string;
   guardId: string;
   createdAt: string;
+  /** Guard notes attached to this entry (Feature 9). Empty when none. */
+  notes: OnPremiseNote[];
 }
 
 // ─── Error Codes ─────────────────────────────────────────────────────────────
@@ -215,9 +226,57 @@ export async function listOnPremise(
           row.createdAt instanceof Date
             ? row.createdAt.toISOString()
             : String(row.createdAt),
+        notes: [],
       };
     },
   );
+
+  // Feature 9: attach guard notes for the on-premise entries in one query.
+  if (entries.length > 0) {
+    const entryIds = entries.map((e) => e.id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const noteRows = await (db as any).execute(
+      sql`SELECT
+            gn.id,
+            gn.entry_id AS "entryId",
+            gn.tag,
+            gn.note_text AS "text",
+            gn.guard_id AS "guardId",
+            gn.created_at AS "createdAt"
+          FROM guard_notes gn
+          WHERE gn.entry_id = ANY(${entryIds})
+          ORDER BY gn.created_at ASC`,
+    );
+
+    const rawNotes: unknown[] = Array.isArray(noteRows)
+      ? noteRows
+      : Array.isArray((noteRows as Record<string, unknown>)?.rows)
+        ? ((noteRows as Record<string, unknown>).rows as unknown[])
+        : [];
+
+    const byEntry = new Map<string, OnPremiseNote[]>();
+    for (const n of rawNotes) {
+      const row = n as Record<string, unknown>;
+      const entryId = row.entryId as string;
+      const note: OnPremiseNote = {
+        id: row.id as string,
+        tag: row.tag as string,
+        text: (row.text as string | null) ?? null,
+        guardId: row.guardId as string,
+        createdAt:
+          row.createdAt instanceof Date
+            ? row.createdAt.toISOString()
+            : String(row.createdAt),
+      };
+      const list = byEntry.get(entryId);
+      if (list) list.push(note);
+      else byEntry.set(entryId, [note]);
+    }
+
+    for (const entry of entries) {
+      entry.notes = byEntry.get(entry.id) ?? [];
+    }
+  }
 
   return { entries, count: entries.length, traceId };
 }

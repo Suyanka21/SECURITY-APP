@@ -57,6 +57,11 @@ import {
   handleListOnPremise,
 } from "./routes/exit-tracking";
 import {
+  handleAddEntryNote,
+  handleAddExitNote,
+  handleListEntryNotes,
+} from "./routes/guard-notes";
+import {
   handleCreateDeliveryEntry,
   handleListDeliveries,
 } from "./routes/deliveries";
@@ -300,6 +305,28 @@ export function createApp(db: unknown) {
     requireAuth,
     strictLimiter,
     handleRecordExit
+  );
+
+  // Feature 9 — Guard Notes (spec §4).
+  // Any authenticated guard can attach a standardised note to an entry/exit.
+  // Reads are auth-gated. guardId comes from the verified token, not the body.
+  // Strict-limited on writes to bound abuse of the free-text 'other' field.
+  app.get(
+    "/api/entries/:entryId/notes",
+    requireAuth,
+    handleListEntryNotes
+  );
+  app.post(
+    "/api/entries/:entryId/notes",
+    requireAuth,
+    strictLimiter,
+    handleAddEntryNote
+  );
+  app.post(
+    "/api/exits/:exitId/notes",
+    requireAuth,
+    strictLimiter,
+    handleAddExitNote
   );
 
   // Feature 8 — Delivery Management (spec §4).

@@ -96,13 +96,19 @@ function makeMockDB(opts: MockDBOpts = {}) {
 
 // ─── listOnPremise mock DB ───────────────────────────────────────────────────
 
-function makeOnPremiseMockDB(rows: unknown[] = []) {
+function makeOnPremiseMockDB(rows: unknown[] = [], noteRows: unknown[] = []) {
+  // listOnPremise issues up to two execute() calls: first the entries query,
+  // then (only if entries exist) the guard-notes query. Serve them in order.
+  let call = 0;
   return {
     db: {
       select: vi.fn(),
       insert: vi.fn(),
       query: {},
-      execute: vi.fn().mockResolvedValue({ rows }),
+      execute: vi.fn().mockImplementation(async () => {
+        call += 1;
+        return call === 1 ? { rows } : { rows: noteRows };
+      }),
     } as unknown as DrizzleDB,
   };
 }
@@ -359,6 +365,7 @@ describe("listOnPremise", () => {
       method: "walk-in",
       guardId: GUARD_ID,
       createdAt: "2024-06-01T10:30:00.000Z",
+      notes: [],
     });
     expect(result.count).toBe(1);
     expect(result.traceId).toMatch(/^trace-/);
@@ -430,6 +437,59 @@ describe("listOnPremise", () => {
     await listOnPremise(db);
 
     expect(getAuditLog()).toHaveLength(0);
+  });
+
+  it("attaches guard notes to their entries (Feature 9)", async () => {
+    const rows = [
+      {
+        id: ENTRY_ID,
+        visitorName: "Maya Chen",
+        host: "A. Okafor",
+        unit: "18B",
+        plate: "LND-482",
+        method: "walk-in",
+        guardId: GUARD_ID,
+        createdAt: "2024-06-01T10:30:00.000Z",
+      },
+      {
+        id: OTHER_ENTRY_ID,
+        visitorName: "Dario Miles",
+        host: "N. Patel",
+        unit: "07C",
+        plate: null,
+        method: "qr",
+        guardId: GUARD_ID,
+        createdAt: "2024-06-01T11:00:00.000Z",
+      },
+    ];
+    const noteRows = [
+      {
+        id: "note-1",
+        entryId: ENTRY_ID,
+        tag: "left_id_at_gate",
+        text: null,
+        guardId: GUARD_ID,
+        createdAt: "2024-06-01T10:31:00.000Z",
+      },
+      {
+        id: "note-2",
+        entryId: ENTRY_ID,
+        tag: "other",
+        text: "Escalated to supervisor",
+        guardId: GUARD_ID,
+        createdAt: "2024-06-01T10:32:00.000Z",
+      },
+    ];
+    const { db } = makeOnPremiseMockDB(rows, noteRows);
+
+    const result = await listOnPremise(db);
+
+    const first = result.entries.find((e) => e.id === ENTRY_ID);
+    const second = result.entries.find((e) => e.id === OTHER_ENTRY_ID);
+    expect(first?.notes).toHaveLength(2);
+    expect(first?.notes[0].tag).toBe("left_id_at_gate");
+    expect(first?.notes[1].text).toBe("Escalated to supervisor");
+    expect(second?.notes).toEqual([]);
   });
 
   it("handles DB response without .rows wrapper (array directly)", async () => {
