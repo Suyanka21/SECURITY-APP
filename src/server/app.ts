@@ -61,6 +61,7 @@ import {
   handleListDeliveries,
 } from "./routes/deliveries";
 import { handleGetMe } from "./routes/auth";
+import { handleProvisionAccount } from "./routes/accounts";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
 
@@ -257,6 +258,19 @@ export function createApp(db: unknown) {
     strictLimiter,
     requireRole("admin", "senior-guard"),
     handleRestoreVisitorProfile
+  );
+
+  // Stage 1 (A1) — Admin Account Provisioning.
+  // Source: src/docs/adr/0001-...md — accounts are created ONLY by an
+  // authenticated admin; the role is server-controlled and persisted in
+  // guards.role. There is NO public signup route (dormant or otherwise).
+  // Strict-limited because each call mints an auth credential.
+  app.post(
+    "/api/admin/accounts",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin"),
+    handleProvisionAccount
   );
 
   // Feature 5 — Shift Log Aggregation (spec §4, §9).

@@ -64,6 +64,13 @@
       "when": 1783702200000,
       "tag": "0009_guards_supabase_user_id",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786000000000,
+      "tag": "0010_account_provisioned_audit_enum",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,28 @@
+-- GatePass Migration: Stage 1 (A1) — account_provisioned audit enum value
+--
+-- Source: src/docs/adr/0001-auth-role-vs-onboarding-role-and-resident-model.md
+--         — Decision A1: accounts are provisioned by an authenticated admin
+--         (POST /api/admin/accounts) or the one-time first-admin bootstrap.
+-- Source: src/server/services/account-service.ts — provisionAccount() calls
+--         emitAuditEvent("account_provisioned", ...) on every successful
+--         account creation so the privileged action is on the audit trail.
+-- Source: src/db/schema.ts §auditEventTypeEnum + src/server/services/
+--         audit-logger.ts §AuditEventType — both add the literal at the
+--         application layer; this migration adds it at the DB layer.
+--
+-- WHY THIS EXISTS:
+-- Adding the literal only in TypeScript would leave the Postgres enum without
+-- the value, so the first real account-provisioning INSERT into audit_events
+-- would fail with:
+--   ERROR:  invalid input value for enum audit_event_type: "account_provisioned"
+-- rolling back the audit write. The account-service awaits the audit write, so
+-- this would surface as 500 INTERNAL_ERROR after the guard row was created —
+-- exactly the silent-success gap the F6 hotfix (0006) closed for QR issuance.
+--
+-- Idempotent via IF NOT EXISTS; safe to re-apply.
+--
+-- ROLLBACK:
+-- Postgres does not support removing enum values. Per Deprecation-and-Migration
+-- discipline this is acceptable — the value is only ever added, never removed.
+
+ALTER TYPE audit_event_type ADD VALUE IF NOT EXISTS 'account_provisioned';

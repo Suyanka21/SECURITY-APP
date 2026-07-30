@@ -58,8 +58,9 @@ export function ResidentMagicLinkInfo() {
         arrives, you'll get an approval link on your phone (SMS/WhatsApp).
       </p>
       <p>
-        Open that link to approve or deny the visitor, or to view a guest's QR
-        pass. There's nothing to log into and no standing dashboard.
+        Open that link to approve or deny that specific visitor. The decision
+        applies only to that arrival — there's nothing to log into and no
+        standing dashboard.
       </p>
     </Shell>
   );

@@ -78,7 +78,11 @@ export type AuditEventType =
   // delivery_entry_logged: successful delivery entry creation.
   // delivery_entry_blocked: rejected delivery attempt.
   | "delivery_entry_logged"
-  | "delivery_entry_blocked";
+  | "delivery_entry_blocked"
+  // Source: src/docs/adr/0001-...md — Stage 1 (A1) admin account provisioning.
+  // Written when an admin creates a guard/admin account. Payload carries the
+  // created guard id, badge, role, and email — NEVER a password/token/secret.
+  | "account_provisioned";
 
 export interface AuditEvent {
   /** Unique immutable event ID */
