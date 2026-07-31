@@ -296,6 +296,35 @@ describe("useGatePassController.scanQr", () => {
     });
     expect(hook.result.current.state.qrState).toBe("valid");
     expect(hook.result.current.state.draft.preApprovalId).toBe("preapproval-1");
+    // Feature 10 — no plate on file → expectedPlate is null.
+    expect(hook.result.current.state.expectedPlate).toBeNull();
+  });
+
+  it("retains the pre-registered plate as expectedPlate on a valid scan (Feature 10)", async () => {
+    const response: QrValidateResponse = {
+      outcome: "valid",
+      visitor: {
+        name: "QR Guest",
+        host: "Resident verified",
+        unit: "12A",
+        plate: "GR 1234-A",
+        preApprovalId: "preapproval-2",
+      },
+      expiresAt: "2099-01-01T00:00:00Z",
+      traceId: "trace-qr-plate",
+    };
+    api.validateQr.mockResolvedValue(ok(response));
+    const hook = buildController(api);
+
+    await act(async () => {
+      await hook.result.current.scanQr("qr-token-plate");
+    });
+
+    expect(hook.result.current.state.qrState).toBe("valid");
+    // Draft holds the observed/editable value; expectedPlate holds the
+    // pre-registered reference for comparison — both start equal.
+    expect(hook.result.current.state.draft.plate).toBe("GR 1234-A");
+    expect(hook.result.current.state.expectedPlate).toBe("GR 1234-A");
   });
 
   it("maps QR_REPLAYED (409) to qrState=replayed and shows the backend message", async () => {
