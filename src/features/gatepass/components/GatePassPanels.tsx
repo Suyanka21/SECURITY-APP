@@ -32,6 +32,7 @@ import type {
   Visitor,
 } from "../types";
 import { VISITOR_PROFILE_NEW_KEY } from "../types";
+import { getPlateComparison } from "../plate-verification";
 import type {
   AddGuardNoteRequest,
   CreateDeliveryEntryRequest,
@@ -302,8 +303,86 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
         dispatch={dispatch}
         actions={actions}
         requireReason={false}
+        showVehicleVerification
       />
     </section>
+  );
+}
+
+/**
+ * Feature 10 — Vehicle Verification (Stage 3).
+ *
+ * Presentational only: shows the pre-registered ("expected") plate next
+ * to the plate the guard has entered so the two can be compared, and
+ * renders a SOFT WARNING on mismatch. It never blocks or disables entry —
+ * it only advises. Source: src/docs/specs/vehicle-verification.md.
+ */
+function VehicleVerification({
+  expectedPlate,
+  observedPlate,
+}: {
+  expectedPlate: string | null | undefined;
+  observedPlate: string;
+}) {
+  const comparison = getPlateComparison(expectedPlate, observedPlate);
+
+  if (comparison === "no-expected") {
+    return (
+      <div
+        data-testid="vehicle-verification"
+        className="mt-4 flex items-start gap-2 border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground"
+      >
+        <QrCode className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        <p>No plate on file for this visitor — nothing to verify.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-testid="vehicle-verification"
+      className="mt-4 grid gap-2 border border-border bg-muted/40 px-3 py-3 text-sm"
+    >
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-foreground">
+        <span className="font-semibold">Expected plate (pre-registered):</span>
+        <span
+          data-testid="expected-plate"
+          className="font-mono font-semibold tracking-wide"
+        >
+          {expectedPlate}
+        </span>
+      </p>
+
+      {comparison === "no-observed" && (
+        <p className="text-muted-foreground">
+          Enter the observed plate above to compare against the vehicle.
+        </p>
+      )}
+
+      {comparison === "match" && (
+        <p
+          data-testid="plate-match"
+          className="flex items-center gap-2 font-medium text-success-foreground"
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+          Observed plate matches the pre-registered plate.
+        </p>
+      )}
+
+      {comparison === "mismatch" && (
+        <div
+          role="alert"
+          data-testid="plate-mismatch-warning"
+          className="flex items-start gap-2 border border-warning bg-warning/10 px-3 py-2 font-medium text-warning-foreground"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>
+            Observed plate does not match the pre-registered plate. Verify
+            the vehicle before continuing — this does not block entry.
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -329,10 +408,13 @@ function EntryForm({
   actions,
   requireReason,
   showRequestApproval = false,
+  showVehicleVerification = false,
 }: Props & {
   title: string;
   requireReason: boolean;
   showRequestApproval?: boolean;
+  /** Feature 10 — render the pre-registered-plate comparison (QR flow only). */
+  showVehicleVerification?: boolean;
 }) {
   const fields: Array<[keyof EntryDraft, string, string]> = [
     ["visitorName", "Visitor name", "e.g. Ama Mensah"],
@@ -405,6 +487,12 @@ function EntryForm({
           </label>
         )}
       </div>
+      {showVehicleVerification && (
+        <VehicleVerification
+          expectedPlate={state.expectedPlate}
+          observedPlate={state.draft.plate}
+        />
+      )}
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
         <button
           className="focus-ring flex-1 bg-primary px-5 py-4 font-display text-lg font-bold text-primary-foreground shadow-panel transition-transform hover:-translate-y-0.5 disabled:opacity-60"

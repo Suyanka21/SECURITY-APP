@@ -84,6 +84,7 @@ export const initialGatePassState: GatePassState = {
   qrState: "idle",
   qrToken: "",
   draft: emptyDraft,
+  expectedPlate: null,
   inFlight: false,
   banner: {
     tone: "info",
@@ -527,6 +528,9 @@ export function gatePassReducer(
         ...state,
         inFlight: true,
         qrState: "scanning",
+        // Feature 10 — drop any stale expected plate from a prior scan so
+        // the confirmation screen can't compare against the wrong visitor.
+        expectedPlate: null,
         lastError: undefined,
         banner: { tone: "info", message: "Validating QR…" },
       };
@@ -537,6 +541,8 @@ export function gatePassReducer(
         inFlight: false,
         qrState: "valid",
         draft: action.draft,
+        // Feature 10 — retain the pre-registered plate for guard comparison.
+        expectedPlate: action.expectedPlate,
         lastError: undefined,
         banner: {
           tone: "success",
@@ -550,6 +556,7 @@ export function gatePassReducer(
         mode: "error",
         inFlight: false,
         qrState: action.qrState,
+        expectedPlate: null,
         lastError: action.error,
         banner: bannerForError(action.error),
       };
@@ -877,6 +884,7 @@ export function gatePassReducer(
         ...state,
         mode: "home",
         draft: emptyDraft,
+        expectedPlate: null,
         cameraState: "idle",
         qrState: "idle",
         qrToken: "",

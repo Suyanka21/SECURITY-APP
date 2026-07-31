@@ -350,6 +350,17 @@ export type GatePassState = {
   qrState: "idle" | "scanning" | "valid" | "invalid" | "replayed" | "expired";
   qrToken: string;
   draft: EntryDraft;
+  /**
+   * Feature 10 (Vehicle Verification) — the pre-registered ("expected")
+   * plate from the most recent successful QR scan, kept alongside the
+   * editable draft so the guard can compare it against the plate they
+   * observe at the gate. A mismatch is a soft warning, never a block.
+   * Source: src/docs/specs/vehicle-verification.md.
+   *
+   * Set by QR_SCAN_SUCCEEDED; cleared by QR_SCAN_STARTED, QR_SCAN_FAILED,
+   * and RESET_FLOW.
+   */
+  expectedPlate?: string | null;
   inFlight: boolean;
   banner: {
     tone: "info" | "success" | "warning" | "danger";
@@ -431,6 +442,12 @@ export type GatePassAction =
   | {
       type: "QR_SCAN_SUCCEEDED";
       draft: EntryDraft;
+      /**
+       * Feature 10 — pre-registered plate from the validated pass. null
+       * when the visitor has no plate on file. Stored separately from the
+       * editable draft so the guard's observed plate can be compared.
+       */
+      expectedPlate: string | null;
     }
   | {
       type: "QR_SCAN_FAILED";

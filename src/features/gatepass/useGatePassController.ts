@@ -483,6 +483,9 @@ export function useGatePassController(
             method: "qr",
             preApprovalId: v.preApprovalId,
           },
+          // Feature 10 — retain the pre-registered plate separately so the
+          // confirmation screen can flag a mismatch as a soft warning.
+          expectedPlate: v.plate ?? null,
         });
         return;
       }
