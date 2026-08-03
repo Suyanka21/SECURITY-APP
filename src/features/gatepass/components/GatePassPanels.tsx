@@ -59,6 +59,11 @@ import { QRCodeSVG } from "qrcode.react";
 export type GatePassActions = {
   submitEntry: () => Promise<void> | void;
   scanQr: (token: string) => Promise<void> | void;
+  /**
+   * Feature 11 (Stage 4) — redeem a pass by pass reference + 6-digit PIN
+   * when the QR can't be scanned. Lands on the same confirmation screen.
+   */
+  redeemPin: (passRef: string, pin: string) => Promise<void> | void;
   syncPending: () => Promise<void> | void;
   searchVisitors: (query?: string) => Promise<void> | void;
   setNetwork: (network: "online" | "offline") => void;
@@ -296,6 +301,70 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
             QR verified. Confirm the entry on the right.
           </p>
         )}
+
+        {/* Feature 11 (Stage 4) — One-Time PIN Backup. When the QR can't be
+            scanned, the guard redeems the SAME pass with its reference + the
+            6-digit PIN. A lockout after too many wrong PINs is surfaced as a
+            danger banner and disables the redeem button. */}
+        <div
+          className="mt-6 border-t border-border pt-4"
+          data-testid="pin-redemption"
+        >
+          <h3 className="font-display text-lg font-bold">
+            Can&apos;t scan? Redeem by PIN
+          </h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Enter the pass reference and the 6-digit PIN from the visitor&apos;s
+            pass. Using the PIN also invalidates the QR.
+          </p>
+          <label className="mt-3 grid gap-2 text-sm font-semibold text-foreground">
+            Pass reference
+            <input
+              className="focus-ring border border-input bg-background px-3 py-3 font-mono text-sm uppercase tracking-widest"
+              placeholder="e.g. AB12CD34"
+              maxLength={8}
+              autoCapitalize="characters"
+              value={state.pinPassRef}
+              onChange={(event) =>
+                dispatch({ type: "UPDATE_PIN_PASS_REF", value: event.target.value })
+              }
+              data-testid="pin-pass-ref-input"
+            />
+          </label>
+          <label className="mt-3 grid gap-2 text-sm font-semibold text-foreground">
+            6-digit PIN
+            <input
+              className="focus-ring border border-input bg-background px-3 py-3 font-mono text-lg tracking-[0.5em]"
+              placeholder="••••••"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={state.pinValue}
+              onChange={(event) =>
+                dispatch({ type: "UPDATE_PIN_VALUE", value: event.target.value })
+              }
+              data-testid="pin-value-input"
+            />
+          </label>
+          {state.qrState === "locked" && (
+            <p
+              role="alert"
+              data-testid="pin-locked-banner"
+              className="mt-3 border border-destructive bg-destructive/10 px-3 py-2 text-sm font-semibold text-destructive"
+            >
+              This pass is locked after too many incorrect PIN attempts. Ask the
+              resident to re-issue, or use walk-in/override.
+            </p>
+          )}
+          <button
+            className="focus-ring mt-4 w-full border border-primary bg-primary px-3 py-3 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+            onClick={() => void actions.redeemPin(state.pinPassRef, state.pinValue)}
+            disabled={state.inFlight || state.qrState === "locked"}
+            data-testid="pin-redeem-button"
+          >
+            {scanning ? "Verifying…" : "Redeem by PIN"}
+          </button>
+        </div>
       </div>
       <EntryForm
         title="QR confirmation"
@@ -2066,8 +2135,37 @@ export function VisitorInvitationsAdminPanel({ state, actions }: Props) {
                 </div>
               </div>
 
+              {/* Feature 11 (Stage 4) — PIN backup. Shown EXACTLY ONCE at
+                  issue alongside the QR; the PIN never appears in previews or
+                  later responses. Guard redeems with pass reference + PIN. */}
+              <div className="mt-3 grid gap-3 border border-primary/40 bg-primary/5 p-3 sm:grid-cols-2">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                    Pass reference
+                  </p>
+                  <code
+                    className="mt-1 block border border-border bg-background px-2 py-1 font-mono text-lg tracking-widest"
+                    data-testid="visitor-invitation-pass-ref"
+                  >
+                    {slice.lastIssued.passRef}
+                  </code>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                    One-time PIN
+                  </p>
+                  <code
+                    className="mt-1 block border border-border bg-background px-2 py-1 font-mono text-lg tracking-[0.4em]"
+                    data-testid="visitor-invitation-pin"
+                  >
+                    {slice.lastIssued.pin}
+                  </code>
+                </div>
+              </div>
+
               <p className="mt-3 text-xs italic text-muted-foreground">
-                This pass is single-use. The QR will not be shown again.
+                This pass is single-use. The QR and PIN will not be shown again,
+                and share the same expiry. Redeeming either invalidates both.
               </p>
 
               <button

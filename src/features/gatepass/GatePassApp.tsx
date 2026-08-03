@@ -29,6 +29,8 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
   const actions = {
     submitEntry: controller.submitEntry,
     scanQr: controller.scanQr,
+    // Feature 11 — One-Time PIN Backup redemption wiring.
+    redeemPin: controller.redeemPin,
     syncPending: controller.syncPending,
     searchVisitors: controller.searchVisitors,
     setNetwork: controller.setNetwork,

@@ -30,6 +30,7 @@ function actionsStub(): GatePassActions {
   return {
     submitEntry: vi.fn(async () => undefined),
     scanQr: vi.fn(async () => undefined),
+    redeemPin: vi.fn(async () => undefined),
     syncPending: vi.fn(async () => undefined),
     searchVisitors: vi.fn(async () => undefined),
     requestApproval: vi.fn(async () => undefined),

@@ -91,6 +91,19 @@ export interface QrValidateResponse {
   traceId: string;
 }
 
+// ─── PIN redemption (POST /api/entries/pin/validate) — Feature 11 ─────
+// Backup path when the QR can't be scanned: pass reference + 6-digit PIN.
+// Redeems the SAME authorization_decisions record as the QR, so the
+// success response reuses QrValidateResponse.
+
+export interface PinValidateRequest {
+  passRef: string;
+  pin: string;
+  scannedAt: string;
+}
+
+export type PinValidateResponse = QrValidateResponse;
+
 // ─── Sync batch (POST /api/entries/sync) — contract §3.3 ──────────────
 
 export interface SyncEntryRequest {
@@ -428,6 +441,14 @@ export interface VisitorInvitationIssuedView {
   id: string;
   qrToken: string;
   passUrl: string;
+  /**
+   * Feature 11 (Stage 4) — One-Time PIN Backup. Both are returned EXACTLY
+   * ONCE, at issue, as an alternate way to redeem the same pass. passRef is
+   * a non-secret 8-char reference; pin is the secret 6-digit code (the
+   * server stores only its HMAC).
+   */
+  passRef: string;
+  pin: string;
   expiresAt: string;
   issuedAt: string;
   visitorName: string;

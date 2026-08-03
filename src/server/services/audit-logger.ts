@@ -87,7 +87,15 @@ export type AuditEventType =
   // guard attaches a note to an entry/exit record. Payload carries the note id,
   // target (entryId/exitId), and the standardised tag — NEVER the free text,
   // which may contain PII.
-  | "guard_note_added";
+  | "guard_note_added"
+  // Source: src/docs/specs/one-time-pin-backup.md §6 — Feature 11 (Stage 4).
+  // pin_redeemed: a PIN successfully redeemed the shared authorization record.
+  // pin_failed: a wrong / not-found / locked PIN attempt (payload carries the
+  //   reason + attemptsRemaining — NEVER the PIN or its hash).
+  // pin_locked: the per-pass limiter locked the pass after too many failures.
+  | "pin_redeemed"
+  | "pin_failed"
+  | "pin_locked";
 
 export interface AuditEvent {
   /** Unique immutable event ID */

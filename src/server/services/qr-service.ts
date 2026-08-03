@@ -14,7 +14,7 @@
  * 7. Return visitor data
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 import { guards, authorizationDecisions } from "@/db/schema";
 import { ServiceError } from "./entry-service";
@@ -104,6 +104,22 @@ export async function validateQrToken(
     );
   }
 
+  // Step 4b: Check per-pass lock (Feature 11 / Stage 4).
+  // The PIN limiter locks the whole pass; "lock the pass" disables QR too.
+  if (record.pinLockedUntil && new Date(record.pinLockedUntil) > new Date()) {
+    await emitAuditEvent("qr_scan_rejected", input.guardId, traceId, {
+      reason: "QR_LOCKED",
+      qrTokenHash,
+      lockedUntil: new Date(record.pinLockedUntil).toISOString(),
+    });
+    throw new ServiceError(
+      QrErrorCodes.QR_LOCKED,
+      "This pass is locked after too many incorrect PIN attempts",
+      423,
+      "qrToken"
+    );
+  }
+
   // Step 5: Check expiry
   // Source: contract §3.1 — "410 QR_EXPIRED: Token past expiresAt window"
   const expiresAt = new Date(record.expiresAt);
@@ -121,17 +137,41 @@ export async function validateQrToken(
     );
   }
 
-  // Step 6: Mark as used — decision recorded
-  // Hard rule: "every decision must produce a stored AuthorizationDecision"
+  // Step 6: Mark as used — decision recorded.
+  // Hard rule: "every decision must produce a stored AuthorizationDecision".
+  // The update is guarded on `is_used = false` and RETURNs affected rows so a
+  // PIN redemption (Feature 11) racing on the SAME record can't double-consume
+  // it: exactly one writer wins; the loser sees zero rows and is rejected as a
+  // replay.
   const now = new Date();
-  await (db as any)
+  const consumed = (await (db as any)
     .update(authorizationDecisions)
     .set({
       isUsed: true,
       usedAt: now,
       usedByGuardId: input.guardId,
     })
-    .where(eq(authorizationDecisions.id, record.id));
+    .where(
+      and(
+        eq(authorizationDecisions.id, record.id),
+        eq(authorizationDecisions.isUsed, false)
+      )
+    )
+    .returning({ id: authorizationDecisions.id })) as { id: string }[];
+
+  if (!consumed || consumed.length === 0) {
+    await emitAuditEvent("qr_scan_rejected", input.guardId, traceId, {
+      reason: "QR_REPLAYED",
+      qrTokenHash,
+      preApprovalId: record.id,
+    });
+    throw new ServiceError(
+      QrErrorCodes.QR_REPLAYED,
+      "This QR code has already been used",
+      409,
+      "qrToken"
+    );
+  }
 
   // Step 7: Emit success audit event
   // Source: contract §5 — "qr_scan_succeeded" event

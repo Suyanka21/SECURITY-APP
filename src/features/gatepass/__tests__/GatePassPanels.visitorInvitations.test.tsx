@@ -31,6 +31,7 @@ function actionsStub(): GatePassActions {
   return {
     submitEntry: vi.fn(async () => undefined),
     scanQr: vi.fn(async () => undefined),
+    redeemPin: vi.fn(async () => undefined),
     syncPending: vi.fn(async () => undefined),
     searchVisitors: vi.fn(async () => undefined),
     requestApproval: vi.fn(async () => undefined),
@@ -57,6 +58,8 @@ const ISSUED: VisitorInvitationIssuedView = {
   qrToken: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg",
   passUrl:
     "https://example.com/pass/ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg",
+  passRef: "AB12CD34",
+  pin: "042195",
   expiresAt: "2024-02-02T00:00:00.000Z",
   issuedAt: "2024-02-01T00:00:00.000Z",
   visitorName: "Maya Chen",
@@ -157,6 +160,24 @@ describe("VisitorInvitationsAdminPanel (Feature 6)", () => {
     );
     // Form must be gone — the QR is shown ONCE.
     expect(screen.queryByTestId("visitor-invitation-form")).toBeNull();
+  });
+
+  it("shows the pass reference + one-time PIN on the success card (Feature 11)", () => {
+    renderPanel({ status: "issued", lastIssued: ISSUED });
+
+    expect(screen.getByTestId("visitor-invitation-pass-ref")).toHaveTextContent(
+      ISSUED.passRef,
+    );
+    expect(screen.getByTestId("visitor-invitation-pin")).toHaveTextContent(
+      ISSUED.pin,
+    );
+  });
+
+  it("never exposes the PIN when there is no issued pass (idle form state)", () => {
+    renderPanel({ status: "idle" });
+
+    expect(screen.queryByTestId("visitor-invitation-pin")).toBeNull();
+    expect(screen.queryByTestId("visitor-invitation-pass-ref")).toBeNull();
   });
 
   it("default-denies a 403 AUTH_FORBIDDEN: error banner + form stays, no success card", () => {
