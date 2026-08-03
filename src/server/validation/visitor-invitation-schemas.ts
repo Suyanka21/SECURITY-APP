@@ -120,6 +120,11 @@ export interface IssueInvitationResponse {
     id: string;
     qrToken: string; // raw — sent ONCE, never logged
     passUrl: string;
+    // Feature 11 (Stage 4) — One-Time PIN Backup. Both leave the server
+    // exactly ONCE, at issue, alongside the raw QR token. passRef is a
+    // non-secret identifier; pin is the secret and is never persisted raw.
+    passRef: string;
+    pin: string;
     visitorName: string;
     host: string;
     unit: string;

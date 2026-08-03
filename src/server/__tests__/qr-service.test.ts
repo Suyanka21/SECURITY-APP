@@ -20,8 +20,12 @@ import { clearAuditLog, getAuditEventsByType } from "../services/audit-logger";
 function createMockDB(overrides: {
   guardResult?: { id: string; isActive: boolean }[];
   approvalResult?: Record<string, unknown>[];
+  /** Rows RETURNed by the atomic `is_used=false` guarded consume update.
+   *  Empty array simulates losing the race to a concurrent redemption. */
+  consumeResult?: { id: string }[];
 } = {}) {
   const {
+    consumeResult = [{ id: "approval-uuid-001" }],
     guardResult = [{ id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", isActive: true }],
     approvalResult = [{
       id: "approval-uuid-001",
@@ -56,7 +60,9 @@ function createMockDB(overrides: {
       set: vi.fn().mockImplementation((data: unknown) => {
         updates.push(data);
         return {
-          where: vi.fn().mockReturnValue(Promise.resolve()),
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue(consumeResult),
+          }),
         };
       }),
     })),
@@ -204,6 +210,18 @@ describe("QrService.validateQrToken", () => {
       isUsed: true,
       usedByGuardId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     });
+  });
+
+  // Test 7b: atomic consume guard — losing the race is a replay, not a double-consume.
+  it("rejects with QR_REPLAYED when the atomic consume update affects 0 rows", async () => {
+    // The record read as unused, but the guarded `is_used=false` update
+    // returned no rows — a concurrent PIN/QR redemption consumed it first.
+    const db = createMockDB({ consumeResult: [] });
+    await expect(validateQrToken(validQrInput(), db)).rejects.toMatchObject({
+      code: "QR_REPLAYED",
+      statusCode: 409,
+    });
+    expect(getAuditEventsByType("qr_scan_succeeded").length).toBe(0);
   });
 
   // Test 8: Response includes traceId for audit

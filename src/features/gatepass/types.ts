@@ -347,8 +347,24 @@ export type GatePassState = {
   guardId: string;
   network: NetworkState;
   cameraState: "idle" | "ready" | "failed";
-  qrState: "idle" | "scanning" | "valid" | "invalid" | "replayed" | "expired";
+  qrState:
+    | "idle"
+    | "scanning"
+    | "valid"
+    | "invalid"
+    | "replayed"
+    | "expired"
+    // Feature 11 (Stage 4) — the pass is locked after too many wrong PINs.
+    // Shared with the QR path since a lock disables both redemption methods.
+    | "locked";
   qrToken: string;
+  /**
+   * Feature 11 (Stage 4) — One-Time PIN Backup redemption inputs. A guard
+   * redeems a pass by its non-secret pass reference plus the 6-digit PIN
+   * when the QR cannot be scanned. Cleared alongside qrToken on reset.
+   */
+  pinPassRef: string;
+  pinValue: string;
   draft: EntryDraft;
   /**
    * Feature 10 (Vehicle Verification) — the pre-registered ("expected")
@@ -432,6 +448,8 @@ export type GatePassAction =
   | { type: "CAMERA_FAILED" }
   | { type: "UPDATE_DRAFT"; field: keyof EntryDraft; value: string }
   | { type: "UPDATE_QR_TOKEN"; value: string }
+  | { type: "UPDATE_PIN_PASS_REF"; value: string }
+  | { type: "UPDATE_PIN_VALUE"; value: string }
   | { type: "UPDATE_SEARCH_QUERY"; value: string }
   | { type: "SELECT_VISITOR"; visitor: Visitor }
   | { type: "ENTRY_STARTED" }
@@ -451,7 +469,7 @@ export type GatePassAction =
     }
   | {
       type: "QR_SCAN_FAILED";
-      qrState: "invalid" | "replayed" | "expired";
+      qrState: "invalid" | "replayed" | "expired" | "locked";
       error: GatePassError;
     }
   | { type: "SYNC_STARTED" }

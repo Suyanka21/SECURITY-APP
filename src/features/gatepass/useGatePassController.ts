@@ -46,6 +46,7 @@ import type {
   NotificationsListResponse,
   NotificationRetryResponse,
   QrValidateResponse,
+  PinValidateResponse,
   RecognizedVisitorsResponse,
   RecordExitResponse,
   ServerEntry,
@@ -499,6 +500,95 @@ export function useGatePassController(
           qrState = "replayed";
           break;
         case "QR_EXPIRED":
+          qrState = "expired";
+          break;
+        default:
+          qrState = "invalid";
+      }
+
+      dispatch({
+        type: "QR_SCAN_FAILED",
+        qrState,
+        error: errorFromApi(result),
+      });
+    },
+    [api]
+  );
+
+  // Feature 11 (Stage 4) — redeem a pass by pass reference + 6-digit PIN.
+  // Reuses the QR confirmation flow: a success lands on the same
+  // QR_SCAN_SUCCEEDED confirmation screen (incl. vehicle verification),
+  // and failures map onto the shared qrState banner discriminants.
+  const redeemPin = useCallback(
+    async (passRef: string, pin: string) => {
+      const current = stateRef.current;
+      if (current.inFlight) return;
+
+      const trimmedRef = passRef.trim().toUpperCase();
+      const trimmedPin = pin.trim();
+
+      if (trimmedRef.length === 0 || trimmedPin.length === 0) {
+        dispatch({
+          type: "QR_SCAN_FAILED",
+          qrState: "invalid",
+          error: {
+            code: "PIN_MALFORMED",
+            message: "Enter both the pass reference and the 6-digit PIN.",
+            field: trimmedRef.length === 0 ? "passRef" : "pin",
+          },
+        });
+        return;
+      }
+
+      if (current.network === "offline") {
+        dispatch({
+          type: "QR_SCAN_FAILED",
+          qrState: "invalid",
+          error: {
+            code: "NETWORK_ERROR",
+            message:
+              "PIN redemption requires a live backend connection. Use walk-in or override.",
+          },
+        });
+        return;
+      }
+
+      dispatch({ type: "QR_SCAN_STARTED" });
+
+      const result: ApiResult<PinValidateResponse> = await api.validatePin({
+        passRef: trimmedRef,
+        pin: trimmedPin,
+        scannedAt: clockRef.current().toISOString(),
+      });
+
+      if (result.ok) {
+        const v = result.data.visitor;
+        dispatch({
+          type: "QR_SCAN_SUCCEEDED",
+          draft: {
+            visitorName: v.name,
+            host: v.host,
+            unit: v.unit,
+            plate: v.plate ?? "",
+            reason: "PIN pre-approval",
+            method: "qr",
+            preApprovalId: v.preApprovalId,
+          },
+          expectedPlate: v.plate ?? null,
+        });
+        return;
+      }
+
+      const code = result.error.code;
+      let qrState: "invalid" | "replayed" | "expired" | "locked";
+      switch (code) {
+        case "PIN_LOCKED":
+          qrState = "locked";
+          break;
+        case "PIN_REPLAYED":
+          qrState = "replayed";
+          break;
+        case "PIN_EXPIRED":
           qrState = "expired";
           break;
         default:
@@ -1435,6 +1525,7 @@ export function useGatePassController(
       dispatch,
       submitEntry,
       scanQr,
+      redeemPin,
       syncPending,
       searchVisitors,
       setNetwork,
@@ -1461,6 +1552,7 @@ export function useGatePassController(
       state,
       submitEntry,
       scanQr,
+      redeemPin,
       syncPending,
       searchVisitors,
       setNetwork,

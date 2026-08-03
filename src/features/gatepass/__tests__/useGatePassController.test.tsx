@@ -51,6 +51,7 @@ function fail(
 interface MockApi extends GatePassApi {
   submitEntry: ReturnType<typeof vi.fn>;
   validateQr: ReturnType<typeof vi.fn>;
+  validatePin: ReturnType<typeof vi.fn>;
   syncEntries: ReturnType<typeof vi.fn>;
   searchVisitors: ReturnType<typeof vi.fn>;
 }
@@ -59,6 +60,7 @@ function makeApi(): MockApi {
   return {
     submitEntry: vi.fn(),
     validateQr: vi.fn(),
+    validatePin: vi.fn(),
     syncEntries: vi.fn(),
     searchVisitors: vi.fn(),
   } as unknown as MockApi;
@@ -365,6 +367,116 @@ describe("useGatePassController.scanQr", () => {
 
     expect(api.validateQr).not.toHaveBeenCalled();
     expect(hook.result.current.state.qrState).toBe("invalid");
+    expect(hook.result.current.state.lastError?.code).toBe("NETWORK_ERROR");
+  });
+});
+
+describe("useGatePassController.redeemPin (Feature 11)", () => {
+  let api: MockApi;
+
+  beforeEach(() => {
+    api = makeApi();
+  });
+
+  const validResponse: QrValidateResponse = {
+    outcome: "valid",
+    visitor: {
+      name: "PIN Guest",
+      host: "Resident verified",
+      unit: "9C",
+      plate: "GR 5678-B",
+      preApprovalId: "preapproval-pin",
+    },
+    expiresAt: "2099-01-01T00:00:00Z",
+    traceId: "trace-pin",
+  };
+
+  it("redeems a pass by reference + PIN and lands on the QR confirmation state", async () => {
+    api.validatePin.mockResolvedValue(ok(validResponse));
+    const hook = buildController(api);
+
+    await act(async () => {
+      await hook.result.current.redeemPin("ab12cd34", "042195");
+    });
+
+    // Pass reference is upper-cased and sent with the PIN + scan timestamp.
+    expect(api.validatePin).toHaveBeenCalledWith({
+      passRef: "AB12CD34",
+      pin: "042195",
+      scannedAt: expect.any(String),
+    });
+    expect(hook.result.current.state.qrState).toBe("valid");
+    expect(hook.result.current.state.draft.preApprovalId).toBe("preapproval-pin");
+    // Feature 10 — the expected plate rides along for vehicle verification.
+    expect(hook.result.current.state.expectedPlate).toBe("GR 5678-B");
+    // The PIN must not linger in the field after a successful redemption.
+    expect(hook.result.current.state.pinValue).toBe("");
+  });
+
+  it("maps PIN_LOCKED (423) to qrState=locked so the UI can show the lockout", async () => {
+    api.validatePin.mockResolvedValue(
+      fail(423, "PIN_LOCKED", "This pass is locked after too many incorrect PIN attempts")
+    );
+    const hook = buildController(api);
+
+    await act(async () => {
+      await hook.result.current.redeemPin("AB12CD34", "000000");
+    });
+
+    expect(hook.result.current.state.qrState).toBe("locked");
+    expect(hook.result.current.state.mode).toBe("error");
+    expect(hook.result.current.state.banner.message).toContain("locked");
+  });
+
+  it("maps PIN_REPLAYED (409) to qrState=replayed", async () => {
+    api.validatePin.mockResolvedValue(
+      fail(409, "PIN_REPLAYED", "This pass has already been used")
+    );
+    const hook = buildController(api);
+
+    await act(async () => {
+      await hook.result.current.redeemPin("AB12CD34", "042195");
+    });
+
+    expect(hook.result.current.state.qrState).toBe("replayed");
+  });
+
+  it("maps PIN_INVALID to qrState=invalid and surfaces the backend message", async () => {
+    api.validatePin.mockResolvedValue(
+      fail(401, "PIN_INVALID", "Incorrect PIN")
+    );
+    const hook = buildController(api);
+
+    await act(async () => {
+      await hook.result.current.redeemPin("AB12CD34", "111111");
+    });
+
+    expect(hook.result.current.state.qrState).toBe("invalid");
+    expect(hook.result.current.state.banner.message).toContain("Incorrect PIN");
+  });
+
+  it("rejects a blank pass reference or PIN locally without an API call", async () => {
+    const hook = buildController(api);
+
+    await act(async () => {
+      await hook.result.current.redeemPin("   ", "042195");
+    });
+
+    expect(api.validatePin).not.toHaveBeenCalled();
+    expect(hook.result.current.state.lastError?.code).toBe("PIN_MALFORMED");
+  });
+
+  it("refuses to redeem a PIN while offline", async () => {
+    const hook = buildController(api);
+    await act(async () => {
+      hook.result.current.setNetwork("offline");
+    });
+
+    await act(async () => {
+      await hook.result.current.redeemPin("AB12CD34", "042195");
+    });
+
+    expect(api.validatePin).not.toHaveBeenCalled();
     expect(hook.result.current.state.lastError?.code).toBe("NETWORK_ERROR");
   });
 });
@@ -2253,6 +2365,8 @@ const ISSUED_INVITATION: VisitorInvitationIssuedView = {
   id: "00000000-0000-4000-8000-0000000000ff",
   qrToken: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg",
   passUrl: "https://example.com/pass/ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg",
+  passRef: "AB12CD34",
+  pin: "042195",
   expiresAt: "2024-02-02T00:00:00.000Z",
   issuedAt: "2024-02-01T00:00:00.000Z",
   visitorName: "Maya Chen",

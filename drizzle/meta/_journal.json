@@ -78,6 +78,13 @@
       "when": 1786100000000,
       "tag": "0011_guard_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786200000000,
+      "tag": "0012_one_time_pin",
+      "breakpoints": true
     }
   ]
 }

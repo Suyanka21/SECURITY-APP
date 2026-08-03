@@ -22,6 +22,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { entriesRouter } from "./routes/entries";
 import { qrRouter } from "./routes/qr";
+import { pinRouter } from "./routes/pin";
 import { syncRouter } from "./routes/sync";
 import { visitorsRouter } from "./routes/visitors";
 import { auditRouter } from "./routes/audit";
@@ -172,6 +173,12 @@ export function createApp(db: unknown) {
   // ─── Protected Routes ──────────────────────────────────────────────
   // Auth + stricter rate limits on mutation endpoints
   app.use("/api/entries/qr/validate", requireAuth, strictLimiter, qrRouter);
+  // Feature 11 (Stage 4) — One-Time PIN Backup. Same middleware stack as QR
+  // validate; strictLimiter caps guessing at the transport layer while the
+  // per-pass limiter in the service enforces the "lock the pass" contract.
+  // Registered before "/api/entries" so it is not shadowed by the :entryId
+  // param routes.
+  app.use("/api/entries/pin/validate", requireAuth, strictLimiter, pinRouter);
   app.use("/api/entries/sync", requireAuth, strictLimiter, syncRouter);
   app.use("/api/entries", requireAuth, strictLimiter, entriesRouter);
   app.use("/api/visitors", requireAuth, visitorsRouter);

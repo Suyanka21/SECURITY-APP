@@ -217,6 +217,27 @@ export const authorizationDecisions = pgTable(
     /** Which guard consumed this QR — null if unused */
     usedByGuardId: uuid("used_by_guard_id").references(() => guards.id),
 
+    // ─── Feature 11 (Stage 4) — One-Time PIN Backup ──────────────────────
+    // Source: src/docs/specs/one-time-pin-backup.md §4.
+    // A PIN is an alternate way to redeem THIS same record; either method
+    // flips is_used above. All fields nullable/defaulted for back-compat
+    // with rows issued before this feature.
+
+    /** Short, non-secret pass reference the guard types alongside the PIN */
+    passRef: text("pass_ref").unique(),
+
+    /** HMAC-SHA256(PIN_PEPPER, "<id>:<pin>") — NEVER the raw PIN */
+    pinHash: text("pin_hash"),
+
+    /** Consecutive wrong-PIN attempts for THIS pass (per-pass lockout) */
+    pinFailedAttempts: integer("pin_failed_attempts").notNull().default(0),
+
+    /** Non-null + in the future ⇒ this pass is locked (PIN and QR) */
+    pinLockedUntil: timestamp("pin_locked_until", {
+      precision: 3,
+      withTimezone: true,
+    }),
+
     /** Server-generated creation timestamp */
     createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
       .notNull()
@@ -1370,6 +1391,14 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   // Written when a guard attaches a note (tag) to an entry/exit record.
   // Migration: drizzle/0011_guard_notes.sql.
   "guard_note_added",
+  // Source: src/docs/specs/one-time-pin-backup.md §6 — Feature 11 (Stage 4).
+  // pin_redeemed: a PIN redeemed the shared authorization_decisions record.
+  // pin_failed: a wrong / not-found / locked PIN attempt (reason + counter,
+  //   NEVER the PIN or its hash). pin_locked: the per-pass limiter tripped.
+  // Migration: drizzle/0012_one_time_pin.sql.
+  "pin_redeemed",
+  "pin_failed",
+  "pin_locked",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

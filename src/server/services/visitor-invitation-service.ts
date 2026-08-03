@@ -41,6 +41,7 @@ import { authorizationDecisions } from "@/db/schema";
 import { emitAuditEvent } from "./audit-logger";
 import { ServiceError } from "./errors";
 import { hashQrToken } from "./qr-service";
+import { generatePin, generatePassRef, hashPin } from "./pin-service";
 import {
   DEFAULT_TTL_HOURS,
   MAX_TTL_HOURS,
@@ -158,34 +159,61 @@ export async function issueVisitorInvitation(
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + ttlHours * 60 * 60 * 1000);
 
-  // Step 4: insert row.
-  let inserted: AuthorizationRow;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows = (await (db as any)
-      .insert(authorizationDecisions)
-      .values({
-        visitorName: input.visitorName,
-        host: input.host,
-        unit: input.unit,
-        plate: input.plate ?? null,
-        qrTokenHash,
-        expiresAt,
-        isUsed: false,
-      })
-      .returning()) as AuthorizationRow[];
+  // Step 3b: mint the One-Time PIN backup (Feature 11 / Stage 4).
+  // The id is generated up front so the PIN hash can be salted with it in
+  // the SAME insert (no post-insert update). The raw PIN leaves the server
+  // only in the response; the DB stores just the HMAC. passRef is a
+  // non-secret lookup key. PIN expiry == QR expiry (shared expiresAt).
+  const decisionId = randomUUID();
+  const rawPin = generatePin();
+  const pinHash = hashPin(decisionId, rawPin);
 
-    if (!rows || rows.length === 0) {
-      throw new Error("INSERT returned no rows");
+  // Step 4: insert row. passRef is UNIQUE; on the (astronomically rare)
+  // collision, regenerate the reference and retry a bounded number of times.
+  let inserted: AuthorizationRow;
+  let passRef = generatePassRef();
+  const MAX_PASS_REF_RETRIES = 3;
+  let attempt = 0;
+  for (;;) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows = (await (db as any)
+        .insert(authorizationDecisions)
+        .values({
+          id: decisionId,
+          visitorName: input.visitorName,
+          host: input.host,
+          unit: input.unit,
+          plate: input.plate ?? null,
+          qrTokenHash,
+          expiresAt,
+          isUsed: false,
+          passRef,
+          pinHash,
+          pinFailedAttempts: 0,
+        })
+        .returning()) as AuthorizationRow[];
+
+      if (!rows || rows.length === 0) {
+        throw new Error("INSERT returned no rows");
+      }
+      inserted = rows[0];
+      break;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isPassRefCollision = /pass_ref/i.test(message);
+      if (isPassRefCollision && attempt < MAX_PASS_REF_RETRIES) {
+        attempt += 1;
+        passRef = generatePassRef();
+        continue;
+      }
+      // Failure → no audit row, no response. Caller surfaces 500.
+      throw new ServiceError(
+        VisitorInvitationErrorCodes.INTERNAL_ERROR,
+        isPassRefCollision ? "Failed to allocate a unique pass reference" : message,
+        500,
+      );
     }
-    inserted = rows[0];
-  } catch (err) {
-    // Step 4 failure → no audit row, no response. Caller surfaces 500.
-    throw new ServiceError(
-      VisitorInvitationErrorCodes.INTERNAL_ERROR,
-      err instanceof Error ? err.message : "Failed to persist invitation",
-      500,
-    );
   }
 
   // Step 5: emit audit (synchronous; raw token NEVER in payload).
@@ -205,6 +233,8 @@ export async function issueVisitorInvitation(
       id: inserted.id,
       qrToken: rawToken,
       passUrl: buildPassUrl(rawToken),
+      passRef,
+      pin: rawPin,
       visitorName: inserted.visitorName,
       host: inserted.host,
       unit: inserted.unit,

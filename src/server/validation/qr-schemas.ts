@@ -15,6 +15,9 @@ export const QrErrorCodes = {
   QR_NOT_FOUND: "QR_NOT_FOUND",
   QR_REPLAYED: "QR_REPLAYED",
   QR_EXPIRED: "QR_EXPIRED",
+  // Feature 11 (Stage 4): the shared pass was locked by the PIN limiter.
+  // "Lock the pass" disables BOTH redemption methods, so QR honours it too.
+  QR_LOCKED: "QR_LOCKED",
   VALIDATION_ERROR: "VALIDATION_ERROR",
   GUARD_ID_MISSING: "GUARD_ID_MISSING",
   GUARD_SESSION_EXPIRED: "GUARD_SESSION_EXPIRED",

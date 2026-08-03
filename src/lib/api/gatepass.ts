@@ -15,6 +15,8 @@ import type {
   CreateEntryResponse,
   QrValidateRequest,
   QrValidateResponse,
+  PinValidateRequest,
+  PinValidateResponse,
   RecognizedVisitorsRequest,
   RecognizedVisitorsResponse,
   SyncBatchRequest,
@@ -37,6 +39,18 @@ export const gatePassApi = {
   ): Promise<ApiResult<QrValidateResponse>> {
     return apiClient.post<QrValidateResponse>(
       "/api/entries/qr/validate",
+      input,
+      { signal }
+    );
+  },
+
+  /** Feature 11 — POST /api/entries/pin/validate (pass reference + PIN). */
+  validatePin(
+    input: PinValidateRequest,
+    signal?: AbortSignal
+  ): Promise<ApiResult<PinValidateResponse>> {
+    return apiClient.post<PinValidateResponse>(
+      "/api/entries/pin/validate",
       input,
       { signal }
     );

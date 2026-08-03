@@ -83,6 +83,8 @@ export const initialGatePassState: GatePassState = {
   cameraState: "idle",
   qrState: "idle",
   qrToken: "",
+  pinPassRef: "",
+  pinValue: "",
   draft: emptyDraft,
   expectedPlate: null,
   inFlight: false,
@@ -420,6 +422,8 @@ export function gatePassReducer(
         cameraState: "ready",
         qrState: "idle",
         qrToken: "",
+        pinPassRef: "",
+        pinValue: "",
         lastError: undefined,
         banner: {
           tone: "info",
@@ -447,6 +451,15 @@ export function gatePassReducer(
 
     case "UPDATE_QR_TOKEN":
       return { ...state, qrToken: action.value };
+
+    case "UPDATE_PIN_PASS_REF":
+      // Normalise to the pass-reference alphabet as the guard types
+      // (uppercase; the server validates the exact format).
+      return { ...state, pinPassRef: action.value.toUpperCase() };
+
+    case "UPDATE_PIN_VALUE":
+      // Keep digits only so the 6-digit PIN field can't hold stray chars.
+      return { ...state, pinValue: action.value.replace(/[^0-9]/g, "").slice(0, 6) };
 
     case "UPDATE_SEARCH_QUERY":
       return { ...state, searchQuery: action.value };
@@ -541,6 +554,9 @@ export function gatePassReducer(
         inFlight: false,
         qrState: "valid",
         draft: action.draft,
+        // Feature 11 — a successful redemption clears the PIN inputs so the
+        // secret does not linger in the field after use.
+        pinValue: "",
         // Feature 10 — retain the pre-registered plate for guard comparison.
         expectedPlate: action.expectedPlate,
         lastError: undefined,
@@ -888,6 +904,8 @@ export function gatePassReducer(
         cameraState: "idle",
         qrState: "idle",
         qrToken: "",
+        pinPassRef: "",
+        pinValue: "",
         inFlight: false,
         lastError: undefined,
         pendingApproval: undefined,
