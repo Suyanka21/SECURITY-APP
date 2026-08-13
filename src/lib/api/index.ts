@@ -10,5 +10,7 @@ export type { VisitorProfilesApi } from "./visitor-profiles";
 export { visitorInvitationsApi } from "./visitor-invitations";
 export type { VisitorInvitationsApi } from "./visitor-invitations";
 export { guardNotesApi } from "./guard-notes";
+export { watchlistApi } from "./watchlist";
+export type { WatchlistApi } from "./watchlist";
 export { getAuthToken, setAuthToken, setAuthTokenGetter } from "./auth";
 export type * from "./types";

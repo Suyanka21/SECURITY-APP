@@ -26,6 +26,7 @@ import type { QrValidateResponse } from "../validation/qr-schemas";
 import { PinErrorCodes } from "../validation/pin-schemas";
 import type { PinValidateInput } from "../validation/pin-schemas";
 import { emitAuditEvent } from "./audit-logger";
+import { checkWatchlistForEntry } from "./watchlist-service";
 
 // ─── Limiter policy (HARD constants — not env-driven) ────────────────────────
 // Source: spec §6 — "3–5 wrong guesses in a short window". We use 5 attempts
@@ -350,7 +351,17 @@ export async function validatePinRedemption(
     unit: record.unit,
   });
 
-  // Step 9: same response shape as the QR path so the client reuses the
+  // Step 9: Watchlist check (Feature 12 / Stage 5) — identical semantics to
+  // the QR path: the pass stays redeemed and a hit only WARNS the guard and
+  // demands supervisor escalation. Source: src/docs/specs/watchlist.md §3.
+  const watchlistMatch = await checkWatchlistForEntry(
+    { visitorName: record.visitorName, plate: record.plate },
+    input.guardId,
+    traceId,
+    db,
+  );
+
+  // Step 10: same response shape as the QR path so the client reuses the
   // scan-confirmation screen (incl. Feature 10 vehicle verification).
   const response: QrValidateResponse = {
     outcome: "valid",
@@ -362,6 +373,7 @@ export async function validatePinRedemption(
       preApprovalId: record.id,
     },
     expiresAt: expiresAt.toISOString(),
+    ...(watchlistMatch ? { watchlistMatch } : {}),
     traceId,
   };
 

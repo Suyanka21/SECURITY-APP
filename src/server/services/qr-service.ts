@@ -22,6 +22,7 @@ import { QrErrorCodes } from "../validation/qr-schemas";
 import type { QrValidateInput, QrValidateResponse } from "../validation/qr-schemas";
 import type { DrizzleDB } from "./entry-service";
 import { emitAuditEvent } from "./audit-logger";
+import { checkWatchlistForEntry } from "./watchlist-service";
 
 /**
  * Validates a QR token and returns the pre-approval data.
@@ -182,7 +183,18 @@ export async function validateQrToken(
     unit: record.unit,
   });
 
-  // Step 8: Return structured response
+  // Step 8: Watchlist check (Feature 12 / Stage 5).
+  // Source: src/docs/specs/watchlist.md §3. The pass has already been redeemed
+  // above and stays redeemed — a hit is a WARNING the guard must escalate to a
+  // supervisor, never a rejection of a valid pass.
+  const watchlistMatch = await checkWatchlistForEntry(
+    { visitorName: record.visitorName, plate: record.plate },
+    input.guardId,
+    traceId,
+    db,
+  );
+
+  // Step 9: Return structured response
   // Source: contract §3.1 — QrValidateResponse
   const response: QrValidateResponse = {
     outcome: "valid",
@@ -194,6 +206,7 @@ export async function validateQrToken(
       preApprovalId: record.id,
     },
     expiresAt: expiresAt.toISOString(),
+    ...(watchlistMatch ? { watchlistMatch } : {}),
     traceId,
   };
 

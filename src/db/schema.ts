@@ -473,6 +473,110 @@ export const guardNotes = pgTable(
   ]
 );
 
+// ─── Table 3d: Watchlist Entries ────────────────────────────────────────────
+// Source: src/docs/specs/watchlist.md §§2, 7 (Feature 12 / Stage 5).
+//
+// HARD RULES (DB-enforced):
+// - `reason` is MANDATORY text, never a boolean flag — a guard must be told
+//   WHY someone is flagged, otherwise the warning is unactionable.
+// - Nothing here can auto-deny entry. This table only ever produces a WARNING
+//   plus a supervisor-escalation requirement (spec §1, §3).
+// - Review model (spec §7, Option 2 — accepted): an entry never expires on its
+//   own. `review_due_at` makes it OVERDUE, which is a presentation state for
+//   admins; the entry keeps warning guards until a human removes it. Overdue
+//   is derived at read time (review_due_at < now) — no background sweep to
+//   silently fail, no stored status to drift out of sync with the clock.
+// - Removal is soft and attributed (status + who + why) so the audit trail
+//   never loses the fact that a subject WAS watchlisted.
+// - No CASCADE deletes.
+
+export const watchlistEntries = pgTable(
+  "watchlist_entries",
+  {
+    /** Server-generated entry ID */
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** Normalised name used for matching (trim → collapse spaces → upper) */
+    subjectName: text("subject_name").notNull(),
+
+    /** Original casing, for display back to admins/guards */
+    subjectNameDisplay: text("subject_name_display").notNull(),
+
+    /** Optional normalised plate — narrows a match when present */
+    subjectPlate: text("subject_plate"),
+
+    /** WHY this subject is flagged — MANDATORY, shown to the guard */
+    reason: text("reason").notNull(),
+
+    /** 'active' (matches + warns) | 'removed' (soft-deleted, never matches) */
+    status: text("status").notNull().default("active"),
+
+    /** Admin/senior-guard who created it — from the verified JWT, never body */
+    addedByGuardId: uuid("added_by_guard_id")
+      .notNull()
+      .references(() => guards.id),
+
+    /** Last time a human confirmed this entry is still warranted */
+    lastReviewedAt: timestamp("last_reviewed_at", {
+      precision: 3,
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    /** lastReviewedAt + WATCHLIST_REVIEW_INTERVAL_DAYS — overdue past this */
+    reviewDueAt: timestamp("review_due_at", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+
+    /** Who removed it (required once status='removed') */
+    removedByGuardId: uuid("removed_by_guard_id").references(() => guards.id),
+
+    /** Why it was removed (required once status='removed') */
+    removedReason: text("removed_reason"),
+
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // Reason must be real text, not whitespace, and bounded.
+    check(
+      "watchlist_reason_not_blank",
+      sql`length(trim(${table.reason})) BETWEEN 1 AND 500`
+    ),
+    // Closed status set — no 'expired' (see the review model above).
+    check(
+      "watchlist_status_valid",
+      sql`${table.status} IN ('active', 'removed')`
+    ),
+    // Removal coherence: removed rows carry WHO and WHY; active rows carry
+    // neither. Prevents a half-removed row that still matches.
+    check(
+      "watchlist_removal_coherence",
+      sql`(${table.status} = 'removed' AND ${table.removedByGuardId} IS NOT NULL AND ${table.removedReason} IS NOT NULL AND length(trim(${table.removedReason})) BETWEEN 1 AND 500) OR (${table.status} = 'active' AND ${table.removedByGuardId} IS NULL AND ${table.removedReason} IS NULL)`
+    ),
+    index("watchlist_entries_subject_name_idx").on(table.subjectName),
+    index("watchlist_entries_subject_plate_idx").on(table.subjectPlate),
+    index("watchlist_entries_review_idx").on(table.status, table.reviewDueAt),
+  ]
+);
+
+export const watchlistEntriesRelations = relations(
+  watchlistEntries,
+  ({ one }) => ({
+    addedBy: one(guards, {
+      fields: [watchlistEntries.addedByGuardId],
+      references: [guards.id],
+    }),
+  })
+);
+
 // ─── Table 4: Override Events ────────────────────────────────────────────────
 // Source: contract §3.2 (method=override)
 // Source: DEFINITION §2D — "Manual Override: Guard selects Allow, Chooses reason, Entry logged with metadata"
@@ -1399,6 +1503,16 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "pin_redeemed",
   "pin_failed",
   "pin_locked",
+  // Source: src/docs/specs/watchlist.md §6 — Feature 12 (Stage 5).
+  // watchlist_matched is written when a visitor at the gate matches an active
+  // watchlist entry. It records the WARNING, never a denial — the system does
+  // not auto-deny (spec §1); escalation reuses override_authorized/_rejected.
+  // There is deliberately NO watchlist_entry_expired: under the accepted
+  // review model (spec §7, Option 2) nothing ever drops off on its own.
+  "watchlist_entry_added",
+  "watchlist_matched",
+  "watchlist_entry_reviewed",
+  "watchlist_entry_removed",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

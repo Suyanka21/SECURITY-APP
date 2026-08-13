@@ -42,6 +42,7 @@ import type {
   IssueVisitorInvitationRequest,
   UpdateVisitorProfileRequest,
   VisitorProfileView,
+  WatchlistMatchView,
 } from "@/lib/api/types";
 import {
   GUARD_NOTE_TAG_LABELS,
@@ -455,6 +456,95 @@ function VehicleVerification({
   );
 }
 
+/**
+ * Feature 12 — Watchlist warning + supervisor escalation (Stage 5).
+ *
+ * HARD RULE (src/docs/specs/watchlist.md §1): the system never denies entry
+ * on a match. This surfaces the stored reason, states plainly that it does
+ * not block entry, and requires the guard to record the supervisor who
+ * authorised the arrival before the entry can be finalised.
+ *
+ * `mode="gate"`   — pre-log (QR/PIN confirmation): escalation is required
+ *                   before "Log entry" will submit.
+ * `mode="notice"` — post-log (walk-in): the entry already exists; the guard
+ *                   is told to escalate now.
+ */
+function WatchlistWarning({
+  match,
+  escalation,
+  dispatch,
+  mode,
+}: {
+  match: WatchlistMatchView;
+  escalation: { supervisor: string; acknowledged: boolean };
+  dispatch: Props["dispatch"];
+  mode: "gate" | "notice";
+}) {
+  return (
+    <div
+      role="alert"
+      data-testid="watchlist-warning"
+      className="mt-4 grid gap-3 border-2 border-destructive bg-destructive/10 px-3 py-3 text-sm"
+    >
+      <p className="flex items-start gap-2 font-bold text-destructive">
+        <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
+        <span>
+          WATCHLIST MATCH — matched on {match.matchedOn.replace("+", " + ")}
+        </span>
+      </p>
+
+      <p className="text-foreground">
+        <span className="font-semibold">Reason on file:</span> {match.reason}
+      </p>
+
+      <p className="font-medium text-foreground">
+        This does not automatically block entry. Escalate to a supervisor and
+        record their decision — the supervisor decides, not the system.
+      </p>
+
+      {mode === "notice" ? (
+        <p data-testid="watchlist-post-log-notice" className="text-foreground">
+          This entry has already been logged. Escalate to a supervisor now.
+        </p>
+      ) : (
+        <div className="grid gap-2">
+          <label className="grid gap-1 text-sm font-semibold text-foreground">
+            Supervisor who authorised this entry
+            <input
+              data-testid="watchlist-supervisor"
+              className="focus-ring border border-input bg-background px-3 py-2 text-base font-medium"
+              value={escalation.supervisor}
+              autoComplete="off"
+              onChange={(event) =>
+                dispatch({
+                  type: "WATCHLIST_ESCALATION_UPDATED",
+                  supervisor: event.target.value,
+                })
+              }
+            />
+          </label>
+          <label className="flex items-start gap-2 text-sm font-medium text-foreground">
+            <input
+              type="checkbox"
+              data-testid="watchlist-acknowledge"
+              className="focus-ring mt-1"
+              checked={escalation.acknowledged}
+              onChange={(event) =>
+                dispatch({
+                  type: "WATCHLIST_ESCALATION_UPDATED",
+                  acknowledged: event.target.checked,
+                })
+              }
+            />
+            I escalated this match to the named supervisor and they authorised
+            the entry. This is logged as a manual override.
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WalkInPanel(props: Props) {
   return (
     <EntryForm
@@ -560,6 +650,14 @@ function EntryForm({
         <VehicleVerification
           expectedPlate={state.expectedPlate}
           observedPlate={state.draft.plate}
+        />
+      )}
+      {state.watchlistMatch && (
+        <WatchlistWarning
+          match={state.watchlistMatch}
+          escalation={state.watchlistEscalation}
+          dispatch={dispatch}
+          mode="gate"
         />
       )}
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
@@ -1106,6 +1204,14 @@ export function ConfirmationPanel({ state, dispatch }: Props) {
         <p className="mt-3 text-sm text-warning-foreground">
           Queued offline. Reconcile when the network is restored.
         </p>
+      )}
+      {state.watchlistMatch && (
+        <WatchlistWarning
+          match={state.watchlistMatch}
+          escalation={state.watchlistEscalation}
+          dispatch={dispatch}
+          mode="notice"
+        />
       )}
       <button
         className="focus-ring mt-6 bg-primary px-5 py-4 font-display text-lg font-bold text-primary-foreground"

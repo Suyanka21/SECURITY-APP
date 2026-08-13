@@ -95,7 +95,16 @@ export type AuditEventType =
   // pin_locked: the per-pass limiter locked the pass after too many failures.
   | "pin_redeemed"
   | "pin_failed"
-  | "pin_locked";
+  | "pin_locked"
+  // Source: src/docs/specs/watchlist.md §6 — Feature 12 (Stage 5).
+  // watchlist_matched records that a guard was WARNED about a subject, never
+  // that entry was denied — the system does not auto-deny (spec §1). The
+  // supervisor decision itself reuses override_authorized/override_rejected.
+  // Migration: drizzle/0013_watchlist.sql.
+  | "watchlist_entry_added"
+  | "watchlist_matched"
+  | "watchlist_entry_reviewed"
+  | "watchlist_entry_removed";
 
 export interface AuditEvent {
   /** Unique immutable event ID */

@@ -375,7 +375,43 @@ export function useGatePassController(
     const current = stateRef.current;
     if (current.inFlight) return;
 
-    const validation = validateDraft(current.draft, current.guardId);
+    // Feature 12 (Stage 5) — a watchlist match never denies the visitor, but
+    // the guard cannot finalise alone: a supervisor must authorise it. The
+    // escalation is recorded through the EXISTING override mechanism, so it
+    // lands in override_events with an override_authorized audit event.
+    // Source: src/docs/specs/watchlist.md §1, §5.
+    //
+    // Only a PRE-LOG match can gate a submission. A walk-in match is returned
+    // by the server after the entry already exists (mode "confirmed"), so it
+    // is a post-hoc warning, not a gate.
+    const match = current.mode === "confirmed" ? null : current.watchlistMatch;
+    let draft = current.draft;
+    if (match) {
+      const supervisor = current.watchlistEscalation.supervisor.trim();
+      if (!current.watchlistEscalation.acknowledged || supervisor.length < 2) {
+        dispatch({
+          type: "WATCHLIST_ESCALATION_BLOCKED",
+          error: {
+            code: "WATCHLIST_ESCALATION_REQUIRED",
+            message:
+              "Watchlist match: name the supervisor who authorised this entry and confirm the escalation before logging.",
+            field: "watchlistEscalation",
+          },
+        });
+        return;
+      }
+      draft = {
+        ...draft,
+        method: "override",
+        reason:
+          `Watchlist escalation authorised by ${supervisor}. Listed reason: ${match.reason}`.slice(
+            0,
+            500,
+          ),
+      };
+    }
+
+    const validation = validateDraft(draft, current.guardId);
     if (validation) {
       dispatch({ type: "ENTRY_FAILED", error: validation });
       return;
@@ -384,7 +420,7 @@ export function useGatePassController(
     const offlineId = newIdRef.current();
     const createdAt = clockRef.current().toISOString();
     const local = localEntryFromDraft(
-      current.draft,
+      draft,
       current.guardId,
       createdAt,
       offlineId
@@ -416,6 +452,8 @@ export function useGatePassController(
       dispatch({
         type: "ENTRY_SUCCEEDED",
         entry: entryFromServer(result.data.entry, offlineId),
+        // Feature 12 — warning only; the entry above was still logged.
+        watchlistMatch: result.data.watchlistMatch ?? null,
       });
       return;
     }
@@ -487,6 +525,8 @@ export function useGatePassController(
           // Feature 10 — retain the pre-registered plate separately so the
           // confirmation screen can flag a mismatch as a soft warning.
           expectedPlate: v.plate ?? null,
+          // Feature 12 — the pass stays valid; the guard must escalate.
+          watchlistMatch: result.data.watchlistMatch ?? null,
         });
         return;
       }
@@ -575,6 +615,7 @@ export function useGatePassController(
             preApprovalId: v.preApprovalId,
           },
           expectedPlate: v.plate ?? null,
+          watchlistMatch: result.data.watchlistMatch ?? null,
         });
         return;
       }
