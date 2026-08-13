@@ -25,6 +25,7 @@ import type { CreateEntryInput, CreateEntryResponse } from "../validation/entry-
 import { EntryErrorCodes } from "../validation/entry-schemas";
 import { createOverrideEvent, toOverrideRow } from "./override-service";
 import { emitAuditEvent } from "./audit-logger";
+import { checkWatchlistForEntry } from "./watchlist-service";
 
 // ─── Error Types ─────────────────────────────────────────────────────────────
 // [S2 FIX] ServiceError extracted to errors.ts to break circular dependency.
@@ -181,6 +182,18 @@ export async function createEntry(
     status: "logged",
   });
 
+  // Step 5: Watchlist check (Feature 12 / Stage 5).
+  // Source: src/docs/specs/watchlist.md §3.
+  // Deliberately runs AFTER the entry is committed: a watchlist hit is a
+  // WARNING, never a denial, so it must not be able to abort the write. The
+  // guard UI turns this into a required supervisor escalation.
+  const watchlistMatch = await checkWatchlistForEntry(
+    { visitorName: input.visitorName, plate: input.plate },
+    input.guardId,
+    traceId,
+    db,
+  );
+
   // Step 6: Return structured response (NOT raw DB object)
   // Source: contract §3.2 — CreateEntryResponse
   const response: CreateEntryResponse = {
@@ -197,6 +210,7 @@ export async function createEntry(
       status: "logged",
       syncState: "synced",
     },
+    ...(watchlistMatch ? { watchlistMatch } : {}),
     traceId,
   };
 

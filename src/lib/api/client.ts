@@ -214,9 +214,11 @@ export const apiClient = {
   ): Promise<ApiResult<T>> {
     return runRequest<T>({ method: "PATCH", path, body, ...options });
   },
+  // A DELETE body is optional but supported: watchlist removals (Feature 12)
+  // must carry a mandatory removal reason.
   del<T>(
     path: string,
-    options: { signal?: AbortSignal } = {}
+    options: { body?: unknown; signal?: AbortSignal } = {}
   ): Promise<ApiResult<T>> {
     return runRequest<T>({ method: "DELETE", path, ...options });
   },

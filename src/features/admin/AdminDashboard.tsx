@@ -24,6 +24,7 @@ import { deliveryApi } from "@/lib/api/deliveries";
 import { autoApprovalApi } from "@/lib/api/auto-approval";
 import { useAuth } from "@/features/auth/AuthContext";
 import { AccountProvisioningPanel } from "./AccountProvisioningPanel";
+import { WatchlistPanel } from "./WatchlistPanel";
 
 type PanelState<T> =
   | { status: "loading" }
@@ -168,6 +169,8 @@ export function AdminDashboard() {
 
       <main className="mx-auto grid max-w-5xl grid-cols-1 gap-4 p-4 md:grid-cols-2">
         <AccountProvisioningPanel />
+
+        <WatchlistPanel />
 
         <Panel
           title="Currently on premise"

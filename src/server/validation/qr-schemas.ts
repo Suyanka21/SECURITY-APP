@@ -7,6 +7,8 @@
 
 import { z } from "zod";
 
+import type { WatchlistMatchView } from "./watchlist-schemas";
+
 // ─── Error Codes ─────────────────────────────────────────────────────────────
 // Source: contract §3.1 Error Responses table
 
@@ -57,6 +59,13 @@ export interface QrValidateResponse {
     preApprovalId: string;
   };
   expiresAt: string;
+  /**
+   * Feature 12 (Stage 5) — present ONLY when the visitor matched an active
+   * watchlist entry. Additive and non-authoritative: `outcome` stays "valid"
+   * and the pass was still redeemed.
+   * Source: src/docs/specs/watchlist.md §3 — warn, never auto-deny.
+   */
+  watchlistMatch?: WatchlistMatchView;
   traceId: string;
 }
 

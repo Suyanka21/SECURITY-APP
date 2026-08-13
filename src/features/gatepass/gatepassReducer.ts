@@ -76,6 +76,13 @@ export const recognizedVisitors: Visitor[] = [
 
 export const DEFAULT_GUARD_ID = "guard-west-04";
 
+/**
+ * Feature 12 (Stage 5) — a fresh, unacknowledged escalation record. Reset
+ * alongside `watchlistMatch` so an acknowledgement can never carry over from
+ * one visitor to the next.
+ */
+const NO_ESCALATION = { supervisor: "", acknowledged: false } as const;
+
 export const initialGatePassState: GatePassState = {
   mode: "home",
   guardId: DEFAULT_GUARD_ID,
@@ -87,6 +94,8 @@ export const initialGatePassState: GatePassState = {
   pinValue: "",
   draft: emptyDraft,
   expectedPlate: null,
+  watchlistMatch: null,
+  watchlistEscalation: NO_ESCALATION,
   inFlight: false,
   banner: {
     tone: "info",
@@ -488,11 +497,14 @@ export function gatePassReducer(
         ...state,
         inFlight: true,
         lastError: undefined,
+        // A new submission must not display the previous visitor's warning.
+        watchlistMatch: null,
         banner: { tone: "info", message: "Submitting entry…" },
       };
 
     case "ENTRY_SUCCEEDED": {
       const entry = action.entry;
+      const match = action.watchlistMatch ?? null;
       return {
         ...state,
         mode: "confirmed",
@@ -501,12 +513,43 @@ export function gatePassReducer(
         lastError: undefined,
         entries: [entry, ...state.entries],
         audit: [auditLine(entry), ...state.audit],
-        banner: {
-          tone: "success",
-          message: "Entry logged with guard attribution.",
-        },
+        // Feature 12 — the entry WAS logged; the match is a warning that the
+        // guard must now escalate to a supervisor.
+        watchlistMatch: match,
+        watchlistEscalation: NO_ESCALATION,
+        banner: match
+          ? {
+              tone: "danger" as const,
+              message:
+                "Watchlist match — entry logged. Escalate to a supervisor now.",
+            }
+          : {
+              tone: "success" as const,
+              message: "Entry logged with guard attribution.",
+            },
       };
     }
+
+    case "WATCHLIST_ESCALATION_BLOCKED":
+      // Deliberately does NOT set mode: "error" — the guard must stay on the
+      // confirmation screen where the escalation form lives.
+      return {
+        ...state,
+        inFlight: false,
+        lastError: action.error,
+        banner: { tone: "danger", message: action.error.message },
+      };
+
+    case "WATCHLIST_ESCALATION_UPDATED":
+      return {
+        ...state,
+        watchlistEscalation: {
+          supervisor:
+            action.supervisor ?? state.watchlistEscalation.supervisor,
+          acknowledged:
+            action.acknowledged ?? state.watchlistEscalation.acknowledged,
+        },
+      };
 
     case "ENTRY_QUEUED": {
       const entry = action.entry;
@@ -544,6 +587,9 @@ export function gatePassReducer(
         // Feature 10 — drop any stale expected plate from a prior scan so
         // the confirmation screen can't compare against the wrong visitor.
         expectedPlate: null,
+        // Feature 12 — same reasoning for the watchlist warning.
+        watchlistMatch: null,
+        watchlistEscalation: NO_ESCALATION,
         lastError: undefined,
         banner: { tone: "info", message: "Validating QR…" },
       };
@@ -559,11 +605,21 @@ export function gatePassReducer(
         pinValue: "",
         // Feature 10 — retain the pre-registered plate for guard comparison.
         expectedPlate: action.expectedPlate,
+        // Feature 12 — a valid pass can still belong to a watchlisted subject.
+        // The pass stays valid; the guard must escalate before logging.
+        watchlistMatch: action.watchlistMatch ?? null,
+        watchlistEscalation: NO_ESCALATION,
         lastError: undefined,
-        banner: {
-          tone: "success",
-          message: "QR verified. Confirm to create the audit record.",
-        },
+        banner: action.watchlistMatch
+          ? {
+              tone: "danger" as const,
+              message:
+                "QR verified — WATCHLIST MATCH. Escalate to a supervisor before logging.",
+            }
+          : {
+              tone: "success" as const,
+              message: "QR verified. Confirm to create the audit record.",
+            },
       };
 
     case "QR_SCAN_FAILED":
@@ -573,6 +629,8 @@ export function gatePassReducer(
         inFlight: false,
         qrState: action.qrState,
         expectedPlate: null,
+        watchlistMatch: null,
+        watchlistEscalation: NO_ESCALATION,
         lastError: action.error,
         banner: bannerForError(action.error),
       };
@@ -901,6 +959,8 @@ export function gatePassReducer(
         mode: "home",
         draft: emptyDraft,
         expectedPlate: null,
+        watchlistMatch: null,
+        watchlistEscalation: NO_ESCALATION,
         cameraState: "idle",
         qrState: "idle",
         qrToken: "",

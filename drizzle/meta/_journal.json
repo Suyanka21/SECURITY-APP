@@ -85,6 +85,13 @@
       "when": 1786200000000,
       "tag": "0012_one_time_pin",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786300000000,
+      "tag": "0013_watchlist",
+      "breakpoints": true
     }
   ]
 }

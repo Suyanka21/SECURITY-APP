@@ -66,8 +66,25 @@ export interface ServerEntry {
   syncState: "synced";
 }
 
+/**
+ * Feature 12 (Stage 5) — watchlist warning.
+ *
+ * Source: src/docs/specs/watchlist.md §3. Rides on an otherwise-successful
+ * entry/QR/PIN response. It NEVER means the operation was denied — it means
+ * the guard must be shown the reason and route the visitor through supervisor
+ * escalation before finalising.
+ */
+export interface WatchlistMatchView {
+  matched: true;
+  entryId: string;
+  reason: string;
+  matchedOn: "name" | "plate" | "name+plate";
+  requiresEscalation: true;
+}
+
 export interface CreateEntryResponse {
   entry: ServerEntry;
+  watchlistMatch?: WatchlistMatchView;
   traceId: string;
 }
 
@@ -88,6 +105,7 @@ export interface QrValidateResponse {
     preApprovalId: string;
   };
   expiresAt: string;
+  watchlistMatch?: WatchlistMatchView;
   traceId: string;
 }
 
@@ -635,5 +653,61 @@ export interface DeliveryListEntryView {
 export interface ListDeliveriesResponse {
   entries: DeliveryListEntryView[];
   count: number;
+  traceId: string;
+}
+
+// ─── Feature 12: Watchlist (Stage 5) ────────────────────────────────────────
+// Source: src/docs/specs/watchlist.md §§2–3
+
+export type WatchlistStatus = "active" | "removed";
+
+export interface WatchlistEntryView {
+  id: string;
+  /** Original casing as typed by the admin — never the normalized form. */
+  subjectName: string;
+  subjectPlate: string | null;
+  reason: string;
+  status: WatchlistStatus;
+  addedByGuardId: string;
+  lastReviewedAt: string;
+  reviewDueAt: string;
+  /** Derived at read time (review_due_at < now && status = active). */
+  reviewOverdue: boolean;
+  removedByGuardId: string | null;
+  removedReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateWatchlistEntryRequest {
+  subjectName: string;
+  subjectPlate?: string;
+  /** Mandatory, 1–500 chars — a watchlist entry always says why. */
+  reason: string;
+}
+
+export interface ReviewWatchlistEntryRequest {
+  /** Optional: an empty body is a plain "still warranted" re-confirmation. */
+  reason?: string;
+}
+
+export interface RemoveWatchlistEntryRequest {
+  removedReason: string;
+}
+
+export interface ListWatchlistQuery {
+  status?: WatchlistStatus | "all";
+  needsReview?: boolean;
+}
+
+export interface WatchlistEntryResponse {
+  entry: WatchlistEntryView;
+  traceId: string;
+}
+
+export interface ListWatchlistResponse {
+  entries: WatchlistEntryView[];
+  count: number;
+  overdueCount: number;
   traceId: string;
 }

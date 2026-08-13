@@ -11,6 +11,7 @@ import type {
   SyncEntryResult,
   VisitorInvitationIssuedView,
   VisitorProfileView,
+  WatchlistMatchView,
 } from "@/lib/api/types";
 
 export type GatePassMode =
@@ -377,6 +378,25 @@ export type GatePassState = {
    * and RESET_FLOW.
    */
   expectedPlate?: string | null;
+  /**
+   * Feature 12 (Stage 5) — the watchlist warning attached to the most recent
+   * successful QR/PIN validation or logged entry, or null when the visitor is
+   * not watchlisted.
+   *
+   * HARD RULE (src/docs/specs/watchlist.md §1): a match NEVER blocks entry.
+   * It makes the reason visible and forces the guard through supervisor
+   * escalation before finalising. Cleared by QR_SCAN_STARTED,
+   * QR_SCAN_FAILED, ENTRY_STARTED and RESET_FLOW.
+   */
+  watchlistMatch?: WatchlistMatchView | null;
+  /**
+   * Feature 12 — the guard's supervisor-escalation record for the current
+   * watchlist match. Reset whenever watchlistMatch is cleared.
+   */
+  watchlistEscalation: {
+    supervisor: string;
+    acknowledged: boolean;
+  };
   inFlight: boolean;
   banner: {
     tone: "info" | "success" | "warning" | "danger";
@@ -453,7 +473,23 @@ export type GatePassAction =
   | { type: "UPDATE_SEARCH_QUERY"; value: string }
   | { type: "SELECT_VISITOR"; visitor: Visitor }
   | { type: "ENTRY_STARTED" }
-  | { type: "ENTRY_SUCCEEDED"; entry: EntryRecord }
+  | {
+      type: "ENTRY_SUCCEEDED";
+      entry: EntryRecord;
+      /** Feature 12 — warning attached to an entry that WAS still logged. */
+      watchlistMatch?: WatchlistMatchView | null;
+    }
+  | {
+      type: "WATCHLIST_ESCALATION_UPDATED";
+      supervisor?: string;
+      acknowledged?: boolean;
+    }
+  /**
+   * Feature 12 — the guard tried to finalise a watchlisted arrival without
+   * recording supervisor authorisation. Surfaces the error WITHOUT leaving
+   * the confirmation screen, so the escalation form stays on screen.
+   */
+  | { type: "WATCHLIST_ESCALATION_BLOCKED"; error: GatePassError }
   | { type: "ENTRY_QUEUED"; entry: EntryRecord }
   | { type: "ENTRY_FAILED"; error: GatePassError }
   | { type: "QR_SCAN_STARTED" }
@@ -466,6 +502,8 @@ export type GatePassAction =
        * editable draft so the guard's observed plate can be compared.
        */
       expectedPlate: string | null;
+      /** Feature 12 — watchlist warning riding on the validation response. */
+      watchlistMatch?: WatchlistMatchView | null;
     }
   | {
       type: "QR_SCAN_FAILED";

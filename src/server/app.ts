@@ -23,6 +23,7 @@ import rateLimit from "express-rate-limit";
 import { entriesRouter } from "./routes/entries";
 import { qrRouter } from "./routes/qr";
 import { pinRouter } from "./routes/pin";
+import { watchlistRouter } from "./routes/watchlist";
 import { syncRouter } from "./routes/sync";
 import { visitorsRouter } from "./routes/visitors";
 import { auditRouter } from "./routes/audit";
@@ -372,6 +373,22 @@ export function createApp(db: unknown) {
     "/api/visitor-invitations/:token/preview",
     strictLimiter,
     handlePreviewVisitorInvitation
+  );
+
+  // Feature 12 (Stage 5) — Watchlist (spec §3).
+  // Management is admin + senior-guard only, reusing the EXISTING requireRole
+  // middleware — no new role logic. Guard tokens get 403 AUTH_FORBIDDEN.
+  // Strict-limited for the whole router (same as /api/entries) — the admin
+  // list is low-frequency, so a single cap on all methods is fine.
+  // The match warning itself is not an endpoint: it
+  // rides on the existing entry/QR/PIN responses, so a guard never needs
+  // watchlist read access to be warned.
+  app.use(
+    "/api/watchlist",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin", "senior-guard"),
+    watchlistRouter
   );
 
   // ─── Error Handler ─────────────────────────────────────────────────

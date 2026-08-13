@@ -11,6 +11,8 @@
 
 import { z } from "zod";
 
+import type { WatchlistMatchView } from "./watchlist-schemas";
+
 // ─── Timestamp Validation Constants ──────────────────────────────────────────
 // Source: contract §3.2 — "Valid ISO 8601, max 24 hours old"
 // Source: TRUSTLESS-AUDIT-REPORT [H4] — "createdAt lacks 24-hour backdating protection"
@@ -157,6 +159,12 @@ export interface CreateEntryResponse {
     status: "logged";
     syncState: "synced";
   };
+  /**
+   * Feature 12 (Stage 5) — present ONLY when the visitor matched an active
+   * watchlist entry. Purely additive: the entry above was still created.
+   * Source: src/docs/specs/watchlist.md §3 — warn, never auto-deny.
+   */
+  watchlistMatch?: WatchlistMatchView;
   traceId: string;
 }
 
