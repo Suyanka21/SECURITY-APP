@@ -12,10 +12,10 @@
  *   2. listOnPremise(db) — return all entries with no matching exit.
  */
 
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, asc, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
-import { entryRecords, exitRecords, guards } from "@/db/schema";
+import { entryRecords, exitRecords, guardNotes, guards } from "@/db/schema";
 import { emitAuditEvent } from "./audit-logger";
 import { ServiceError } from "./errors";
 
@@ -234,25 +234,24 @@ export async function listOnPremise(
   // Feature 9: attach guard notes for the on-premise entries in one query.
   if (entries.length > 0) {
     const entryIds = entries.map((e) => e.id);
+    // A typed select is required here: a raw `= ANY(${entryIds})` binds the
+    // array as a single scalar and Postgres rejects it as a malformed array
+    // literal, taking the whole on-premise list down with it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const noteRows = await (db as any).execute(
-      sql`SELECT
-            gn.id,
-            gn.entry_id AS "entryId",
-            gn.tag,
-            gn.note_text AS "text",
-            gn.guard_id AS "guardId",
-            gn.created_at AS "createdAt"
-          FROM guard_notes gn
-          WHERE gn.entry_id = ANY(${entryIds})
-          ORDER BY gn.created_at ASC`,
-    );
+    const noteRows = await (db as any)
+      .select({
+        id: guardNotes.id,
+        entryId: guardNotes.entryId,
+        tag: guardNotes.tag,
+        text: guardNotes.noteText,
+        guardId: guardNotes.guardId,
+        createdAt: guardNotes.createdAt,
+      })
+      .from(guardNotes)
+      .where(inArray(guardNotes.entryId, entryIds))
+      .orderBy(asc(guardNotes.createdAt));
 
-    const rawNotes: unknown[] = Array.isArray(noteRows)
-      ? noteRows
-      : Array.isArray((noteRows as Record<string, unknown>)?.rows)
-        ? ((noteRows as Record<string, unknown>).rows as unknown[])
-        : [];
+    const rawNotes: unknown[] = Array.isArray(noteRows) ? noteRows : [];
 
     const byEntry = new Map<string, OnPremiseNote[]>();
     for (const n of rawNotes) {

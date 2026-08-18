@@ -23,6 +23,9 @@ export const AccountErrorCodes = {
   ACCOUNT_INVALID_INPUT: "ACCOUNT_INVALID_INPUT",
   ACCOUNT_DUPLICATE: "ACCOUNT_DUPLICATE",
   ACCOUNT_PROVISIONING_UNAVAILABLE: "ACCOUNT_PROVISIONING_UNAVAILABLE",
+  // The account exists but its audit-trail row could not be written. Distinct
+  // from INTERNAL_ERROR so the admin is told not to retry into a duplicate.
+  ACCOUNT_CREATED_AUDIT_FAILED: "ACCOUNT_CREATED_AUDIT_FAILED",
   INTERNAL_ERROR: "INTERNAL_ERROR",
 } as const;
 

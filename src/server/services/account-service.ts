@@ -113,6 +113,9 @@ export function generateTemporaryPassword(): string {
  *         service-role key / Supabase URL are not configured.
  * @throws ServiceError(ACCOUNT_INVALID_INPUT, 422) on defensive re-validation.
  * @throws ServiceError(ACCOUNT_DUPLICATE, 409) on duplicate badge or email.
+ * @throws ServiceError(ACCOUNT_CREATED_AUDIT_FAILED, 500) when the account was
+ *         created but its audit row could not be written — the admin must not
+ *         retry, or they provision a duplicate.
  * @throws ServiceError(INTERNAL_ERROR, 500) on unexpected provider/DB failure.
  */
 export async function provisionAccount(
@@ -282,18 +285,38 @@ export async function provisionAccount(
   const row = inserted[0];
 
   // Audit — privileged action. Payload carries NO password/token/secret.
-  await emitAuditEvent(
-    "account_provisioned",
-    actingAdminGuardId,
-    `account-${row.id}`,
-    {
-      createdGuardId: row.id,
-      badgeNumber: row.badgeNumber,
-      role: row.role,
-      // email is operational metadata, not a secret; useful for the audit trail.
-      email,
-    },
-  );
+  // The audit write stays mandatory (a privileged action with no trail is not
+  // acceptable), but the account already exists at this point and cannot be
+  // compensated away safely, so the failure must say so: a bare INTERNAL_ERROR
+  // would send the admin into a retry that only yields a duplicate.
+  try {
+    await emitAuditEvent(
+      "account_provisioned",
+      actingAdminGuardId,
+      `account-${row.id}`,
+      {
+        createdGuardId: row.id,
+        badgeNumber: row.badgeNumber,
+        role: row.role,
+        // email is operational metadata, not a secret; useful for the audit trail.
+        email,
+      },
+    );
+  } catch (auditErr) {
+    console.error(
+      `[ACCOUNT] Account ${row.id} (badge ${row.badgeNumber}) was created but ` +
+        `its account_provisioned audit row could not be written. ` +
+        `Manual reconciliation required.`,
+      auditErr instanceof Error ? auditErr.message : auditErr,
+    );
+    throw new ServiceError(
+      AccountErrorCodes.ACCOUNT_CREATED_AUDIT_FAILED,
+      `The account for badge ${row.badgeNumber} was created, but writing it to ` +
+        `the audit trail failed. Do not retry — the account exists. Report this ` +
+        `so the audit gap is reconciled.`,
+      500,
+    );
+  }
 
   const view: ProvisionedAccountView = {
     guardId: row.id,

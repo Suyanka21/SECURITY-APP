@@ -22,6 +22,7 @@ import {
 } from "../services/account-service";
 import { SupabaseAdminError } from "../auth/supabase-admin";
 import type { SupabaseAdminDeps } from "../auth/supabase-admin";
+import * as auditLogger from "../services/audit-logger";
 import { clearAuditLog, getAuditEventsByType } from "../services/audit-logger";
 
 const ADMIN_GUARD_ID = "22222222-2222-4222-8222-222222222222";
@@ -171,6 +172,43 @@ describe("provisionAccount — success", () => {
     expect((result.temporaryPassword as string).length).toBeGreaterThanOrEqual(
       12,
     );
+  });
+
+  // Regression: a failing audit write (e.g. an audit enum value missing from
+  // the live DB) surfaced as a bare INTERNAL_ERROR, so the admin retried and
+  // got a duplicate — the first account had in fact been created.
+  it("reports ACCOUNT_CREATED_AUDIT_FAILED when the audit write fails", async () => {
+    const { db, inserted } = makeMockDB();
+    const { admin, deleted } = makeAdmin();
+    vi.spyOn(auditLogger, "emitAuditEvent").mockRejectedValue(
+      new Error('invalid input value for enum audit_event_type'),
+    );
+
+    await expect(
+      provisionAccount(ADMIN_GUARD_ID, VALID, db, admin),
+    ).rejects.toMatchObject({
+      code: "ACCOUNT_CREATED_AUDIT_FAILED",
+      statusCode: 500,
+    });
+
+    // The account exists and must NOT be rolled back or retried into a duplicate.
+    expect(inserted).toHaveLength(1);
+    expect(deleted).toEqual([]);
+    await expect(
+      provisionAccount(ADMIN_GUARD_ID, VALID, db, admin),
+    ).rejects.toMatchObject({ code: "ACCOUNT_CREATED_AUDIT_FAILED" });
+  });
+
+  it("tells the admin not to retry when the audit write fails", async () => {
+    const { db } = makeMockDB();
+    const { admin } = makeAdmin();
+    vi.spyOn(auditLogger, "emitAuditEvent").mockRejectedValue(
+      new Error("audit down"),
+    );
+
+    await expect(
+      provisionAccount(ADMIN_GUARD_ID, VALID, db, admin),
+    ).rejects.toThrow(/created.*do not retry/is);
   });
 
   it("writes an account_provisioned audit event carrying NO secret", async () => {
