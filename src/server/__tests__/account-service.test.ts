@@ -175,28 +175,33 @@ describe("provisionAccount — success", () => {
   });
 
   // Regression: a failing audit write (e.g. an audit enum value missing from
-  // the live DB) surfaced as a bare INTERNAL_ERROR, so the admin retried and
-  // got a duplicate — the first account had in fact been created.
-  it("reports ACCOUNT_CREATED_AUDIT_FAILED when the audit write fails", async () => {
+  // the live DB) aborted the call. The account had in fact been created, so the
+  // admin retried into a duplicate — and a server-generated password, which
+  // exists nowhere but the response, was destroyed with the error.
+  it("returns the account + generated password with a warning when the audit write throws", async () => {
     const { db, inserted } = makeMockDB();
-    const { admin, deleted } = makeAdmin();
+    const { admin, created, deleted } = makeAdmin();
     vi.spyOn(auditLogger, "emitAuditEvent").mockRejectedValue(
-      new Error('invalid input value for enum audit_event_type'),
+      new Error("invalid input value for enum audit_event_type"),
     );
+    const { password: _omit, ...noPass } = VALID;
 
-    await expect(
-      provisionAccount(ADMIN_GUARD_ID, VALID, db, admin),
-    ).rejects.toMatchObject({
-      code: "ACCOUNT_CREATED_AUDIT_FAILED",
-      statusCode: 500,
-    });
+    const result = await provisionAccount(ADMIN_GUARD_ID, noPass, db, admin);
 
-    // The account exists and must NOT be rolled back or retried into a duplicate.
+    // The account survives — created, not rolled back.
+    expect(created).toEqual(["new.guard@gatepass.test"]);
     expect(inserted).toHaveLength(1);
     expect(deleted).toEqual([]);
-    await expect(
-      provisionAccount(ADMIN_GUARD_ID, VALID, db, admin),
-    ).rejects.toMatchObject({ code: "ACCOUNT_CREATED_AUDIT_FAILED" });
+    // The one copy of the generated password still reaches the admin.
+    expect(result.temporaryPassword).toBeTypeOf("string");
+    expect((result.temporaryPassword as string).length).toBeGreaterThanOrEqual(
+      12,
+    );
+    expect(result.view).toMatchObject({ badgeNumber: "G-777", role: "guard" });
+    // ...alongside an explicit warning about the audit gap.
+    expect(result.auditWarning).toMatchObject({
+      code: "ACCOUNT_CREATED_AUDIT_FAILED",
+    });
   });
 
   it("tells the admin not to retry when the audit write fails", async () => {
@@ -206,9 +211,28 @@ describe("provisionAccount — success", () => {
       new Error("audit down"),
     );
 
-    await expect(
-      provisionAccount(ADMIN_GUARD_ID, VALID, db, admin),
-    ).rejects.toThrow(/created.*do not retry/is);
+    const result = await provisionAccount(ADMIN_GUARD_ID, VALID, db, admin);
+    expect(result.auditWarning?.message).toMatch(/created.*do not.*retry/is);
+  });
+
+  it("never sets auditWarning when the audit write succeeds", async () => {
+    const { db } = makeMockDB();
+    const { admin } = makeAdmin();
+    const result = await provisionAccount(ADMIN_GUARD_ID, VALID, db, admin);
+    expect(result.auditWarning).toBeUndefined();
+  });
+
+  it("keeps an admin-supplied password out of the audit-failure warning", async () => {
+    const { db } = makeMockDB();
+    const { admin } = makeAdmin();
+    vi.spyOn(auditLogger, "emitAuditEvent").mockRejectedValue(
+      new Error("audit down"),
+    );
+
+    const result = await provisionAccount(ADMIN_GUARD_ID, VALID, db, admin);
+    // Caller supplied the password, so the server has nothing to hand back.
+    expect(result.temporaryPassword).toBeUndefined();
+    expect(result.auditWarning?.message).not.toContain(VALID.password);
   });
 
   it("writes an account_provisioned audit event carrying NO secret", async () => {

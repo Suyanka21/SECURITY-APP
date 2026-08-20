@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import {
   accountsApi,
   PROVISIONABLE_ROLES,
+  type AccountAuditWarning,
   type ProvisionableRole,
   type ProvisionedAccountView,
 } from "@/lib/api/accounts";
@@ -33,6 +34,7 @@ type SubmitState =
       status: "success";
       account: ProvisionedAccountView;
       temporaryPassword?: string;
+      auditWarning?: AccountAuditWarning;
     }
   | { status: "error"; code: string; message: string; field?: string };
 
@@ -75,6 +77,7 @@ export function AccountProvisioningPanel() {
         status: "success",
         account: res.data.account,
         temporaryPassword: res.data.temporaryPassword,
+        auditWarning: res.data.auditWarning,
       });
       setName("");
       setBadgeNumber("");
@@ -224,6 +227,15 @@ export function AccountProvisioningPanel() {
                 Share it securely; ask the new user to change it after first
                 sign-in.
               </span>
+            </p>
+          )}
+          {state.auditWarning && (
+            <p
+              role="alert"
+              className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-700 dark:text-amber-400"
+            >
+              <span className="font-medium">Audit trail not written</span> —{" "}
+              {state.auditWarning.message}
             </p>
           )}
         </div>
