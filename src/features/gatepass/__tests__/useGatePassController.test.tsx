@@ -2797,3 +2797,130 @@ describe("useGatePassController — delivery management (Feature 8)", () => {
     expect(hook.result.current.state.deliveryManagement.lastError?.code).toBe("AUTH_FORBIDDEN");
   });
 });
+
+// ─── Stage 6 fix — awaiting-approval survives leaving the console ───────────
+// The resident opens the magic link on the guard's device, unmounting the
+// console. Previously the awaiting state (memory only) was gone and the guard
+// came back to "Ready for next arrival" with no idea what the resident decided.
+describe("useGatePassController — approval handoff resume", () => {
+  let api: MockApi;
+  let approvalApi: MockApprovalApi;
+
+  beforeEach(() => {
+    api = makeApi();
+    approvalApi = makeApprovalApi();
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  /** Drive a controller into awaiting-approval, then unmount it. */
+  async function awaitThenLeaveConsole() {
+    approvalApi.createApproval.mockResolvedValue(ok(CREATE_APPROVAL_OK, 201));
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({ approval: approvalView(), traceId: "t" } as ApprovalStatusResponse),
+    );
+    const hook = buildControllerWithApproval(api, approvalApi);
+    await fillValidDraft(hook);
+    await act(async () => {
+      await hook.result.current.requestApproval();
+    });
+    await waitFor(() => {
+      expect(hook.result.current.state.mode).toBe("awaiting-approval");
+    });
+    hook.unmount();
+  }
+
+  it("shows the approval outcome instead of resetting to Ready", async () => {
+    await awaitThenLeaveConsole();
+
+    // The resident approved while the console was gone.
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({
+        approval: approvalView({
+          status: "approved",
+          entryId: "entry-9",
+          decidedAt: new Date("2024-01-01T00:02:00Z").toISOString(),
+        }),
+        traceId: "t",
+      } as ApprovalStatusResponse),
+    );
+
+    const resumed = buildControllerWithApproval(api, approvalApi);
+    await waitFor(() => {
+      expect(resumed.result.current.state.mode).toBe("confirmed");
+    });
+    expect(resumed.result.current.state.banner.message).toMatch(
+      /resident approved/i,
+    );
+    expect(resumed.result.current.state.banner.message).not.toMatch(
+      /ready for next arrival/i,
+    );
+    expect(resumed.result.current.state.lastEntry?.id).toBe("entry-9");
+  });
+
+  it("surfaces a denial with its reason after the console is reopened", async () => {
+    await awaitThenLeaveConsole();
+
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({
+        approval: approvalView({
+          status: "denied",
+          deniedReason: "Not expecting anyone",
+        }),
+        traceId: "t",
+      } as ApprovalStatusResponse),
+    );
+
+    const resumed = buildControllerWithApproval(api, approvalApi);
+    await waitFor(() => {
+      expect(resumed.result.current.state.lastError?.code).toBe(
+        "APPROVAL_DENIED",
+      );
+    });
+    expect(resumed.result.current.state.banner.message).toMatch(
+      /not expecting anyone/i,
+    );
+  });
+
+  it("restores the waiting view (never Ready) when the status call fails", async () => {
+    await awaitThenLeaveConsole();
+
+    approvalApi.getApprovalStatus.mockResolvedValue(fail(0, "NETWORK_ERROR", "offline"));
+
+    const resumed = buildControllerWithApproval(api, approvalApi);
+    await waitFor(() => {
+      expect(resumed.result.current.state.mode).toBe("awaiting-approval");
+    });
+    expect(resumed.result.current.state.pendingApproval?.id).toBe(
+      CREATE_APPROVAL_OK.approvalId,
+    );
+  });
+
+  it("does not resurrect a resolved approval onto the next visitor", async () => {
+    await awaitThenLeaveConsole();
+
+    approvalApi.getApprovalStatus.mockResolvedValue(
+      ok({
+        approval: approvalView({ status: "approved", entryId: "entry-9" }),
+        traceId: "t",
+      } as ApprovalStatusResponse),
+    );
+    const resumed = buildControllerWithApproval(api, approvalApi);
+    await waitFor(() => {
+      expect(resumed.result.current.state.mode).toBe("confirmed");
+    });
+    resumed.unmount();
+
+    // A later shift on the same device starts clean.
+    approvalApi.getApprovalStatus.mockClear();
+    const fresh = buildControllerWithApproval(api, approvalApi);
+    await waitFor(() => {
+      expect(fresh.result.current.state.mode).toBe("home");
+    });
+    expect(approvalApi.getApprovalStatus).not.toHaveBeenCalled();
+  });
+});
