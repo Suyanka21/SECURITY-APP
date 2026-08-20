@@ -66,6 +66,7 @@ type Row = {
   isUsed: boolean;
   usedAt: Date | null;
   usedByGuardId: string | null;
+  pinLockedUntil: Date | null;
   createdAt: Date;
 };
 
@@ -81,6 +82,7 @@ function makeInsertedRow(input: Partial<Row> & Pick<Row, "qrTokenHash" | "expire
     isUsed: input.isUsed ?? false,
     usedAt: input.usedAt ?? null,
     usedByGuardId: input.usedByGuardId ?? null,
+    pinLockedUntil: input.pinLockedUntil ?? null,
     createdAt: input.createdAt ?? new Date(),
   };
 }
@@ -407,6 +409,40 @@ describe("previewVisitorInvitation", () => {
       VisitorInvitationErrorCodes.INVITATION_CONSUMED,
     );
     expect((caught as ServiceError).statusCode).toBe(410);
+  });
+
+  it("P4b: locked by the PIN limiter → 423 INVITATION_LOCKED", async () => {
+    const db = createMockDB({
+      selectRows: [
+        freshRow({ pinLockedUntil: new Date(Date.now() + 15 * 60 * 1000) }),
+      ],
+    });
+
+    let caught: unknown = null;
+    try {
+      await previewVisitorInvitation(RAW, db);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ServiceError);
+    expect((caught as ServiceError).code).toBe(
+      VisitorInvitationErrorCodes.INVITATION_LOCKED,
+    );
+    expect((caught as ServiceError).statusCode).toBe(423);
+    expect((caught as ServiceError).message).toMatch(/locked/i);
+  });
+
+  it("P4c: an expired lock does NOT block the preview", async () => {
+    const db = createMockDB({
+      selectRows: [
+        freshRow({ pinLockedUntil: new Date(Date.now() - 60 * 1000) }),
+      ],
+    });
+
+    const { statusCode } = await previewVisitorInvitation(RAW, db);
+
+    expect(statusCode).toBe(200);
   });
 
   it("P5: preview does NOT call update() — never marks is_used", async () => {

@@ -344,6 +344,28 @@ describe("useGatePassController.scanQr", () => {
     expect(hook.result.current.state.banner.message).toContain("already been used");
   });
 
+  it("maps QR_LOCKED (423) to qrState=locked so the guard is told the pass is locked", async () => {
+    api.validateQr.mockResolvedValue(
+      fail(
+        423,
+        "QR_LOCKED",
+        "This pass is locked after too many incorrect PIN attempts"
+      )
+    );
+    const hook = buildController(api);
+
+    await act(async () => {
+      await hook.result.current.scanQr("qr-token-locked");
+    });
+
+    expect(hook.result.current.state.qrState).toBe("locked");
+    expect(hook.result.current.state.mode).toBe("error");
+    expect(hook.result.current.state.banner.message).toMatch(/locked/i);
+    expect(hook.result.current.state.banner.message).not.toMatch(
+      /unknown token|not recognised|not recognized/i
+    );
+  });
+
   it("rejects empty tokens locally as QR_MALFORMED without an API call", async () => {
     const hook = buildController(api);
 

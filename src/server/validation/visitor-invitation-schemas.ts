@@ -23,6 +23,12 @@ export const VisitorInvitationErrorCodes = {
   INVITATION_NOT_FOUND: "INVITATION_NOT_FOUND",
   INVITATION_EXPIRED: "INVITATION_EXPIRED",
   INVITATION_CONSUMED: "INVITATION_CONSUMED",
+  /**
+   * The pass is locked by the Feature 11 PIN limiter (too many wrong PINs).
+   * The visitor is told the truth here rather than being shown a pass that
+   * reads "valid" and is then refused at the gate.
+   */
+  INVITATION_LOCKED: "INVITATION_LOCKED",
   AUTH_FORBIDDEN: "AUTH_FORBIDDEN",
   AUTH_REQUIRED: "AUTH_REQUIRED",
   INTERNAL_ERROR: "INTERNAL_ERROR",

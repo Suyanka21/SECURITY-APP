@@ -37,9 +37,18 @@ describe("approvalHandoff", () => {
     window.localStorage.clear();
   });
 
-  it("round-trips an awaiting approval", () => {
+  it("round-trips an awaiting approval without its single-use link", () => {
     rememberPendingApproval(APPROVAL);
-    expect(readPendingApproval()).toEqual(APPROVAL);
+    expect(readPendingApproval()).toEqual({ ...APPROVAL, magicLinkUrl: "" });
+  });
+
+  it("never writes the single-use magic-link token to storage", () => {
+    rememberPendingApproval(APPROVAL);
+    const raw = window.localStorage.getItem(KEY) ?? "";
+    expect(raw).not.toContain("token=abc");
+    expect(raw).not.toContain("magicLinkUrl");
+    // The non-secret envelope the guard already sees is still there.
+    expect(raw).toContain("Ada Lovelace");
   });
 
   it("returns null once forgotten", () => {

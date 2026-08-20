@@ -88,5 +88,16 @@ describe("QrScanPanel — PIN backup redemption (Feature 11)", () => {
     renderPanel(panelState());
     expect(screen.queryByTestId("pin-locked-banner")).toBeNull();
     expect(screen.getByTestId("pin-redeem-button")).toBeEnabled();
+    expect(screen.queryByTestId("qr-locked-banner")).toBeNull();
+  });
+
+  it("tells the guard the QR path is Locked too when qrState=locked", () => {
+    renderPanel(panelState({ qrState: "locked" }));
+    const banner = screen.getByTestId("qr-locked-banner");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(/^Locked/);
+    expect(banner).toHaveTextContent(/too many incorrect PIN attempts/i);
+    // The QR button must not offer a re-scan that will only be refused.
+    expect(screen.getByRole("button", { name: /validate qr/i })).toBeDisabled();
   });
 });

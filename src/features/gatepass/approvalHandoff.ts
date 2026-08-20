@@ -23,8 +23,15 @@ const STORAGE_KEY = "gatepass_pending_approval";
  */
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * The persisted shape is a strict subset of PendingApproval: the single-use
+ * magic-link token must not be written to a shared gate device's storage, so
+ * `magicLinkUrl` is dropped on write and restored as empty on read.
+ */
+type StoredApproval = Omit<PendingApproval, "magicLinkUrl">;
+
 interface StoredHandoff {
-  approval: PendingApproval;
+  approval: StoredApproval;
   storedAt: number;
 }
 
@@ -44,7 +51,8 @@ export function rememberPendingApproval(approval: PendingApproval): void {
   const store = storage();
   if (!store) return;
   try {
-    const payload: StoredHandoff = { approval, storedAt: Date.now() };
+    const { magicLinkUrl: _token, ...safe } = approval;
+    const payload: StoredHandoff = { approval: safe, storedAt: Date.now() };
     store.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // Quota or serialization failure — non-fatal.
@@ -94,7 +102,7 @@ export function readPendingApproval(): PendingApproval | null {
       forgetPendingApproval();
       return null;
     }
-    return approval;
+    return { ...approval, magicLinkUrl: "" };
   } catch {
     forgetPendingApproval();
     return null;

@@ -106,6 +106,7 @@ interface AuthorizationRow {
   expiresAt: Date;
   isUsed: boolean;
   usedAt: Date | null;
+  pinLockedUntil: Date | null;
   createdAt: Date;
 }
 
@@ -261,7 +262,8 @@ export async function issueVisitorInvitation(
  *   3. NOT FOUND → 404 INVITATION_NOT_FOUND.
  *   4. EXPIRED  → 410 INVITATION_EXPIRED.
  *   5. CONSUMED → 410 INVITATION_CONSUMED.
- *   6. Otherwise → 200 with safe display fields ONLY.
+ *   6. LOCKED   → 423 INVITATION_LOCKED (Feature 11 PIN limiter).
+ *   7. Otherwise → 200 with safe display fields ONLY.
  *
  * This path NEVER writes. It NEVER marks is_used. It NEVER emits an
  * audit row (reads don't emit; the consume path emits qr_scan_*).
@@ -316,7 +318,19 @@ export async function previewVisitorInvitation(
     );
   }
 
-  // Step 5: success — safe display fields ONLY.
+  // Step 5: locked by the PIN limiter? The pass will be refused at the gate,
+  // so the visitor must not be shown a "valid until …" pass. Told, not
+  // surprised at the barrier.
+  if (row.pinLockedUntil && row.pinLockedUntil.getTime() > Date.now()) {
+    throw new ServiceError(
+      VisitorInvitationErrorCodes.INVITATION_LOCKED,
+      "This pass is locked after too many incorrect PIN attempts",
+      423,
+      "token",
+    );
+  }
+
+  // Step 6: success — safe display fields ONLY.
   // We deliberately omit the row id, hash, used_*, created_at — the
   // visitor's phone has no need for them and we don't want them in
   // the pass page's HTML source.

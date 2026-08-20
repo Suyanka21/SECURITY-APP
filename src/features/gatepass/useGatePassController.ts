@@ -546,8 +546,14 @@ export function useGatePassController(
       // Map backend error code → reducer's qrState discriminant so the
       // UI can render the right red banner.
       const code = result.error.code;
-      let qrState: "invalid" | "replayed" | "expired";
+      let qrState: "invalid" | "replayed" | "expired" | "locked";
       switch (code) {
+        // A pass locked by the PIN limiter (Feature 11) is refused on the QR
+        // path too. It must read "Locked", not "not recognised" — the guard
+        // needs the real reason to tell the visitor.
+        case "QR_LOCKED":
+          qrState = "locked";
+          break;
         case "QR_REPLAYED":
           qrState = "replayed";
           break;
@@ -1065,11 +1071,13 @@ export function useGatePassController(
     let cancelled = false;
 
     void (async () => {
-      const result: ApiResult<ApprovalStatusResponse> =
+      const result: ApiResult<ApprovalStatusResponse> | undefined =
         await approvalApi.getApprovalStatus(resumableApproval.id);
       if (cancelled) return;
 
-      if (!result.ok) {
+      // A missing/unshaped result is treated the same as a failed lookup:
+      // keep waiting, never fall back to "Ready".
+      if (!result || !result.ok) {
         // We could not learn the outcome. Restore the waiting view so the
         // poll loop keeps trying — showing "Ready" here is the exact
         // silent reset this resume exists to prevent.
