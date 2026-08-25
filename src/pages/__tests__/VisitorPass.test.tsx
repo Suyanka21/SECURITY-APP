@@ -131,6 +131,50 @@ describe("VisitorPass (Feature 6)", () => {
     expect(screen.queryByTestId("visitor-pass-qr")).toBeNull();
   });
 
+  it("default-denies a 423 INVITATION_LOCKED: says 'Locked', never 'Valid until'", async () => {
+    const api = makeApi({
+      ok: false,
+      status: 423,
+      error: {
+        code: "INVITATION_LOCKED",
+        message: "This pass is locked after too many incorrect PIN attempts",
+      },
+    });
+    renderAt(api);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("visitor-pass-error")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("visitor-pass-error-title")).toHaveTextContent(
+      "Locked",
+    );
+    expect(screen.getByTestId("visitor-pass-error-code")).toHaveTextContent(
+      "INVITATION_LOCKED",
+    );
+    expect(
+      screen.getByTestId("visitor-pass-locked-note"),
+    ).toBeInTheDocument();
+    // The visitor must never see a locked pass presented as valid.
+    expect(screen.queryByText(/valid until/i)).toBeNull();
+    expect(screen.queryByTestId("visitor-pass-expires")).toBeNull();
+    expect(screen.queryByTestId("visitor-pass-qr")).toBeNull();
+  });
+
+  it("also maps the legacy QR_LOCKED spelling to the Locked panel", async () => {
+    const api = makeApi({
+      ok: false,
+      status: 423,
+      error: { code: "QR_LOCKED", message: "This pass is locked" },
+    });
+    renderAt(api);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("visitor-pass-error-title")).toHaveTextContent(
+        "Locked",
+      );
+    });
+  });
+
   it("default-denies a 404 QR_NOT_FOUND: shows the 'not found' panel", async () => {
     const api = makeApi({
       ok: false,

@@ -10,11 +10,14 @@
  * Mock DB:
  * - recordExit: stubs select().from(entryRecords), select().from(exitRecords),
  *   and insert(exitRecords).values().
- * - listOnPremise: stubs execute() with a raw SQL result.
+ * - listOnPremise: stubs execute() for the entries query and select() for the
+ *   guard-notes query.
  *
  * The service never queries the guards table — auth is upstream.
  */
 
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 import {
@@ -97,18 +100,23 @@ function makeMockDB(opts: MockDBOpts = {}) {
 // ─── listOnPremise mock DB ───────────────────────────────────────────────────
 
 function makeOnPremiseMockDB(rows: unknown[] = [], noteRows: unknown[] = []) {
-  // listOnPremise issues up to two execute() calls: first the entries query,
-  // then (only if entries exist) the guard-notes query. Serve them in order.
-  let call = 0;
+  // The entries query is raw SQL via execute(); the guard-notes query is a
+  // typed select() so the entry IDs are bound as individual parameters
+  // (a raw `= ANY(${ids})` binds the array as one scalar and Postgres rejects
+  // it — see the "binds each entry id" test below).
+  const whereMock = vi.fn().mockReturnValue({
+    orderBy: vi.fn().mockResolvedValue(noteRows),
+  });
+  const selectMock = vi.fn().mockReturnValue({
+    from: vi.fn().mockReturnValue({ where: whereMock }),
+  });
   return {
+    whereMock,
     db: {
-      select: vi.fn(),
+      select: selectMock,
       insert: vi.fn(),
       query: {},
-      execute: vi.fn().mockImplementation(async () => {
-        call += 1;
-        return call === 1 ? { rows } : { rows: noteRows };
-      }),
+      execute: vi.fn().mockResolvedValue({ rows }),
     } as unknown as DrizzleDB,
   };
 }
@@ -505,15 +513,38 @@ describe("listOnPremise", () => {
         createdAt: "2024-06-01T10:30:00.000Z",
       },
     ];
-    const db = {
-      select: vi.fn(),
-      insert: vi.fn(),
-      query: {},
-      // Return the array directly (no .rows wrapper)
-      execute: vi.fn().mockResolvedValue(rows),
-    } as unknown as DrizzleDB;
+    const { db } = makeOnPremiseMockDB([]);
+    // Return the array directly (no .rows wrapper)
+    (db.execute as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
 
     const result = await listOnPremise(db);
     expect(result.entries).toHaveLength(1);
+  });
+
+  // Regression: the guard-notes lookup used a raw `entry_id = ANY(${ids})`,
+  // which binds the whole array as ONE parameter. Postgres rejected it with
+  // `malformed array literal`, so the entire on-premise list returned 500 as
+  // soon as a single visitor was on premise. Every entry ID must be bound as
+  // its own parameter.
+  it("binds each entry id as its own parameter in the guard-notes lookup", async () => {
+    const rows = [ENTRY_ID, OTHER_ENTRY_ID].map((id, i) => ({
+      id,
+      visitorName: `Visitor ${i}`,
+      host: "Host",
+      unit: "1A",
+      plate: null,
+      method: "walk-in",
+      guardId: GUARD_ID,
+      createdAt: "2024-06-01T10:30:00.000Z",
+    }));
+    const { db, whereMock } = makeOnPremiseMockDB(rows);
+
+    await listOnPremise(db);
+
+    expect(whereMock).toHaveBeenCalledTimes(1);
+    const predicate = whereMock.mock.calls[0][0] as SQL;
+    const query = new PgDialect().sqlToQuery(predicate);
+    expect(query.params).toEqual([ENTRY_ID, OTHER_ENTRY_ID]);
+    expect(query.sql).toMatch(/in \(\$1, \$2\)/i);
   });
 });

@@ -16,7 +16,14 @@
  * Source: src/docs/GATEPASS DEFINITION.md — failure mode catalog
  */
 
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { gatePassApi } from "@/lib/api/gatepass";
 import { guardApprovalApi } from "@/lib/api/approvals";
 import { guardNotificationsApi } from "@/lib/api/notifications";
@@ -70,6 +77,11 @@ import type {
   Visitor,
 } from "./types";
 import { VISITOR_PROFILE_NEW_KEY } from "./types";
+import {
+  forgetPendingApproval,
+  readPendingApproval,
+  rememberPendingApproval,
+} from "./approvalHandoff";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -534,8 +546,14 @@ export function useGatePassController(
       // Map backend error code → reducer's qrState discriminant so the
       // UI can render the right red banner.
       const code = result.error.code;
-      let qrState: "invalid" | "replayed" | "expired";
+      let qrState: "invalid" | "replayed" | "expired" | "locked";
       switch (code) {
+        // A pass locked by the PIN limiter (Feature 11) is refused on the QR
+        // path too. It must read "Locked", not "not recognised" — the guard
+        // needs the real reason to tell the visitor.
+        case "QR_LOCKED":
+          qrState = "locked";
+          break;
         case "QR_REPLAYED":
           qrState = "replayed";
           break;
@@ -1032,6 +1050,90 @@ export function useGatePassController(
     approvalApi,
     pollIntervalMs,
   ]);
+
+  // ─── Awaiting-approval handoff (resume across a navigation) ───────
+  //
+  // The resident opens the magic link on this same device, which unmounts
+  // the console. The awaiting state lived only in memory, so the guard came
+  // back to "Ready for next arrival" and never learned the outcome of an
+  // approval the resident had in fact decided.
+  //
+  // The awaiting approval is mirrored to storage (below) and re-resolved
+  // here on mount: the guard lands on the real outcome — approved (entry
+  // logged), denied with the reason, expired — or back on the waiting view
+  // with polling live. Never a silent reset.
+  const [resumableApproval] = useState<PendingApproval | null>(() =>
+    readPendingApproval(),
+  );
+
+  useEffect(() => {
+    if (!resumableApproval) return;
+    let cancelled = false;
+
+    void (async () => {
+      const result: ApiResult<ApprovalStatusResponse> | undefined =
+        await approvalApi.getApprovalStatus(resumableApproval.id);
+      if (cancelled) return;
+
+      // A missing/unshaped result is treated the same as a failed lookup:
+      // keep waiting, never fall back to "Ready".
+      if (!result || !result.ok) {
+        // We could not learn the outcome. Restore the waiting view so the
+        // poll loop keeps trying — showing "Ready" here is the exact
+        // silent reset this resume exists to prevent.
+        dispatch({
+          type: "APPROVAL_REQUEST_SUCCEEDED",
+          approval: { ...resumableApproval, status: "pending" },
+        });
+        return;
+      }
+
+      const view = result.data.approval;
+      if (view.status === "approved" && view.entryId) {
+        dispatch({
+          type: "APPROVAL_RESOLVED",
+          entry: entryFromApprovedView(view),
+        });
+        return;
+      }
+      if (view.status === "denied") {
+        dispatch({
+          type: "APPROVAL_DENIED",
+          reason: view.deniedReason ?? "",
+        });
+        return;
+      }
+      if (view.status === "expired") {
+        dispatch({ type: "APPROVAL_EXPIRED" });
+        return;
+      }
+      dispatch({
+        type: "APPROVAL_REQUEST_SUCCEEDED",
+        approval: { ...resumableApproval, status: view.status },
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumableApproval, approvalApi]);
+
+  // Mirror of the awaiting approval. Written while (and only while) an
+  // approval is actually awaiting a resident decision, and dropped on every
+  // other state — terminal outcome, RESET_FLOW, error — so a resolved
+  // approval can never be resurrected onto a later visitor.
+  useEffect(() => {
+    const approval = state.pendingApproval;
+    if (
+      state.mode === "awaiting-approval" &&
+      approval &&
+      approval.status === "pending"
+    ) {
+      rememberPendingApproval(approval);
+      return;
+    }
+    forgetPendingApproval();
+  }, [state.mode, state.pendingApproval]);
 
   // ─── Notification delivery — independent polling stream ───────────
   // Source: src/docs/specs/notifications.md §5, §9 (two-stream policy).

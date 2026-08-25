@@ -171,6 +171,54 @@ describe("Route: POST /api/admin/accounts", () => {
     expect(body.temporaryPassword).toBeUndefined();
   });
 
+  // Regression: an audit-write failure used to abort the call with a 500,
+  // taking the only copy of the generated password with it.
+  it("still returns 201 + password when the service reports an audit gap", async () => {
+    vi.spyOn(service, "provisionAccount").mockResolvedValue({
+      view: {
+        guardId: "new-guard-id",
+        email: "new.guard@gatepass.test",
+        name: "New Guard",
+        badgeNumber: "G-777",
+        role: "guard",
+        isActive: true,
+      },
+      temporaryPassword: "Gp!generated9",
+      auditWarning: {
+        code: "ACCOUNT_CREATED_AUDIT_FAILED",
+        message: "created … do not retry",
+      },
+    });
+
+    const ctx = makeCtx({ body: VALID_BODY, guardId: ADMIN_GUARD_ID });
+    await handleProvisionAccount(ctx.req, ctx.res, ctx.next);
+
+    expect(ctx.getStatus()).toBe(201);
+    const body = ctx.getJson() as {
+      temporaryPassword?: string;
+      auditWarning?: { code: string };
+    };
+    expect(body.temporaryPassword).toBe("Gp!generated9");
+    expect(body.auditWarning?.code).toBe("ACCOUNT_CREATED_AUDIT_FAILED");
+  });
+
+  it("omits auditWarning when the audit write succeeded", async () => {
+    vi.spyOn(service, "provisionAccount").mockResolvedValue({
+      view: {
+        guardId: "g3",
+        email: "c@d.test",
+        name: "C D",
+        badgeNumber: "G-3",
+        role: "guard",
+        isActive: true,
+      },
+    });
+    const ctx = makeCtx({ body: VALID_BODY, guardId: ADMIN_GUARD_ID });
+    await handleProvisionAccount(ctx.req, ctx.res, ctx.next);
+    const body = ctx.getJson() as { auditWarning?: unknown };
+    expect(body.auditWarning).toBeUndefined();
+  });
+
   it("propagates a ServiceError to next() (ACCOUNT_DUPLICATE → 409)", async () => {
     const err = new ServiceError(
       "ACCOUNT_DUPLICATE",

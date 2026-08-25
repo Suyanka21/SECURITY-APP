@@ -23,6 +23,10 @@ export const AccountErrorCodes = {
   ACCOUNT_INVALID_INPUT: "ACCOUNT_INVALID_INPUT",
   ACCOUNT_DUPLICATE: "ACCOUNT_DUPLICATE",
   ACCOUNT_PROVISIONING_UNAVAILABLE: "ACCOUNT_PROVISIONING_UNAVAILABLE",
+  // The account exists but its audit-trail row could not be written. Surfaced
+  // as a warning ON a 201 (never as the failure of the call) so the admin keeps
+  // the one-time password and is told not to retry into a duplicate.
+  ACCOUNT_CREATED_AUDIT_FAILED: "ACCOUNT_CREATED_AUDIT_FAILED",
   INTERNAL_ERROR: "INTERNAL_ERROR",
 } as const;
 
@@ -93,6 +97,15 @@ export interface ProvisionedAccountView {
   isActive: boolean;
 }
 
+/**
+ * Non-fatal warning attached to a successful provisioning response: the
+ * account and its password are real, but the audit row is missing.
+ */
+export interface AccountAuditWarning {
+  code: typeof AccountErrorCodes.ACCOUNT_CREATED_AUDIT_FAILED;
+  message: string;
+}
+
 export interface ProvisionAccountResponse {
   account: ProvisionedAccountView;
   /**
@@ -101,5 +114,7 @@ export interface ProvisionAccountResponse {
    * to the new operator out of band. Never logged.
    */
   temporaryPassword?: string;
+  /** Present when the account was created but its audit row was not written. */
+  auditWarning?: AccountAuditWarning;
   traceId: string;
 }

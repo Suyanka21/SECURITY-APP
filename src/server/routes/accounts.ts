@@ -51,7 +51,7 @@ export async function handleProvisionAccount(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (req as any).db;
 
-    const { view, temporaryPassword } = await provisionAccount(
+    const { view, temporaryPassword, auditWarning } = await provisionAccount(
       actingAdminGuardId,
       {
         email: parsed.data.email,
@@ -68,6 +68,7 @@ export async function handleProvisionAccount(
       account: view,
       traceId,
       ...(temporaryPassword ? { temporaryPassword } : {}),
+      ...(auditWarning ? { auditWarning } : {}),
     };
     res.status(201).json(body);
   } catch (err) {

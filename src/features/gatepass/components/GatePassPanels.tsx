@@ -6,6 +6,7 @@ import {
   ExternalLink,
   LayoutDashboard,
   Loader2,
+  Lock,
   LogOut,
   MailCheck,
   MessageSquarePlus,
@@ -286,7 +287,7 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
           <button
             className="focus-ring border border-primary bg-primary px-3 py-3 text-sm font-semibold text-primary-foreground disabled:opacity-60"
             onClick={() => void actions.scanQr(state.qrToken)}
-            disabled={state.inFlight}
+            disabled={state.inFlight || state.qrState === "locked"}
           >
             {scanning ? "Validating…" : "Validate QR"}
           </button>
@@ -300,6 +301,19 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
         {state.qrState === "valid" && (
           <p className="mt-3 text-sm text-success-foreground">
             QR verified. Confirm the entry on the right.
+          </p>
+        )}
+        {/* A pass locked by the PIN limiter is refused on the QR path too.
+            The guard sees the truth here — "Locked", not "unknown token". */}
+        {state.qrState === "locked" && (
+          <p
+            role="alert"
+            data-testid="qr-locked-banner"
+            className="mt-3 border border-destructive bg-destructive/10 px-3 py-2 text-sm font-semibold text-destructive"
+          >
+            Locked — this pass was locked after too many incorrect PIN
+            attempts. Do not admit on this pass: ask the resident to re-issue,
+            or log a walk-in/override.
           </p>
         )}
 
@@ -353,8 +367,8 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
               data-testid="pin-locked-banner"
               className="mt-3 border border-destructive bg-destructive/10 px-3 py-2 text-sm font-semibold text-destructive"
             >
-              This pass is locked after too many incorrect PIN attempts. Ask the
-              resident to re-issue, or use walk-in/override.
+              Locked — this pass is locked after too many incorrect PIN
+              attempts. Ask the resident to re-issue, or use walk-in/override.
             </p>
           )}
           <button
@@ -1075,35 +1089,54 @@ export function AwaitingApprovalPanel({ state, dispatch, actions }: Props) {
             <MailCheck className="h-4 w-4" aria-hidden="true" />
             Magic link (single-use)
           </div>
-          <p
-            data-testid="approval-magic-link"
-            className="mt-2 break-all font-mono text-xs text-foreground"
-          >
-            {approval.magicLinkUrl}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="focus-ring inline-flex items-center gap-1 border border-primary bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
-              onClick={() => void onCopy()}
+          {/* A resumed approval (console reopened after the link was handed to
+              the resident) has no link: the single-use token is deliberately
+              never persisted on the gate device. Say so rather than render an
+              empty/broken link. */}
+          {approval.magicLinkUrl === "" ? (
+            <p
+              data-testid="approval-magic-link-unavailable"
+              className="mt-2 text-xs text-muted-foreground"
             >
-              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-              {copied ? "Copied" : "Copy link"}
-            </button>
-            <a
-              className="focus-ring inline-flex items-center gap-1 border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground"
-              href={approval.magicLinkUrl}
-              target="_blank"
-              rel="noopener noreferrer"
+              The link is not shown again after the console was reopened. The
+              resident&apos;s decision still appears here; request a new
+              approval if they never received it.
+            </p>
+          ) : (
+            <p
+              data-testid="approval-magic-link"
+              className="mt-2 break-all font-mono text-xs text-foreground"
             >
-              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-              Open
-            </a>
-          </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Share with the resident. Anyone who receives this link can
-            approve or deny once — don't post it publicly.
-          </p>
+              {approval.magicLinkUrl}
+            </p>
+          )}
+          {approval.magicLinkUrl !== "" && (
+            <>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="focus-ring inline-flex items-center gap-1 border border-primary bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
+                  onClick={() => void onCopy()}
+                >
+                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                  {copied ? "Copied" : "Copy link"}
+                </button>
+                <a
+                  className="focus-ring inline-flex items-center gap-1 border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground"
+                  href={approval.magicLinkUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  Open
+                </a>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Share with the resident. Anyone who receives this link can
+                approve or deny once — don't post it publicly.
+              </p>
+            </>
+          )}
         </div>
       </div>
 
@@ -1224,14 +1257,39 @@ export function ConfirmationPanel({ state, dispatch }: Props) {
 }
 
 export function ErrorPanel({ state, dispatch }: Props) {
+  // A failed redemption replaces the QR/PIN panel with this screen, so this
+  // is the only place the guard can be told *why* the pass was refused. A
+  // pass locked by the PIN limiter is not a generic block: the guard must
+  // know it can never be admitted on this pass, however many times they
+  // re-scan it.
+  const locked = state.qrState === "locked";
   return (
     <section
       className="border border-destructive bg-destructive/10 p-6 shadow-panel"
       role="alert"
     >
-      <AlertTriangle className="h-12 w-12 text-destructive" />
-      <h2 className="mt-4 font-display text-4xl font-black">Entry blocked</h2>
+      {locked ? (
+        <Lock className="h-12 w-12 text-destructive" />
+      ) : (
+        <AlertTriangle className="h-12 w-12 text-destructive" />
+      )}
+      <h2
+        className="mt-4 font-display text-4xl font-black"
+        data-testid="error-panel-title"
+      >
+        {locked ? "Locked" : "Entry blocked"}
+      </h2>
       <p className="mt-2 text-destructive">{state.banner.message}</p>
+      {locked && (
+        <p
+          className="mt-2 text-sm font-semibold text-destructive"
+          data-testid="error-panel-locked-note"
+        >
+          Too many incorrect PIN attempts locked this pass — the QR on it is
+          dead too. Re-scanning will not help. Ask the resident to re-issue, or
+          log a walk-in/override.
+        </p>
+      )}
       {state.lastError?.code && (
         <p className="mt-2 text-sm text-destructive/80">
           Code: <code>{state.lastError.code}</code>

@@ -39,6 +39,7 @@ import {
 import {
   AccountErrorCodes,
   PROVISIONABLE_ROLES,
+  type AccountAuditWarning,
   type ProvisionableRole,
   type ProvisionedAccountView,
 } from "../validation/account-schemas";
@@ -76,6 +77,13 @@ export interface ProvisionAccountResult {
   view: ProvisionedAccountView;
   /** Only set when the server generated the password. Never persisted/logged. */
   temporaryPassword?: string;
+  /**
+   * Set when the account exists but its audit row could not be written. The
+   * account (and any generated password) is still returned: failing the whole
+   * call would destroy the one copy of the password and send the admin into a
+   * retry that only yields a duplicate.
+   */
+  auditWarning?: AccountAuditWarning;
 }
 
 interface GuardRow {
@@ -114,6 +122,10 @@ export function generateTemporaryPassword(): string {
  * @throws ServiceError(ACCOUNT_INVALID_INPUT, 422) on defensive re-validation.
  * @throws ServiceError(ACCOUNT_DUPLICATE, 409) on duplicate badge or email.
  * @throws ServiceError(INTERNAL_ERROR, 500) on unexpected provider/DB failure.
+ *
+ * A failed audit write does NOT throw: the account already exists and the
+ * generated password exists only in this result, so the caller gets the
+ * account plus an `auditWarning` describing the gap to report.
  */
 export async function provisionAccount(
   actingAdminGuardId: string,
@@ -281,20 +293,6 @@ export async function provisionAccount(
 
   const row = inserted[0];
 
-  // Audit — privileged action. Payload carries NO password/token/secret.
-  await emitAuditEvent(
-    "account_provisioned",
-    actingAdminGuardId,
-    `account-${row.id}`,
-    {
-      createdGuardId: row.id,
-      badgeNumber: row.badgeNumber,
-      role: row.role,
-      // email is operational metadata, not a secret; useful for the audit trail.
-      email,
-    },
-  );
-
   const view: ProvisionedAccountView = {
     guardId: row.id,
     email,
@@ -303,8 +301,44 @@ export async function provisionAccount(
     role: row.role,
     isActive: row.isActive,
   };
+  // The result is assembled BEFORE the audit write, because a generated
+  // password exists nowhere else: if the audit write could abort the call, the
+  // account would survive and its only password would be lost with the error.
+  const result: ProvisionAccountResult = generated
+    ? { view, temporaryPassword: password }
+    : { view };
 
-  return generated ? { view, temporaryPassword: password } : { view };
+  // Audit — privileged action. Payload carries NO password/token/secret.
+  try {
+    await emitAuditEvent(
+      "account_provisioned",
+      actingAdminGuardId,
+      `account-${row.id}`,
+      {
+        createdGuardId: row.id,
+        badgeNumber: row.badgeNumber,
+        role: row.role,
+        // email is operational metadata, not a secret; useful for the audit trail.
+        email,
+      },
+    );
+  } catch (auditErr) {
+    console.error(
+      `[ACCOUNT] Account ${row.id} (badge ${row.badgeNumber}) was created but ` +
+        `its account_provisioned audit row could not be written. ` +
+        `Manual reconciliation required.`,
+      auditErr instanceof Error ? auditErr.message : auditErr,
+    );
+    result.auditWarning = {
+      code: AccountErrorCodes.ACCOUNT_CREATED_AUDIT_FAILED,
+      message:
+        `The account for badge ${row.badgeNumber} was created and its password ` +
+        `is shown below, but writing it to the audit trail failed. Do not ` +
+        `retry — the account exists. Report this so the audit gap is reconciled.`,
+    };
+  }
+
+  return result;
 }
 
 // Keep the schema graph linked even though we only query `guards` here.

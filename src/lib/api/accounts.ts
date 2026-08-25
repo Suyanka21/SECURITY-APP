@@ -32,10 +32,21 @@ export interface ProvisionedAccountView {
   isActive: boolean;
 }
 
+/**
+ * Non-fatal warning on a successful creation: the account and password are
+ * real, but the audit row is missing and must be reconciled by hand.
+ */
+export interface AccountAuditWarning {
+  code: "ACCOUNT_CREATED_AUDIT_FAILED";
+  message: string;
+}
+
 export interface ProvisionAccountResponse {
   account: ProvisionedAccountView;
   /** Present only when the server generated the password (shown once). */
   temporaryPassword?: string;
+  /** Present when the account was created but its audit row was not written. */
+  auditWarning?: AccountAuditWarning;
   traceId: string;
 }
 

@@ -16,10 +16,14 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { QrScanPanel } from "../components/GatePassPanels";
+import {
+  AwaitingApprovalPanel,
+  ErrorPanel,
+  QrScanPanel,
+} from "../components/GatePassPanels";
 import type { GatePassActions } from "../components/GatePassPanels";
 import { initialGatePassState } from "../gatepassReducer";
-import type { GatePassState } from "../types";
+import type { GatePassState, PendingApproval } from "../types";
 
 function actionsStub(): GatePassActions {
   return {
@@ -88,5 +92,117 @@ describe("QrScanPanel — PIN backup redemption (Feature 11)", () => {
     renderPanel(panelState());
     expect(screen.queryByTestId("pin-locked-banner")).toBeNull();
     expect(screen.getByTestId("pin-redeem-button")).toBeEnabled();
+    expect(screen.queryByTestId("qr-locked-banner")).toBeNull();
+  });
+
+  it("tells the guard the QR path is Locked too when qrState=locked", () => {
+    renderPanel(panelState({ qrState: "locked" }));
+    const banner = screen.getByTestId("qr-locked-banner");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(/^Locked/);
+    expect(banner).toHaveTextContent(/too many incorrect PIN attempts/i);
+    // The QR button must not offer a re-scan that will only be refused.
+    expect(screen.getByRole("button", { name: /validate qr/i })).toBeDisabled();
+  });
+});
+
+/**
+ * ErrorPanel — a failed redemption sets mode="error", which replaces the
+ * scan panel entirely, so this is the screen the guard actually reads
+ * after 5 wrong PINs. It must name the lockout instead of reporting a
+ * generic block (runtime verification of Stage 6 fix 3 found the generic
+ * "Entry blocked" heading here).
+ */
+describe("ErrorPanel — locked pass", () => {
+  function renderError(state: GatePassState) {
+    render(<ErrorPanel state={state} dispatch={vi.fn()} />);
+  }
+
+  it("says Locked and explains a re-scan cannot help", () => {
+    renderError(
+      panelState({
+        mode: "error",
+        qrState: "locked",
+        banner: { tone: "danger", message: "This pass is locked." },
+      }),
+    );
+    expect(screen.getByTestId("error-panel-title")).toHaveTextContent("Locked");
+    expect(screen.getByTestId("error-panel-locked-note")).toHaveTextContent(
+      /re-scanning will not help/i,
+    );
+  });
+
+  it("keeps the generic heading for every other refusal", () => {
+    renderError(
+      panelState({
+        mode: "error",
+        qrState: "invalid",
+        banner: { tone: "danger", message: "Pass not recognised." },
+      }),
+    );
+    expect(screen.getByTestId("error-panel-title")).toHaveTextContent(
+      "Entry blocked",
+    );
+    expect(screen.queryByTestId("error-panel-locked-note")).toBeNull();
+  });
+});
+
+/**
+ * AwaitingApprovalPanel — a resumed approval has no magic link, because the
+ * single-use token is deliberately never persisted on the gate device. The
+ * panel must say so and must not render controls that copy/open nothing.
+ */
+describe("AwaitingApprovalPanel — resumed approval has no link", () => {
+  const approval: PendingApproval = {
+    id: "11111111-1111-4111-8111-111111111111",
+    draft: {
+      visitorName: "Ada Lovelace",
+      host: "Bola",
+      unit: "4A",
+      plate: null,
+      reason: "",
+      method: "walk-in",
+    },
+    magicLinkUrl: "",
+    expiresAt: "2024-01-01T00:05:00Z",
+    status: "pending",
+    traceId: "trace-resume",
+  };
+
+  it("explains the link is not shown again and renders no dead controls", () => {
+    render(
+      <AwaitingApprovalPanel
+        state={panelState({ mode: "approval", pendingApproval: approval })}
+        dispatch={vi.fn()}
+        actions={actionsStub()}
+      />,
+    );
+    expect(
+      screen.getByTestId("approval-magic-link-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("approval-magic-link")).toBeNull();
+    expect(screen.queryByRole("button", { name: /copy link/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /open/i })).toBeNull();
+  });
+
+  it("still renders the link and controls for a fresh approval", () => {
+    render(
+      <AwaitingApprovalPanel
+        state={panelState({
+          mode: "approval",
+          pendingApproval: {
+            ...approval,
+            magicLinkUrl: "http://localhost:5173/approve/x?token=abc",
+          },
+        })}
+        dispatch={vi.fn()}
+        actions={actionsStub()}
+      />,
+    );
+    expect(screen.getByTestId("approval-magic-link")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /copy link/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open/i })).toBeInTheDocument();
   });
 });
