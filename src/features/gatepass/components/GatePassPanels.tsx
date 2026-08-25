@@ -6,6 +6,7 @@ import {
   ExternalLink,
   LayoutDashboard,
   Loader2,
+  Lock,
   LogOut,
   MailCheck,
   MessageSquarePlus,
@@ -1109,32 +1110,33 @@ export function AwaitingApprovalPanel({ state, dispatch, actions }: Props) {
               {approval.magicLinkUrl}
             </p>
           )}
-          <div
-            className="mt-3 flex flex-wrap gap-2"
-            hidden={approval.magicLinkUrl === ""}
-          >
-            <button
-              type="button"
-              className="focus-ring inline-flex items-center gap-1 border border-primary bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
-              onClick={() => void onCopy()}
-            >
-              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-              {copied ? "Copied" : "Copy link"}
-            </button>
-            <a
-              className="focus-ring inline-flex items-center gap-1 border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground"
-              href={approval.magicLinkUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-              Open
-            </a>
-          </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Share with the resident. Anyone who receives this link can
-            approve or deny once — don't post it publicly.
-          </p>
+          {approval.magicLinkUrl !== "" && (
+            <>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="focus-ring inline-flex items-center gap-1 border border-primary bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
+                  onClick={() => void onCopy()}
+                >
+                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                  {copied ? "Copied" : "Copy link"}
+                </button>
+                <a
+                  className="focus-ring inline-flex items-center gap-1 border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground"
+                  href={approval.magicLinkUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  Open
+                </a>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Share with the resident. Anyone who receives this link can
+                approve or deny once — don't post it publicly.
+              </p>
+            </>
+          )}
         </div>
       </div>
 
@@ -1255,14 +1257,39 @@ export function ConfirmationPanel({ state, dispatch }: Props) {
 }
 
 export function ErrorPanel({ state, dispatch }: Props) {
+  // A failed redemption replaces the QR/PIN panel with this screen, so this
+  // is the only place the guard can be told *why* the pass was refused. A
+  // pass locked by the PIN limiter is not a generic block: the guard must
+  // know it can never be admitted on this pass, however many times they
+  // re-scan it.
+  const locked = state.qrState === "locked";
   return (
     <section
       className="border border-destructive bg-destructive/10 p-6 shadow-panel"
       role="alert"
     >
-      <AlertTriangle className="h-12 w-12 text-destructive" />
-      <h2 className="mt-4 font-display text-4xl font-black">Entry blocked</h2>
+      {locked ? (
+        <Lock className="h-12 w-12 text-destructive" />
+      ) : (
+        <AlertTriangle className="h-12 w-12 text-destructive" />
+      )}
+      <h2
+        className="mt-4 font-display text-4xl font-black"
+        data-testid="error-panel-title"
+      >
+        {locked ? "Locked" : "Entry blocked"}
+      </h2>
       <p className="mt-2 text-destructive">{state.banner.message}</p>
+      {locked && (
+        <p
+          className="mt-2 text-sm font-semibold text-destructive"
+          data-testid="error-panel-locked-note"
+        >
+          Too many incorrect PIN attempts locked this pass — the QR on it is
+          dead too. Re-scanning will not help. Ask the resident to re-issue, or
+          log a walk-in/override.
+        </p>
+      )}
       {state.lastError?.code && (
         <p className="mt-2 text-sm text-destructive/80">
           Code: <code>{state.lastError.code}</code>
