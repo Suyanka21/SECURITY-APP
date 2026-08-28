@@ -40,6 +40,16 @@ not-linked screen). To switch between console roles, clear browser storage over 
 `playwright` resolves (e.g. /home/ubuntu), not /tmp. Note: setting onboarding keys does NOT
 sign the current user out — clear storage first, then reload, then sign in.
 
+**Resident-role trap (blocks testing if you hit it):** if you pick "Resident / Host" in the
+onboarding role picker, `Index.tsx` returns the "Residents don't sign in here" screen *before* any
+auth check, so the staff login screen becomes unreachable from the UI. Help Center → "Replay
+Tutorial" keeps the stored role (`replayOnboarding` preserves `prev.role`) and just restarts the
+resident walkthrough, and `resetOnboarding` is exported but wired to no component. The only way
+out is clearing `gatepass_role` (storage clear / `gp-onboard.mjs skip guard`) and reloading — so
+budget a storage reset whenever a test picks the resident role, and never assume an on-screen
+control can undo it. Onboarding keys: `gatepass_welcomed`, `gatepass_role`,
+`gatepass_onboarding_complete`, `gatepass_onboarding_step`.
+
 ## Flow cheatsheet
 - Walk-in with host phone **blank** → "Request resident approval" shows the single-use magic link
   on screen. The "Open" link navigates in the same tab; as of the Stage 6 approval-handoff fix the
