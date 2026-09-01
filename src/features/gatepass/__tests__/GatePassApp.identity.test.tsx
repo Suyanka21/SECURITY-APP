@@ -25,6 +25,7 @@ const { AUTH } = vi.hoisted(() => ({
       isActive: true,
       traceId: "trace-me",
     },
+    identityVerified: true,
     loginAvailable: true,
     error: null,
     signIn: vi.fn(),
@@ -54,6 +55,26 @@ function buildApi(): GatePassApi {
 describe("guard console identity + sign-out (PR A)", () => {
   beforeEach(() => {
     AUTH.signOut.mockClear();
+    AUTH.identityVerified = true;
+  });
+
+  it("warns when the identity on screen is cached and unverified", () => {
+    AUTH.identityVerified = false;
+    render(<GatePassApp controller={{ api: buildApi() }} />);
+
+    expect(screen.getByTestId("guard-identity")).toHaveTextContent(
+      "N. Adeyemi · G-001 · guard"
+    );
+    expect(screen.getByTestId("guard-identity-unverified")).toHaveTextContent(
+      /Offline — identity not re-verified/
+    );
+  });
+
+  it("shows no unverified warning while the identity is server-verified", () => {
+    render(<GatePassApp controller={{ api: buildApi() }} />);
+    expect(
+      screen.queryByTestId("guard-identity-unverified")
+    ).not.toBeInTheDocument();
   });
 
   it("names the signed-in guard, badge and role in the console chrome", () => {

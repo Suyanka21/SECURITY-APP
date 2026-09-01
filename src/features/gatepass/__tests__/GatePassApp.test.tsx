@@ -20,6 +20,7 @@ const { AUTH } = vi.hoisted(() => ({
       isActive: true,
       traceId: "trace-me",
     },
+    identityVerified: true,
     loginAvailable: true,
     error: null,
     signIn: vi.fn(),

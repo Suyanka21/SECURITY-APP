@@ -42,6 +42,7 @@ function setAuth(overrides: Partial<AuthContextValue> & { status: AuthStatus }) 
     status: overrides.status,
     role: overrides.role ?? null,
     me: overrides.me ?? null,
+    identityVerified: overrides.identityVerified ?? true,
     loginAvailable: overrides.loginAvailable ?? true,
     error: overrides.error ?? null,
     signIn: overrides.signIn ?? vi.fn(),
