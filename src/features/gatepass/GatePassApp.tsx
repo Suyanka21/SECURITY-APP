@@ -1,3 +1,8 @@
+import { useMemo } from "react";
+import { LogOut } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/features/auth/AuthContext";
 import {
   AdminShell,
   AwaitingApprovalPanel,
@@ -17,6 +22,7 @@ import {
 } from "./components/GatePassPanels";
 import { useGatePassController } from "./useGatePassController";
 import type { GatePassControllerOptions } from "./useGatePassController";
+import type { GuardIdentity } from "./types";
 
 /**
  * Top-level shell. Owns the controller (state + side effects) and
@@ -24,7 +30,26 @@ import type { GatePassControllerOptions } from "./useGatePassController";
  * `dispatch` (UI-only actions) and `actions` (network-bound).
  */
 export function GatePassApp(props: { controller?: GatePassControllerOptions } = {}) {
-  const controller = useGatePassController(props.controller);
+  const { me, signOut } = useAuth();
+  // The signed-in guard's identity is the ONLY source for who this session
+  // belongs to; the console never invents or defaults one. Memoised so the
+  // controller's identity effect only fires when the guard actually changes.
+  const identity = useMemo<GuardIdentity | undefined>(
+    () =>
+      me
+        ? {
+            guardId: me.guardId,
+            name: me.name,
+            badgeNumber: me.badgeNumber,
+            role: me.role,
+          }
+        : undefined,
+    [me]
+  );
+  const controller = useGatePassController({
+    identity,
+    ...props.controller,
+  });
   const { state, dispatch } = controller;
   const actions = {
     submitEntry: controller.submitEntry,
@@ -64,6 +89,27 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-4 md:px-6 md:py-6">
+        <header className="flex flex-wrap items-center justify-between gap-3 border border-border bg-card px-4 py-3">
+          <div>
+            <h1 className="text-lg font-semibold text-foreground">
+              GatePass — Gate station
+            </h1>
+            <p className="text-xs text-muted-foreground" data-testid="guard-identity">
+              {me
+                ? `${me.name} · ${me.badgeNumber} · ${me.role}`
+                : "Identifying guard…"}
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void signOut()}
+            data-testid="guard-sign-out"
+          >
+            <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+            Sign out
+          </Button>
+        </header>
         <StatusBanner state={state} dispatch={dispatch} actions={actions} />
         <nav
           className="grid grid-cols-3 gap-2 md:grid-cols-6"

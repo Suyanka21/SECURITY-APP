@@ -91,6 +91,7 @@ function buildController(api: MockApi) {
   };
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       api,
       now: () => new Date("2024-01-01T00:00:00Z"),
       generateId,
@@ -741,6 +742,7 @@ function buildControllerWithApproval(
   };
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       api,
       approvalApi: approvalApi as unknown as typeof guardApprovalApi,
       now: () => new Date("2024-01-01T00:00:00Z"),
@@ -1293,6 +1295,7 @@ function buildControllerWithNotifications(
   };
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       api,
       approvalApi: approvalApi as unknown as typeof guardApprovalApi,
       notificationsApi:
@@ -1802,6 +1805,7 @@ function makeVisitorApi(): MockVisitorApi {
 function buildVisitorController(visitorApi: MockVisitorApi) {
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       visitorProfilesApi:
         visitorApi as unknown as typeof visitorProfilesApi,
       now: () => new Date("2024-02-01T00:00:00Z"),
@@ -2199,6 +2203,7 @@ function makeShiftsApi(): MockShiftsApi {
 function buildShiftsController(shiftsClient: MockShiftsApi) {
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       shiftsApi: shiftsClient as unknown as typeof shiftsApi,
       now: () => new Date("2024-02-01T00:00:00Z"),
     }),
@@ -2376,6 +2381,7 @@ function makeInvitationsApi(): MockInvitationsApi {
 function buildInvitationsController(invitations: MockInvitationsApi) {
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       visitorInvitationsApi:
         invitations as unknown as typeof visitorInvitationsApi,
       now: () => new Date("2024-02-01T00:00:00Z"),
@@ -2548,6 +2554,7 @@ function makeExitTrackingApi(): MockExitTrackingApi {
 function buildExitTrackingController(exitApi: MockExitTrackingApi) {
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       exitTrackingApi: exitApi as unknown as typeof exitTrackingApi,
       now: () => new Date("2024-06-01T10:00:00Z"),
     }),
@@ -2686,6 +2693,18 @@ import type {
   DeliveryListEntryView,
 } from "@/lib/api/types";
 
+/**
+ * Signed-in guard identity for the session. PR A: the controller no longer
+ * seeds a placeholder guard, so tests must establish identity explicitly.
+ */
+const TEST_IDENTITY = {
+  guardId: "guard-west-04",
+  name: "N. Adeyemi",
+  badgeNumber: "G-001",
+  role: "guard",
+};
+
+
 interface MockDeliveryApi {
   submitDelivery: ReturnType<typeof vi.fn>;
   listDeliveries: ReturnType<typeof vi.fn>;
@@ -2701,6 +2720,7 @@ function makeDeliveryApi(): MockDeliveryApi {
 function buildDeliveryController(delApi: MockDeliveryApi) {
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       deliveryManagementApi: delApi as unknown as typeof DeliveryApiType,
       now: () => new Date("2024-06-01T10:00:00Z"),
     }),

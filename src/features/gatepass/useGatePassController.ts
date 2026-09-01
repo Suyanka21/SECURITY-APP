@@ -71,6 +71,7 @@ import type {
   EntryDraft,
   EntryRecord,
   GatePassError,
+  GuardIdentity,
   NotificationDeliveryView,
   PendingApproval,
   ShiftsQuery,
@@ -352,6 +353,13 @@ export interface GatePassControllerOptions {
    * one cannot mask the other.
    */
   notificationsPollIntervalMs?: number;
+  /**
+   * Signed-in guard identity from GET /api/auth/me. Seeds the session so the
+   * console and audit panel name the real guard. Undefined while auth is
+   * still resolving; entries cannot be logged until it arrives (validateDraft
+   * rejects an empty guardId).
+   */
+  identity?: GuardIdentity;
 }
 
 export function useGatePassController(
@@ -377,6 +385,14 @@ export function useGatePassController(
   newIdRef.current = options.generateId ?? newIdRef.current;
 
   const [state, dispatch] = useReducer(gatePassReducer, initialGatePassState);
+
+  // Establish (or re-establish, after a re-auth) the session identity. The
+  // reducer no-ops when nothing changed, so this cannot loop.
+  const identity = options.identity;
+  useEffect(() => {
+    if (!identity) return;
+    dispatch({ type: "SESSION_IDENTITY", identity });
+  }, [identity]);
 
   // Keep latest state in a ref so callbacks don't re-create on every
   // state change (avoids re-binding panels each render).

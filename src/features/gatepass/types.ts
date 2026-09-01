@@ -343,9 +343,23 @@ export type DeliveryManagementState = {
   lastEntry?: DeliveryEntryView;
 };
 
+/**
+ * Display identity of the signed-in guard, sourced from GET /api/auth/me
+ * (guards.role / guards.badge_number). Display and local-attribution only —
+ * the server always re-derives the acting guard from the JWT.
+ */
+export type GuardIdentity = {
+  guardId: string;
+  name: string;
+  badgeNumber: string;
+  role: string;
+};
+
 export type GatePassState = {
   mode: GatePassMode;
   guardId: string;
+  /** Human label for the signed-in guard, empty until identity resolves. */
+  guardLabel: string;
   network: NetworkState;
   cameraState: "idle" | "ready" | "failed";
   qrState:
@@ -462,6 +476,12 @@ export type GatePassState = {
 };
 
 export type GatePassAction =
+  /**
+   * Establishes the signed-in guard's identity for the session. Dispatched
+   * once auth resolves; replaces the placeholder-free empty seed so the
+   * audit panel names the real guard rather than a hardcoded id.
+   */
+  | { type: "SESSION_IDENTITY"; identity: GuardIdentity }
   | { type: "NAVIGATE"; mode: GatePassMode }
   | { type: "SET_NETWORK"; network: NetworkState }
   | { type: "START_CAMERA" }
