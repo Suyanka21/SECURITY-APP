@@ -13,7 +13,6 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_GUARD_ID,
   gatePassReducer,
   initialGatePassState,
   recognizedVisitors,
@@ -22,6 +21,9 @@ import {
 import type { EntryRecord, GatePassState } from "../types";
 import { VISITOR_PROFILE_NEW_KEY } from "../types";
 import type { VisitorProfileView } from "@/lib/api/types";
+
+/** Fixture guard id. The reducer itself no longer ships a default (PR A). */
+const TEST_GUARD_ID = "guard-west-04";
 
 function makeEntry(
   overrides: Partial<EntryRecord> = {}
@@ -35,7 +37,7 @@ function makeEntry(
     method: "walk-in",
     id: "server-1",
     offlineId: "00000000-0000-4000-8000-000000000001",
-    guardId: DEFAULT_GUARD_ID,
+    guardId: TEST_GUARD_ID,
     createdAt: new Date("2024-01-01T00:00:00Z").toISOString(),
     status: "logged",
     syncState: "synced",
@@ -45,16 +47,70 @@ function makeEntry(
 
 describe("validateDraft", () => {
   it("requires visitor name, host, unit, and an explicit override reason", () => {
-    expect(validateDraft({ visitorName: "", host: "", unit: "", plate: "", reason: "", method: "walk-in" }, DEFAULT_GUARD_ID)?.code).toBe("VISITOR_NAME_REQUIRED");
-    expect(validateDraft({ visitorName: "Ada", host: "", unit: "", plate: "", reason: "", method: "walk-in" }, DEFAULT_GUARD_ID)?.code).toBe("HOST_REQUIRED");
-    expect(validateDraft({ visitorName: "Ada", host: "Bola", unit: "", plate: "", reason: "", method: "walk-in" }, DEFAULT_GUARD_ID)?.code).toBe("UNIT_REQUIRED");
-    expect(validateDraft({ visitorName: "Ada", host: "Bola", unit: "4A", plate: "", reason: "short", method: "override" }, DEFAULT_GUARD_ID)?.code).toBe("OVERRIDE_REASON_TOO_SHORT");
-    expect(validateDraft({ visitorName: "Ada", host: "Bola", unit: "4A", plate: "", reason: "Plumbing emergency in service core", method: "override" }, DEFAULT_GUARD_ID)).toBeNull();
+    expect(validateDraft({ visitorName: "", host: "", unit: "", plate: "", reason: "", method: "walk-in" }, TEST_GUARD_ID)?.code).toBe("VISITOR_NAME_REQUIRED");
+    expect(validateDraft({ visitorName: "Ada", host: "", unit: "", plate: "", reason: "", method: "walk-in" }, TEST_GUARD_ID)?.code).toBe("HOST_REQUIRED");
+    expect(validateDraft({ visitorName: "Ada", host: "Bola", unit: "", plate: "", reason: "", method: "walk-in" }, TEST_GUARD_ID)?.code).toBe("UNIT_REQUIRED");
+    expect(validateDraft({ visitorName: "Ada", host: "Bola", unit: "4A", plate: "", reason: "short", method: "override" }, TEST_GUARD_ID)?.code).toBe("OVERRIDE_REASON_TOO_SHORT");
+    expect(validateDraft({ visitorName: "Ada", host: "Bola", unit: "4A", plate: "", reason: "Plumbing emergency in service core", method: "override" }, TEST_GUARD_ID)).toBeNull();
   });
 
   it("refuses to validate when guard identity is missing", () => {
     const error = validateDraft({ visitorName: "Ada", host: "Bola", unit: "4A", plate: "", reason: "", method: "walk-in" }, "");
     expect(error?.code).toBe("GUARD_ID_MISSING");
+  });
+});
+
+// ─── PR A — session identity (no hardcoded guard) ───────────────────
+describe("SESSION_IDENTITY", () => {
+  const IDENTITY = {
+    guardId: "11111111-1111-4111-8111-111111111111",
+    name: "N. Adeyemi",
+    badgeNumber: "G-001",
+    role: "guard",
+  };
+
+  it("seeds no guard and no audit line before identity is known", () => {
+    expect(initialGatePassState.guardId).toBe("");
+    expect(initialGatePassState.guardLabel).toBe("");
+    expect(initialGatePassState.audit).toEqual([]);
+  });
+
+  it("attributes the session to the signed-in guard, never a placeholder", () => {
+    const state = gatePassReducer(initialGatePassState, {
+      type: "SESSION_IDENTITY",
+      identity: IDENTITY,
+    });
+    expect(state.guardId).toBe(IDENTITY.guardId);
+    expect(state.guardLabel).toBe("N. Adeyemi (G-001)");
+    expect(state.audit[0]).toBe("Session opened by N. Adeyemi (G-001)");
+    expect(JSON.stringify(state)).not.toContain("guard-west-04");
+  });
+
+  it("is idempotent for the same guard", () => {
+    const first = gatePassReducer(initialGatePassState, {
+      type: "SESSION_IDENTITY",
+      identity: IDENTITY,
+    });
+    const second = gatePassReducer(first, {
+      type: "SESSION_IDENTITY",
+      identity: IDENTITY,
+    });
+    expect(second).toBe(first);
+  });
+
+  it("replaces the previous session line when a different guard signs in", () => {
+    const first = gatePassReducer(initialGatePassState, {
+      type: "SESSION_IDENTITY",
+      identity: IDENTITY,
+    });
+    const second = gatePassReducer(first, {
+      type: "SESSION_IDENTITY",
+      identity: { ...IDENTITY, guardId: "other", name: "B. Otieno", badgeNumber: "G-002" },
+    });
+    expect(second.audit.filter((line) => line.startsWith("Session opened by "))).toEqual([
+      "Session opened by B. Otieno (G-002)",
+    ]);
+    expect(second.guardId).toBe("other");
   });
 });
 
@@ -82,7 +138,7 @@ describe("gatePassReducer", () => {
     expect(state.mode).toBe("confirmed");
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0].id).toBe("server-abc");
-    expect(state.entries[0].guardId).toBe(DEFAULT_GUARD_ID);
+    expect(state.entries[0].guardId).toBe(TEST_GUARD_ID);
     expect(state.entries[0].status).toBe("logged");
     expect(state.pendingSync).toHaveLength(0);
   });
@@ -1535,7 +1591,7 @@ describe("gatePassReducer", () => {
     const EXIT_VIEW = {
       id: "exit-1",
       entryId: ENTRY_ID,
-      guardId: DEFAULT_GUARD_ID,
+      guardId: TEST_GUARD_ID,
       createdAt: "2024-06-01T10:30:00.000Z",
       traceId: "trace-exit-1",
     };
@@ -1546,7 +1602,7 @@ describe("gatePassReducer", () => {
       unit: "18B",
       plate: "LND-482" as string | null,
       method: "walk-in" as const,
-      guardId: DEFAULT_GUARD_ID,
+      guardId: TEST_GUARD_ID,
       createdAt: "2024-06-01T10:00:00.000Z",
     };
 

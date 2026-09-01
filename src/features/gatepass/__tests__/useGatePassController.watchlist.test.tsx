@@ -27,6 +27,18 @@ import type {
   WatchlistMatchView,
 } from "@/lib/api/types";
 
+/**
+ * Signed-in guard identity for the session. PR A: the controller no longer
+ * seeds a placeholder guard, so tests must establish identity explicitly.
+ */
+const TEST_IDENTITY = {
+  guardId: "guard-west-04",
+  name: "N. Adeyemi",
+  badgeNumber: "G-001",
+  role: "guard",
+};
+
+
 function ok<T>(data: T, status = 200): ApiResult<T> {
   return { ok: true, status, data };
 }
@@ -92,6 +104,7 @@ function buildController(api: MockApi) {
   let counter = 0;
   return renderHook(() =>
     useGatePassController({
+      identity: TEST_IDENTITY,
       api,
       now: () => new Date("2024-01-01T00:00:00Z"),
       generateId: () => {

@@ -21,6 +21,7 @@ import type {
   GatePassError,
   GatePassMode,
   GatePassState,
+  GuardIdentity,
   NotificationDeliveryView,
   NotificationsState,
   PendingApproval,
@@ -74,7 +75,15 @@ export const recognizedVisitors: Visitor[] = [
   },
 ];
 
-export const DEFAULT_GUARD_ID = "guard-west-04";
+/**
+ * Human label for the audit panel. Badge number is included because that is
+ * what a supervisor reads off a shift handover sheet.
+ */
+export function guardIdentityLabel(identity: GuardIdentity): string {
+  return identity.badgeNumber
+    ? `${identity.name} (${identity.badgeNumber})`
+    : identity.name;
+}
 
 /**
  * Feature 12 (Stage 5) — a fresh, unacknowledged escalation record. Reset
@@ -83,9 +92,15 @@ export const DEFAULT_GUARD_ID = "guard-west-04";
  */
 const NO_ESCALATION = { supervisor: "", acknowledged: false } as const;
 
+/**
+ * Seed state. Guard identity starts EMPTY on purpose: the console must never
+ * display or attribute a placeholder guard. `SESSION_IDENTITY` fills it in
+ * from GET /api/auth/me as soon as auth resolves.
+ */
 export const initialGatePassState: GatePassState = {
   mode: "home",
-  guardId: DEFAULT_GUARD_ID,
+  guardId: "",
+  guardLabel: "",
   network: "online",
   cameraState: "idle",
   qrState: "idle",
@@ -107,7 +122,7 @@ export const initialGatePassState: GatePassState = {
   recognizedVisitors,
   searchQuery: "",
   searchLoading: false,
-  audit: [`Session opened by ${DEFAULT_GUARD_ID}`],
+  audit: [],
   notifications: { byApprovalId: {}, loading: false },
   visitorProfiles: {
     byId: {},
@@ -391,6 +406,26 @@ export function gatePassReducer(
   action: GatePassAction
 ): GatePassState {
   switch (action.type) {
+    case "SESSION_IDENTITY": {
+      const label = guardIdentityLabel(action.identity);
+      if (
+        state.guardId === action.identity.guardId &&
+        state.guardLabel === label
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        guardId: action.identity.guardId,
+        guardLabel: label,
+        audit: [
+          `Session opened by ${label}`,
+          ...state.audit.filter(
+            (line) => !line.startsWith("Session opened by ")
+          ),
+        ],
+      };
+    }
     case "NAVIGATE": {
       // Normalize draft.method against the destination mode so a stale
       // "qr" or "override" method can't leak into a walk-in submission.

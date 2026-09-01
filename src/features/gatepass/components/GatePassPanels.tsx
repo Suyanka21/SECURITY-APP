@@ -1390,7 +1390,7 @@ function AuditPanel({
         </div>
       )}
       <p className="mt-4 text-xs text-muted-foreground">
-        Most recent: {state.audit[0]}
+        Most recent: {state.audit[0] ?? "No activity yet this session."}
       </p>
     </aside>
   );
@@ -1405,6 +1405,14 @@ export function AdminShell({ state }: { state: GatePassState }) {
       <h2 className="font-display text-3xl font-bold">Admin shell</h2>
       <p className="mt-2 text-sm text-muted-foreground">
         Operational counts and the rolling guard audit log.
+      </p>
+      <p
+        className="mt-1 text-xs text-muted-foreground"
+        data-testid="audit-session-guard"
+      >
+        {state.guardLabel
+          ? `Session guard: ${state.guardLabel}`
+          : "Session guard: identifying…"}
       </p>
       <div className="mt-5 grid gap-3 md:grid-cols-4">
         <Stat label="Entries logged" value={state.entries.length} />
@@ -1422,13 +1430,19 @@ export function AdminShell({ state }: { state: GatePassState }) {
         <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
           Audit log
         </p>
-        <ul className="mt-2 grid gap-1 text-sm">
-          {state.audit.slice(0, 8).map((line, index) => (
-            <li key={`${index}-${line}`} className="border-b border-border py-1">
-              {line}
-            </li>
-          ))}
-        </ul>
+        {state.audit.length === 0 ? (
+          <p className="mt-2 text-sm text-muted-foreground">
+            No activity logged in this session yet.
+          </p>
+        ) : (
+          <ul className="mt-2 grid gap-1 text-sm">
+            {state.audit.slice(0, 8).map((line, index) => (
+              <li key={`${index}-${line}`} className="border-b border-border py-1">
+                {line}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </section>
   );

@@ -6,6 +6,32 @@ import type { guardApprovalApi } from "@/lib/api/approvals";
 import type { guardNotificationsApi } from "@/lib/api/notifications";
 import type { NotificationView } from "@/lib/api/types";
 
+// PR A — the console reads the signed-in guard from useAuth(); these tests
+// exercise the console itself, so auth is stubbed with a real guard.
+const { AUTH } = vi.hoisted(() => ({
+  AUTH: {
+    status: "authenticated" as const,
+    role: "guard" as const,
+    me: {
+      guardId: "11111111-1111-4111-8111-111111111111",
+      role: "guard" as const,
+      name: "N. Adeyemi",
+      badgeNumber: "G-001",
+      isActive: true,
+      traceId: "trace-me",
+    },
+    loginAvailable: true,
+    error: null,
+    signIn: vi.fn(),
+    signOut: vi.fn(),
+    refresh: vi.fn(),
+  },
+}));
+
+vi.mock("@/features/auth/AuthContext", () => ({
+  useAuth: () => AUTH,
+}));
+
 function buildApi(overrides: Partial<GatePassApi> = {}): GatePassApi {
   const stub = vi.fn(async () => ({
     ok: false as const,
