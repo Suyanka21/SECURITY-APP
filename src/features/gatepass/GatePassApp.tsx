@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { LogOut } from "lucide-react";
+import { LogOut, WifiOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/features/auth/AuthContext";
@@ -30,7 +30,7 @@ import type { GuardIdentity } from "./types";
  * `dispatch` (UI-only actions) and `actions` (network-bound).
  */
 export function GatePassApp(props: { controller?: GatePassControllerOptions } = {}) {
-  const { me, signOut } = useAuth();
+  const { me, identityVerified, signOut } = useAuth();
   // The signed-in guard's identity is the ONLY source for who this session
   // belongs to; the console never invents or defaults one. Memoised so the
   // controller's identity effect only fires when the guard actually changes.
@@ -99,6 +99,15 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
                 ? `${me.name} · ${me.badgeNumber} · ${me.role}`
                 : "Identifying guard…"}
             </p>
+            {me && !identityVerified ? (
+              <p
+                className="mt-1 flex items-center gap-1 text-xs font-bold text-amber-700"
+                data-testid="guard-identity-unverified"
+              >
+                <WifiOff className="h-3 w-3" aria-hidden="true" />
+                Offline — identity not re-verified with the server
+              </p>
+            ) : null}
           </div>
           <Button
             variant="ghost"

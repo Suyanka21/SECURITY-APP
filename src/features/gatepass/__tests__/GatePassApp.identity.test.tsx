@@ -7,8 +7,8 @@
  *   1.3 the audit panel named a hardcoded `guard-west-04`
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 
 import { GatePassApp } from "../GatePassApp";
 import type { GatePassApi } from "@/lib/api/gatepass";
@@ -25,6 +25,7 @@ const { AUTH } = vi.hoisted(() => ({
       isActive: true,
       traceId: "trace-me",
     },
+    identityVerified: true,
     loginAvailable: true,
     error: null,
     signIn: vi.fn(),
@@ -54,6 +55,33 @@ function buildApi(): GatePassApi {
 describe("guard console identity + sign-out (PR A)", () => {
   beforeEach(() => {
     AUTH.signOut.mockClear();
+    AUTH.identityVerified = true;
+  });
+
+  // The console's mount effects fire network calls; drain them before the
+  // environment is torn down so their dispatches don't land on a dead window.
+  afterEach(async () => {
+    cleanup();
+    await act(async () => {});
+  });
+
+  it("warns when the identity on screen is cached and unverified", () => {
+    AUTH.identityVerified = false;
+    render(<GatePassApp controller={{ api: buildApi() }} />);
+
+    expect(screen.getByTestId("guard-identity")).toHaveTextContent(
+      "N. Adeyemi · G-001 · guard"
+    );
+    expect(screen.getByTestId("guard-identity-unverified")).toHaveTextContent(
+      /Offline — identity not re-verified/
+    );
+  });
+
+  it("shows no unverified warning while the identity is server-verified", () => {
+    render(<GatePassApp controller={{ api: buildApi() }} />);
+    expect(
+      screen.queryByTestId("guard-identity-unverified")
+    ).not.toBeInTheDocument();
   });
 
   it("names the signed-in guard, badge and role in the console chrome", () => {
