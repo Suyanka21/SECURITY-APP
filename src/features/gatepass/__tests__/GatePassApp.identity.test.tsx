@@ -7,8 +7,8 @@
  *   1.3 the audit panel named a hardcoded `guard-west-04`
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 
 import { GatePassApp } from "../GatePassApp";
 import type { GatePassApi } from "@/lib/api/gatepass";
@@ -56,6 +56,13 @@ describe("guard console identity + sign-out (PR A)", () => {
   beforeEach(() => {
     AUTH.signOut.mockClear();
     AUTH.identityVerified = true;
+  });
+
+  // The console's mount effects fire network calls; drain them before the
+  // environment is torn down so their dispatches don't land on a dead window.
+  afterEach(async () => {
+    cleanup();
+    await act(async () => {});
   });
 
   it("warns when the identity on screen is cached and unverified", () => {
