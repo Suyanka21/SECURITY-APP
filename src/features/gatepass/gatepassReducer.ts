@@ -605,6 +605,36 @@ export function gatePassReducer(
       };
     }
 
+    case "PENDING_SYNC_RESTORED": {
+      const known = new Set(
+        [...state.pendingSync, ...state.entries]
+          .map((e) => e.offlineId)
+          .filter((id): id is string => typeof id === "string"),
+      );
+      const restored = action.entries.filter(
+        (e) => typeof e.offlineId === "string" && !known.has(e.offlineId),
+      );
+      if (restored.length === 0) return state;
+
+      return {
+        ...state,
+        entries: [...restored, ...state.entries],
+        pendingSync: [...restored, ...state.pendingSync],
+        audit: [
+          `restored ${restored.length} unsynced ${
+            restored.length === 1 ? "entry" : "entries"
+          } for ${state.guardId}`,
+          ...state.audit,
+        ],
+        banner: {
+          tone: "warning",
+          message: `${restored.length} offline ${
+            restored.length === 1 ? "entry is" : "entries are"
+          } still waiting to sync from an earlier session. Go online and press Sync.`,
+        },
+      };
+    }
+
     case "ENTRY_FAILED":
       return {
         ...state,
