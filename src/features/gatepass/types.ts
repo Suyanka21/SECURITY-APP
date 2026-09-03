@@ -511,6 +511,13 @@ export type GatePassAction =
    */
   | { type: "WATCHLIST_ESCALATION_BLOCKED"; error: GatePassError }
   | { type: "ENTRY_QUEUED"; entry: EntryRecord }
+  /**
+   * Offline entries this guard queued in an earlier mount, read back from
+   * local storage after the console remounted (session expiry, a failed
+   * /api/auth/me on wake, a reload). Restoring them is announced, never
+   * silent — the guard has to know unsynced arrivals are still outstanding.
+   */
+  | { type: "PENDING_SYNC_RESTORED"; entries: EntryRecord[] }
   | { type: "ENTRY_FAILED"; error: GatePassError }
   | { type: "QR_SCAN_STARTED" }
   | {

@@ -78,6 +78,7 @@ import type {
   Visitor,
 } from "./types";
 import { VISITOR_PROFILE_NEW_KEY } from "./types";
+import { readPendingSync, writePendingSync } from "./pendingSyncStore";
 import {
   forgetPendingApproval,
   readPendingApproval,
@@ -398,6 +399,37 @@ export function useGatePassController(
   // state change (avoids re-binding panels each render).
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // ─── Offline queue durability ──────────────────────────────────────
+  // An entry queued offline is a visitor who is already inside; until it
+  // syncs, this tab is the only record of it. Read the guard's own queue
+  // back once per identity, then mirror every change to local storage so
+  // an unmount (session expiry, a failed /api/auth/me on wake, a reload)
+  // cannot destroy it.
+  const restoredForGuard = useRef<string | null>(null);
+  useEffect(() => {
+    const guardId = state.guardId;
+    if (!guardId || restoredForGuard.current === guardId) return;
+    restoredForGuard.current = guardId;
+    const entries = readPendingSync(guardId);
+    if (entries.length === 0) return;
+    dispatch({ type: "PENDING_SYNC_RESTORED", entries });
+  }, [state.guardId]);
+
+  // Writes merge with storage: every offlineId this mount has ever held is
+  // tracked so that (a) an entry this mount synced is removed from storage,
+  // and (b) an entry another tab of the same guard queued is left alone.
+  // Nothing is written until this mount has held an entry — otherwise the
+  // first render after sign-in would race the restore effect above.
+  const seenOfflineIds = useRef(new Set<string>());
+  useEffect(() => {
+    if (!state.guardId) return;
+    for (const e of state.pendingSync) {
+      if (e.offlineId) seenOfflineIds.current.add(e.offlineId);
+    }
+    if (seenOfflineIds.current.size === 0) return;
+    writePendingSync(state.guardId, state.pendingSync, seenOfflineIds.current);
+  }, [state.guardId, state.pendingSync]);
 
   const submitEntry = useCallback(async () => {
     const current = stateRef.current;
