@@ -416,15 +416,19 @@ export function useGatePassController(
     dispatch({ type: "PENDING_SYNC_RESTORED", entries });
   }, [state.guardId]);
 
-  // An empty queue only clears storage once this mount has actually held
-  // entries — otherwise the first render after sign-in would wipe the very
-  // queue the effect above is about to restore.
-  const hasHeldEntries = useRef(false);
+  // Writes merge with storage: every offlineId this mount has ever held is
+  // tracked so that (a) an entry this mount synced is removed from storage,
+  // and (b) an entry another tab of the same guard queued is left alone.
+  // Nothing is written until this mount has held an entry — otherwise the
+  // first render after sign-in would race the restore effect above.
+  const seenOfflineIds = useRef(new Set<string>());
   useEffect(() => {
     if (!state.guardId) return;
-    if (state.pendingSync.length === 0 && !hasHeldEntries.current) return;
-    hasHeldEntries.current = state.pendingSync.length > 0;
-    writePendingSync(state.guardId, state.pendingSync);
+    for (const e of state.pendingSync) {
+      if (e.offlineId) seenOfflineIds.current.add(e.offlineId);
+    }
+    if (seenOfflineIds.current.size === 0) return;
+    writePendingSync(state.guardId, state.pendingSync, seenOfflineIds.current);
   }, [state.guardId, state.pendingSync]);
 
   const submitEntry = useCallback(async () => {

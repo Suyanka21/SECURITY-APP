@@ -13,10 +13,7 @@ import { act, render, renderHook, screen, waitFor } from "@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useGatePassController } from "../useGatePassController";
-import {
-  PENDING_SYNC_STORAGE_KEY,
-  readPendingSync,
-} from "../pendingSyncStore";
+import { pendingSyncStorageKey, readPendingSync } from "../pendingSyncStore";
 import type { GatePassApi } from "@/lib/api/gatepass";
 import type { ApiResult, SyncBatchResponse } from "@/lib/api/types";
 import { AuthProvider, useAuth } from "@/features/auth/AuthContext";
@@ -105,8 +102,8 @@ function fail(status: number, code: string): ApiResult<never> {
   return { ok: false, status, error: { code, message: code } };
 }
 
-function buildController(api: MockApi, identity = IDENTITY) {
-  let counter = 0;
+function buildController(api: MockApi, identity = IDENTITY, seed = 0) {
+  let counter = seed * 1000;
   const generateId = () => {
     counter += 1;
     return `00000000-0000-4000-8000-${counter.toString().padStart(12, "0")}`;
@@ -184,7 +181,9 @@ describe("pendingSync durability", () => {
     first.unmount();
 
     // Before the fix the entry was gone here. Storage still has it:
-    expect(window.localStorage.getItem(PENDING_SYNC_STORAGE_KEY)).not.toBeNull();
+    expect(
+      window.localStorage.getItem(pendingSyncStorageKey(IDENTITY.guardId)),
+    ).not.toBeNull();
 
     const second = buildController(api);
     await waitFor(() => {
@@ -263,7 +262,60 @@ describe("pendingSync durability", () => {
 
     expect(hook.result.current.state.pendingSync).toHaveLength(0);
     expect(readPendingSync(IDENTITY.guardId)).toHaveLength(0);
-    expect(window.localStorage.getItem(PENDING_SYNC_STORAGE_KEY)).toBeNull();
+    expect(
+      window.localStorage.getItem(pendingSyncStorageKey(IDENTITY.guardId)),
+    ).toBeNull();
+  });
+
+  it("a second guard queuing on the same device does not erase the first guard's queue", async () => {
+    const api = makeApi();
+    const first = buildController(api);
+    await queueOfflineWalkIn(first);
+    first.unmount();
+
+    const other = buildController(api, OTHER_GUARD);
+    await queueOfflineWalkIn(other, "Grace Hopper");
+    other.unmount();
+
+    expect(readPendingSync(IDENTITY.guardId)).toHaveLength(1);
+    expect(readPendingSync(OTHER_GUARD.guardId)).toHaveLength(1);
+  });
+
+  it("two live tabs of the same guard do not erase each other's queued entries", async () => {
+    const api = makeApi();
+    const tabA = buildController(api, IDENTITY, 1);
+    const tabB = buildController(api, IDENTITY, 2);
+    const a = await queueOfflineWalkIn(tabA, "Ada Lovelace");
+    const b = await queueOfflineWalkIn(tabB, "Grace Hopper");
+
+    expect(
+      readPendingSync(IDENTITY.guardId)
+        .map((e) => e.offlineId)
+        .sort(),
+    ).toEqual([a.offlineId, b.offlineId].sort());
+
+    // Tab B syncs its own entry; tab A's is untouched in storage.
+    api.syncEntries.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      data: {
+        results: [{ offlineId: b.offlineId!, serverId: "server-B", status: "synced" }],
+        syncedCount: 1,
+        duplicateCount: 0,
+        rejectedCount: 0,
+        traceId: "trace-sync",
+      } as unknown as SyncBatchResponse,
+    });
+    await act(async () => {
+      tabB.result.current.setNetwork("online");
+    });
+    await waitFor(() => {
+      expect(tabB.result.current.state.pendingSync).toHaveLength(0);
+    });
+
+    expect(readPendingSync(IDENTITY.guardId).map((e) => e.offlineId)).toEqual([
+      a.offlineId,
+    ]);
   });
 
   it("does not restore an entry that a later mount has already synced", async () => {

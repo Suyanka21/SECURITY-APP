@@ -12,14 +12,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { EntryRecord } from "../types";
 import {
   PENDING_SYNC_MAX_ENTRIES,
-  PENDING_SYNC_STORAGE_KEY,
   clearPendingSync,
+  pendingSyncStorageKey,
   readPendingSync,
   writePendingSync,
 } from "../pendingSyncStore";
 
 const GUARD = "11111111-1111-4111-8111-111111111111";
 const OTHER_GUARD = "22222222-2222-4222-8222-222222222222";
+const KEY = pendingSyncStorageKey(GUARD);
 
 function entry(overrides: Partial<EntryRecord> = {}): EntryRecord {
   return {
@@ -73,6 +74,42 @@ describe("pendingSyncStore", () => {
     expect(readPendingSync(OTHER_GUARD)).toHaveLength(1);
   });
 
+  it("two guards on one device never overwrite each other's queues", () => {
+    writePendingSync(GUARD, [entry()]);
+    writePendingSync(OTHER_GUARD, [
+      entry({ id: "o-2", offlineId: "o-2", guardId: OTHER_GUARD }),
+    ]);
+    // The second guard's session also ends with an empty queue write.
+    writePendingSync(OTHER_GUARD, [], new Set(["o-2"]));
+
+    expect(readPendingSync(GUARD)).toHaveLength(1);
+    expect(readPendingSync(OTHER_GUARD)).toEqual([]);
+  });
+
+  it("two tabs of the same guard merge by offlineId instead of last-writer-wins", () => {
+    // Tab A queues offline-1; tab B (never saw offline-1) queues offline-2.
+    writePendingSync(GUARD, [entry()], new Set(["offline-1"]));
+    writePendingSync(
+      GUARD,
+      [entry({ id: "offline-2", offlineId: "offline-2" })],
+      new Set(["offline-2"]),
+    );
+    expect(readPendingSync(GUARD).map((e) => e.offlineId).sort()).toEqual([
+      "offline-1",
+      "offline-2",
+    ]);
+
+    // Tab B syncs offline-2 and writes an empty queue: only its own entry goes.
+    writePendingSync(GUARD, [], new Set(["offline-2"]));
+    expect(readPendingSync(GUARD).map((e) => e.offlineId)).toEqual([
+      "offline-1",
+    ]);
+
+    // Tab A syncs offline-1: the record is finally cleared.
+    writePendingSync(GUARD, [], new Set(["offline-1"]));
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+  });
+
   it("returns nothing when no guard is known yet", () => {
     writePendingSync(GUARD, [entry()]);
     expect(readPendingSync(null)).toEqual([]);
@@ -104,19 +141,19 @@ describe("pendingSyncStore", () => {
 
   it("writing an empty queue clears the record", () => {
     writePendingSync(GUARD, [entry()]);
-    writePendingSync(GUARD, []);
+    writePendingSync(GUARD, [], new Set(["offline-1"]));
 
-    expect(window.localStorage.getItem(PENDING_SYNC_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(KEY)).toBeNull();
   });
 
   it("rejects malformed JSON without throwing", () => {
-    window.localStorage.setItem(PENDING_SYNC_STORAGE_KEY, "{not json");
+    window.localStorage.setItem(KEY, "{not json");
     expect(readPendingSync(GUARD)).toEqual([]);
   });
 
   it("rejects a record whose fields are the wrong shape", () => {
     window.localStorage.setItem(
-      PENDING_SYNC_STORAGE_KEY,
+      KEY,
       JSON.stringify({
         guardId: GUARD,
         savedAt: Date.now(),
@@ -127,9 +164,55 @@ describe("pendingSyncStore", () => {
     expect(readPendingSync(GUARD)).toEqual([]);
   });
 
+  it("rejects entries whose consumed fields are invalid, and strips unknown fields", () => {
+    const bad = [
+      entry({ method: "teleport" as EntryRecord["method"] }),
+      entry({ status: "nope" as EntryRecord["status"] }),
+      entry({ syncState: "synced" }),
+      entry({ createdAt: "yesterday-ish" }),
+      entry({ plate: 42 as unknown as string }),
+      entry({ reason: "x".repeat(10_000) }),
+      { ...entry(), lastError: { code: 1, message: null } },
+    ];
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ guardId: GUARD, savedAt: Date.now(), entries: bad }),
+    );
+    const restored = readPendingSync(GUARD);
+    // Only the entry with a malformed (optional) lastError survives, minus it.
+    expect(restored).toHaveLength(1);
+    expect(restored[0].lastError).toBeUndefined();
+
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        guardId: GUARD,
+        savedAt: Date.now(),
+        entries: [{ ...entry(), __proto__: { evil: true }, extra: "payload" }],
+      }),
+    );
+    const [clean] = readPendingSync(GUARD);
+    expect(Object.keys(clean).sort()).toEqual(
+      [
+        "createdAt",
+        "guardId",
+        "host",
+        "id",
+        "method",
+        "offlineId",
+        "plate",
+        "reason",
+        "status",
+        "syncState",
+        "unit",
+        "visitorName",
+      ].sort(),
+    );
+  });
+
   it("rejects an entry attributed to a different guard than the record", () => {
     window.localStorage.setItem(
-      PENDING_SYNC_STORAGE_KEY,
+      KEY,
       JSON.stringify({
         guardId: GUARD,
         savedAt: Date.now(),
@@ -144,7 +227,7 @@ describe("pendingSyncStore", () => {
   // are real visitors, and they wait for their guard to come back.
   it("clears explicitly", () => {
     writePendingSync(GUARD, [entry()]);
-    clearPendingSync();
+    clearPendingSync(GUARD);
     expect(readPendingSync(GUARD)).toEqual([]);
   });
 });
