@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import Index from "../Index";
 import type { AuthContextValue, AuthStatus } from "@/features/auth/AuthContext";
@@ -28,7 +28,11 @@ vi.mock("@/features/auth/LoginScreen", () => ({
 }));
 
 const mockAuth = vi.fn<[], AuthContextValue>();
-const mockOnboarding = vi.fn<[], { state: { role: StakeholderRole | null } }>();
+const mockResetOnboarding = vi.fn();
+const mockOnboarding = vi.fn<
+  [],
+  { state: { role: StakeholderRole | null }; resetOnboarding: () => void }
+>();
 
 vi.mock("@/features/auth/AuthContext", () => ({
   useAuth: () => mockAuth(),
@@ -53,7 +57,10 @@ function setAuth(overrides: Partial<AuthContextValue> & { status: AuthStatus }) 
 }
 
 function setOnboardingRole(role: StakeholderRole | null) {
-  mockOnboarding.mockReturnValue({ state: { role } });
+  mockOnboarding.mockReturnValue({
+    state: { role },
+    resetOnboarding: mockResetOnboarding,
+  });
 }
 
 describe("Index post-onboarding router", () => {
@@ -62,13 +69,53 @@ describe("Index post-onboarding router", () => {
     vi.clearAllMocks();
   });
 
-  it("resident onboarding-role → magic-link info, never a console or login", () => {
+  it("resident onboarding-role + no session → magic-link info, not a login prompt", () => {
     setOnboardingRole("resident");
-    setAuth({ status: "authenticated", role: "guard" }); // even if 'authenticated'
+    setAuth({ status: "unauthenticated" });
     render(<Index />);
     expect(screen.getByTestId("resident-not-available")).toBeInTheDocument();
     expect(screen.queryByTestId("iface-guard")).not.toBeInTheDocument();
     expect(screen.queryByTestId("iface-login")).not.toBeInTheDocument();
+  });
+
+  it("resident onboarding-role while auth is loading → spinner, never a console", () => {
+    setOnboardingRole("resident");
+    setAuth({ status: "loading" });
+    render(<Index />);
+    expect(screen.getByTestId("auth-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("iface-guard")).not.toBeInTheDocument();
+  });
+
+  it("an authenticated staff session wins over a stale resident onboarding-role", () => {
+    setOnboardingRole("resident");
+    setAuth({ status: "authenticated", role: "guard" });
+    render(<Index />);
+    expect(screen.getByTestId("iface-guard")).toBeInTheDocument();
+    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+  });
+
+  it("an authenticated admin session wins over a stale resident onboarding-role", () => {
+    setOnboardingRole("resident");
+    setAuth({ status: "authenticated", role: "admin" });
+    render(<Index />);
+    expect(screen.getByTestId("iface-admin")).toBeInTheDocument();
+    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+  });
+
+  it("a signed-in account with no guard profile is told so, even with a resident onboarding-role", () => {
+    setOnboardingRole("resident");
+    setAuth({ status: "no-guard-profile" });
+    render(<Index />);
+    expect(screen.getByTestId("no-guard-profile")).toBeInTheDocument();
+    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+  });
+
+  it("resident info screen offers 'Staff sign in' that clears the onboarding role", () => {
+    setOnboardingRole("resident");
+    setAuth({ status: "unauthenticated" });
+    render(<Index />);
+    fireEvent.click(screen.getByRole("button", { name: /staff sign in/i }));
+    expect(mockResetOnboarding).toHaveBeenCalledTimes(1);
   });
 
   it("loading → spinner, no interface leaks", () => {

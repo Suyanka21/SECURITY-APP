@@ -145,7 +145,11 @@ grant.* Three facts from the code force this decision:
   - explains residents receive an approval link on their phone for each visitor,
   - does **not** render the guard console (no silent fallback — see §6),
   - offers the tutorial replay + Help Center (already built),
-  - optionally links to the approval page if they arrived via a link.
+  - optionally links to the approval page if they arrived via a link,
+  - offers a **"Staff sign in"** exit that clears the stored onboarding-role and
+    returns to the login. The onboarding-role is a tile tap, not a credential:
+    it must never trap a staff member, and an already-authenticated staff
+    session always routes by auth-role regardless of the stored value.
 - Optional (Phase 2, only if trivially token-scoped): a **visitor-invitation
   preview** reachable by token, reusing the existing public
   `GET /api/visitor-invitations/:token/preview`. This is token-scoped, not a
