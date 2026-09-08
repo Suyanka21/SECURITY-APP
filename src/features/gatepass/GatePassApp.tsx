@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { LogOut, WifiOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,18 @@ import {
 import { useGatePassController } from "./useGatePassController";
 import type { GatePassControllerOptions } from "./useGatePassController";
 import type { GuardIdentity } from "./types";
+import type { AuthRole } from "@/lib/api/me";
+
+const GUARD_MODES = ["home", "qr", "walkin", "search", "override"] as const;
+
+// Every panel behind the admin tab is served by routes gated with
+// requireRole("admin", "senior-guard"). The tab mirrors that gate: a role the
+// server would refuse is never offered the destination. Authorization still
+// happens server-side on every request; this only stops the UI from offering
+// a tab that can do nothing but fail.
+function canOpenAdminTab(role: AuthRole | undefined): boolean {
+  return role === "admin" || role === "senior-guard";
+}
 
 /**
  * Top-level shell. Owns the controller (state + side effects) and
@@ -51,6 +63,17 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     ...props.controller,
   });
   const { state, dispatch } = controller;
+  const adminTabAllowed = canOpenAdminTab(me?.role);
+  const modes = adminTabAllowed
+    ? ([...GUARD_MODES, "admin"] as const)
+    : GUARD_MODES;
+  // A role re-resolved mid-session (token refresh → /auth/me) can revoke the
+  // tab while it is open; leave the guard on a panel they can still use.
+  useEffect(() => {
+    if (state.mode === "admin" && !adminTabAllowed) {
+      dispatch({ type: "NAVIGATE", mode: "home" });
+    }
+  }, [state.mode, adminTabAllowed, dispatch]);
   const actions = {
     submitEntry: controller.submitEntry,
     scanQr: controller.scanQr,
@@ -121,10 +144,12 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
         </header>
         <StatusBanner state={state} dispatch={dispatch} actions={actions} />
         <nav
-          className="grid grid-cols-3 gap-2 md:grid-cols-6"
+          className={`grid grid-cols-3 gap-2 ${
+            modes.length === 6 ? "md:grid-cols-6" : "md:grid-cols-5"
+          }`}
           aria-label="GatePass modules"
         >
-          {(["home", "qr", "walkin", "search", "override", "admin"] as const).map(
+          {modes.map(
             (mode) => (
               <button
                 key={mode}
@@ -179,7 +204,7 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
         {state.mode === "error" && (
           <ErrorPanel state={state} dispatch={dispatch} actions={actions} />
         )}
-        {state.mode === "admin" && (
+        {state.mode === "admin" && adminTabAllowed && (
           <div className="grid gap-5">
             <AdminShell state={state} />
             <VisitorInvitationsAdminPanel

@@ -68,6 +68,14 @@ onboarding-role never participates in that decision.
   shift/on-premise/delivery lists) — those extra reads are enforced server-side
   by `requireRole`, not by giving them a different console. Keeping one console
   for both avoids duplicating the entire guard workflow.
+- **The console's `admin` tab is offered only to `admin` / `senior-guard`**
+  (readiness audit #3.1). Every panel behind it — shift log, on-premise,
+  deliveries list, invitation issuance, visitor CRUD — sits on routes wired
+  with `requireRole("admin", "senior-guard")`, so for a plain `guard` the tab
+  could only ever render `AUTH_FORBIDDEN`. The tab mirrors the server gate; it
+  is not the gate. Authorization stays server-side on every request, and the
+  tab is also withheld until `/api/auth/me` has resolved a role (fail-closed,
+  same stance as `GUARD_ID_MISSING` on logging).
 
 ---
 
