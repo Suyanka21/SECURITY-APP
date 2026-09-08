@@ -44,9 +44,15 @@ function Shell({
 /**
  * §5.3 — onboarding-role `resident`. Residents do not sign in to a console;
  * they approve/deny each visitor from a one-off link sent to their phone.
- * This screen must NOT render the guard console.
+ * This screen must NOT render the guard console. It must, however, offer a
+ * way out: the role is a stored tile tap, and a staff member who chose it by
+ * mistake needs to reach the login without clearing browser storage.
  */
-export function ResidentMagicLinkInfo() {
+export function ResidentMagicLinkInfo({
+  onStaffSignIn,
+}: {
+  onStaffSignIn: () => void;
+}) {
   return (
     <Shell
       icon={<LinkIcon className="h-6 w-6" aria-hidden="true" />}
@@ -62,6 +68,16 @@ export function ResidentMagicLinkInfo() {
         applies only to that arrival — there's nothing to log into and no
         standing dashboard.
       </p>
+      <div className="border-t border-border pt-3">
+        <p className="mb-2">Not a resident? Guards and administrators sign in here.</p>
+        <Button
+          variant="outline"
+          onClick={onStaffSignIn}
+          data-testid="resident-staff-sign-in"
+        >
+          Staff sign in
+        </Button>
+      </div>
     </Shell>
   );
 }
