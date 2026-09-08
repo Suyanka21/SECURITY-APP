@@ -98,6 +98,12 @@ describe("guard console identity + sign-out (PR A)", () => {
   });
 
   it("attributes the audit panel to the real guard, never guard-west-04", () => {
+    // The audit panel lives behind the admin tab, which PR C offers only to
+    // admin / senior-guard — the roles the underlying routes admit.
+    const savedRole = AUTH.role;
+    const savedMe = AUTH.me;
+    (AUTH as { role: string }).role = "senior-guard";
+    AUTH.me = { ...AUTH.me, role: "senior-guard" as typeof AUTH.me.role };
     const { container } = render(<GatePassApp controller={{ api: buildApi() }} />);
     fireEvent.click(screen.getByRole("button", { name: /^admin$/i }));
 
@@ -106,5 +112,8 @@ describe("guard console identity + sign-out (PR A)", () => {
     );
     expect(screen.getByText("Session opened by N. Adeyemi (G-001)")).toBeInTheDocument();
     expect(container.textContent).not.toContain("guard-west-04");
+
+    AUTH.role = savedRole;
+    AUTH.me = savedMe;
   });
 });
