@@ -17,7 +17,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import ResidentApproval, { describeApprovalError } from "../ResidentApproval";
+import ResidentApproval from "../ResidentApproval";
+import { describeApprovalError } from "../resident-approval-errors";
 import type { residentApprovalApi } from "@/lib/api/approvals";
 import type {
   ApprovalRequestView,

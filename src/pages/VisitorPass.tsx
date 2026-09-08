@@ -32,25 +32,12 @@ import type {
   PreviewVisitorInvitationResponse,
   VisitorInvitationPreviewView,
 } from "@/lib/api/types";
+import { describePassError } from "./visitor-pass-errors";
 
 type PageState =
   | { kind: "loading" }
   | { kind: "loaded"; invitation: VisitorInvitationPreviewView }
-  | { kind: "error"; code: string; message: string };
-
-// The server speaks INVITATION_*; earlier drafts of this page keyed off QR_*
-// codes, so both spellings are accepted rather than silently falling through
-// to the generic "Could not load pass" panel.
-function titleForCode(code: string): string {
-  if (code === "INVITATION_LOCKED" || code === "QR_LOCKED") return "Locked";
-  if (code === "INVITATION_EXPIRED" || code === "QR_EXPIRED")
-    return "Pass expired";
-  if (code === "INVITATION_CONSUMED" || code === "QR_CONSUMED")
-    return "Pass already used";
-  if (code === "INVITATION_NOT_FOUND" || code === "QR_NOT_FOUND")
-    return "Pass not found";
-  return "Could not load pass";
-}
+  | { kind: "error"; code: string; traceId?: string };
 
 interface VisitorPassProps {
   // Optional injection for tests; defaults to the real API client.
@@ -68,21 +55,18 @@ export default function VisitorPass({ api = visitorInvitationsApi }: VisitorPass
 
   const load = useCallback(async () => {
     if (!token) {
-      setState({
-        kind: "error",
-        code: "INVITATION_NOT_FOUND",
-        message: "Missing token in URL.",
-      });
+      setState({ kind: "error", code: "INVITATION_NOT_FOUND" });
       return;
     }
     setState({ kind: "loading" });
     const result = await api.previewInvitation(token);
     if (!result.ok) {
-      // No silent success: surface the server's exact error code.
+      // No silent success: keep the exact code for the panel to classify,
+      // but it is described in plain language, never shown.
       setState({
         kind: "error",
         code: result.error.code,
-        message: result.error.message,
+        traceId: result.error.traceId,
       });
       return;
     }
@@ -199,56 +183,58 @@ export default function VisitorPass({ api = visitorInvitationsApi }: VisitorPass
           </section>
         )}
 
-        {state.kind === "error" && (
-          <section
-            role="alert"
-            className="border border-destructive bg-destructive/10 p-5"
-            data-testid="visitor-pass-error"
-          >
-            <div className="flex items-start gap-3">
-              {state.code === "INVITATION_LOCKED" ||
-              state.code === "QR_LOCKED" ? (
-                <Lock className="mt-0.5 h-6 w-6 text-destructive" />
-              ) : state.code === "INVITATION_EXPIRED" ||
-                state.code === "QR_EXPIRED" ? (
-                <Clock3 className="mt-0.5 h-6 w-6 text-destructive" />
-              ) : state.code === "INVITATION_CONSUMED" ||
-                state.code === "QR_CONSUMED" ? (
-                <ShieldAlert className="mt-0.5 h-6 w-6 text-destructive" />
-              ) : (
-                <AlertTriangle className="mt-0.5 h-6 w-6 text-destructive" />
-              )}
-              <div>
-                <p
-                  className="font-display text-xl font-bold text-destructive"
-                  data-testid="visitor-pass-error-title"
-                >
-                  {titleForCode(state.code)}
-                </p>
-                <p
-                  className="mt-1 text-sm font-semibold text-destructive"
-                  data-testid="visitor-pass-error-code"
-                >
-                  {state.code}
-                </p>
-                <p className="mt-2 text-sm text-foreground">{state.message}</p>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Ask your host to issue a new pass.
-                </p>
-                {(state.code === "INVITATION_LOCKED" ||
-                  state.code === "QR_LOCKED") && (
-                  <p
-                    className="mt-1 text-sm text-muted-foreground"
-                    data-testid="visitor-pass-locked-note"
-                  >
-                    This pass was locked after too many incorrect PIN attempts.
-                    The guard cannot let you in with it.
-                  </p>
+        {state.kind === "error" && (() => {
+          const err = describePassError(state.code);
+          return (
+            <section
+              role="alert"
+              className="border border-destructive bg-destructive/10 p-5"
+              data-testid="visitor-pass-error"
+              data-error-kind={err.kind}
+            >
+              <div className="flex items-start gap-3">
+                {err.kind === "locked" ? (
+                  <Lock className="mt-0.5 h-6 w-6 text-destructive" />
+                ) : err.kind === "expired" ? (
+                  <Clock3 className="mt-0.5 h-6 w-6 text-destructive" />
+                ) : err.kind === "consumed" ? (
+                  <ShieldAlert className="mt-0.5 h-6 w-6 text-destructive" />
+                ) : (
+                  <AlertTriangle className="mt-0.5 h-6 w-6 text-destructive" />
                 )}
+                <div>
+                  <p
+                    className="font-display text-xl font-bold text-destructive"
+                    data-testid="visitor-pass-error-title"
+                  >
+                    {err.title}
+                  </p>
+                  <p
+                    className="mt-2 text-sm text-foreground"
+                    data-testid="visitor-pass-error-body"
+                  >
+                    {err.body}
+                  </p>
+                  <p className="mt-3 text-sm text-muted-foreground">{err.hint}</p>
+                  {err.kind === "unavailable" && (
+                    <button
+                      type="button"
+                      className="focus-ring mt-4 border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground"
+                      onClick={() => void load()}
+                    >
+                      Try again
+                    </button>
+                  )}
+                  {state.traceId && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      Support reference: <code>{state.traceId}</code>
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
-          </section>
-        )}
+            </section>
+          );
+        })()}
       </div>
     </main>
   );
