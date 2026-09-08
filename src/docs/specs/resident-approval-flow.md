@@ -191,6 +191,42 @@ If `expires_at < now` and status is still `pending`, the server lazily
 flips it to `expired` on read AND on next `POST /:id/decide`. This means
 there is no window where the guard sees `pending` past the deadline.
 
+### 7.2a `POST /api/approvals/:id/preview` (no JWT — magic-link auth, read-only)
+
+Why this exists: `7.2 /status` is guard-authenticated and additionally
+checks that the caller is the guard who raised the request. The resident
+opening the magic link on their own phone has neither, so the resident
+page cannot use it — and until this endpoint was added it did not work
+from any device except the requesting guard's signed-in browser.
+
+Request:
+```ts
+{ token: string }                     // raw token from the magic link
+```
+
+Response (200): identical shape to `7.2` (the same `ApprovalRequestView`,
+never the token or its hash).
+
+Validation and error contract are the same as `7.3` steps 1–3, in the
+same order (existence → terminal status → expiry → token hash), so a
+preview never reveals whether a *guessed* token belongs to a decided or
+expired request beyond what `/decide` already reveals:
+
+| Condition | Status | Code |
+|---|---|---|
+| `:id` not a UUID | 422 | `VALIDATION_ERROR` |
+| `token` missing / not 64 hex | 401 | `APPROVAL_TOKEN_INVALID` |
+| no row | 404 | `APPROVAL_NOT_FOUND` |
+| approved / denied | 409 | `APPROVAL_ALREADY_DECIDED` |
+| expired (lazily flipped, same as `/status`) | 410 | `APPROVAL_EXPIRED` |
+| hash mismatch | 401 | `APPROVAL_TOKEN_INVALID` |
+| too many calls | 429 | `RATE_LIMIT_EXCEEDED` |
+
+The only write this endpoint can perform is the lazy `pending → expired`
+flip that `/status` and `/decide` already perform. It never decides, and
+it shares the strict public rate limiter with `/decide`. `/status` stays
+guard-only; this endpoint does not replace it.
+
 ### 7.3 `POST /api/approvals/:id/decide` (no JWT — magic-link auth)
 
 Request:
@@ -297,8 +333,16 @@ Resident side (`/approve/:approvalId?token=...`):
 - Deny opens a small textarea for reason (required).
 - On submit: shows "Done. The guard has been notified." No back button
   needed; the page is dead after the decision.
+- On load the page calls `7.2a /preview` with the link token (never the
+  guard `/status` route).
 - If `expired` or `already decided` on first load: explicit message,
   no buttons.
+- Every failure is rendered in plain language. Error codes and backend
+  messages are mapped in `src/pages/resident-approval-errors.ts` and
+  never shown verbatim; the `traceId` appears only as a labelled
+  "Support reference". The same rule applies to the public visitor pass
+  page (`src/pages/visitor-pass-errors.ts`). Residents and visitors are
+  not trained users; guard/admin panels may still show codes.
 
 Accessibility:
 - Both screens hit WCAG AA contrast.
