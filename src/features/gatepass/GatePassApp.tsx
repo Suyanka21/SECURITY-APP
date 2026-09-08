@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { LogOut, WifiOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -63,9 +63,17 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
     ...props.controller,
   });
   const { state, dispatch } = controller;
-  const modes = canOpenAdminTab(me?.role)
+  const adminTabAllowed = canOpenAdminTab(me?.role);
+  const modes = adminTabAllowed
     ? ([...GUARD_MODES, "admin"] as const)
     : GUARD_MODES;
+  // A role re-resolved mid-session (token refresh → /auth/me) can revoke the
+  // tab while it is open; leave the guard on a panel they can still use.
+  useEffect(() => {
+    if (state.mode === "admin" && !adminTabAllowed) {
+      dispatch({ type: "NAVIGATE", mode: "home" });
+    }
+  }, [state.mode, adminTabAllowed, dispatch]);
   const actions = {
     submitEntry: controller.submitEntry,
     scanQr: controller.scanQr,
@@ -196,7 +204,7 @@ export function GatePassApp(props: { controller?: GatePassControllerOptions } = 
         {state.mode === "error" && (
           <ErrorPanel state={state} dispatch={dispatch} actions={actions} />
         )}
-        {state.mode === "admin" && canOpenAdminTab(me?.role) && (
+        {state.mode === "admin" && adminTabAllowed && (
           <div className="grid gap-5">
             <AdminShell state={state} />
             <VisitorInvitationsAdminPanel

@@ -95,6 +95,27 @@ describe("guard console admin tab is role-gated (PR C)", () => {
     );
   });
 
+  it("a role revoked mid-session while the tab is open returns the guard to Home", () => {
+    setRole("senior-guard");
+    const view = render(<GatePassApp controller={{ api: buildApi() }} />);
+    fireEvent.click(screen.getByRole("button", { name: /^admin$/i }));
+    expect(screen.getByTestId("audit-session-guard")).toBeInTheDocument();
+
+    setRole("guard");
+    view.rerender(<GatePassApp controller={{ api: buildApi() }} />);
+
+    const nav = screen.getByRole("navigation", { name: /GatePass modules/i });
+    expect(screen.queryByTestId("audit-session-guard")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^admin$/i })
+    ).not.toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: /^home$/i })).toHaveClass(
+      "bg-primary"
+    );
+    expect(screen.getByRole("button", { name: /Sign out/i })).toBeInTheDocument();
+    expect(screen.getByText(/Ready for next arrival/i)).toBeInTheDocument();
+  });
+
   it("the tab is not offered before the guard's role has resolved", () => {
     // Fail-closed: no identity → no privileged destination, matching the
     // console's GUARD_ID_MISSING stance on logging before /auth/me resolves.
