@@ -1,16 +1,20 @@
 /**
  * GatePass — resident-role trap regression (readiness PR B).
  *
- * Uses the REAL useOnboarding hook against localStorage. Pins: a stored
- * `resident` onboarding-role with no staff session is recoverable from the
- * screen itself ("Staff sign in" → login, stored role cleared), and a real
- * staff session is never hidden behind that stored value.
+ * App-level: the REAL OnboardingGate wrapping the REAL Index, with the real
+ * useOnboarding hook against localStorage (only auth and the consoles are
+ * mocked). Pins that the gate and the router act on ONE onboarding state:
+ * a stored `resident` role is recoverable from the info screen itself, the
+ * exit is not undone by the gate or by a later tutorial replay, and a real
+ * staff session is never hidden behind the stored value.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 
 import Index from "../Index";
+import { OnboardingGate } from "@/features/onboarding/OnboardingGate";
 import type { AuthContextValue, AuthStatus } from "@/features/auth/AuthContext";
 import { STORAGE_KEYS } from "@/features/onboarding/types";
 
@@ -43,38 +47,86 @@ function setAuth(status: AuthStatus, role: AuthContextValue["role"] = null) {
   });
 }
 
-function storeResidentOnboarding() {
+function storeResidentOnboarding(completed: boolean) {
   localStorage.setItem(STORAGE_KEYS.role, "resident");
-  localStorage.setItem(STORAGE_KEYS.completed, "true");
+  localStorage.setItem(STORAGE_KEYS.completed, String(completed));
   localStorage.setItem(STORAGE_KEYS.welcomed, "true");
 }
 
-describe("Index — resident onboarding-role trap", () => {
+function renderApp() {
+  return render(
+    <MemoryRouter>
+      <OnboardingGate>
+        <Index />
+      </OnboardingGate>
+    </MemoryRouter>,
+  );
+}
+
+describe("App — resident onboarding-role trap (real gate + real router)", () => {
   beforeEach(() => localStorage.clear());
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
   });
 
-  it("stored resident role + no session: 'Staff sign in' reaches login and clears the role", () => {
-    storeResidentOnboarding();
+  it("the original trap: stored resident role + no session shows the info screen, not the login", () => {
+    storeResidentOnboarding(true);
     setAuth("unauthenticated");
-    render(<Index />);
-
+    renderApp();
     expect(screen.getByTestId("resident-not-available")).toBeInTheDocument();
     expect(screen.queryByTestId("iface-login")).not.toBeInTheDocument();
+  });
+
+  it("'Staff sign in' reaches the login in one tap; the gate does not re-open the picker", () => {
+    storeResidentOnboarding(true);
+    setAuth("unauthenticated");
+    renderApp();
 
     fireEvent.click(screen.getByTestId("resident-staff-sign-in"));
 
     expect(screen.getByTestId("iface-login")).toBeInTheDocument();
     expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("role-resident")).not.toBeInTheDocument();
+    expect(localStorage.getItem(STORAGE_KEYS.role)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.completed)).toBe("true");
+  });
+
+  it("a Help Center replay after the exit goes to the role picker, not back to the resident tutorial", () => {
+    storeResidentOnboarding(true);
+    setAuth("unauthenticated");
+    renderApp();
+    fireEvent.click(screen.getByTestId("resident-staff-sign-in"));
+
+    fireEvent.click(screen.getByTestId("help-button"));
+    fireEvent.click(screen.getByTestId("help-replay-tutorial"));
+
+    expect(screen.getByTestId("role-guard")).toBeInTheDocument();
+    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
     expect(localStorage.getItem(STORAGE_KEYS.role)).toBeNull();
   });
 
   it("stored resident role never hides an authenticated guard session", () => {
-    storeResidentOnboarding();
+    storeResidentOnboarding(true);
     setAuth("authenticated", "guard");
-    render(<Index />);
+    renderApp();
+    expect(screen.getByTestId("iface-guard")).toBeInTheDocument();
+    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+  });
+
+  it("an unfinished resident walkthrough completes into the guard console, not the resident screen", () => {
+    storeResidentOnboarding(false);
+    setAuth("authenticated", "guard");
+    renderApp();
+
+    // The gate still owns the screen while the walkthrough is incomplete…
+    expect(screen.queryByTestId("iface-guard")).not.toBeInTheDocument();
+    for (let i = 0; i < 20 && !screen.queryByTestId("onboarding-finish"); i++) {
+      fireEvent.click(screen.getByTestId("onboarding-next"));
+    }
+    fireEvent.click(screen.getByTestId("onboarding-finish"));
+
+    // …and the moment it hands over, the DB-verified session wins.
     expect(screen.getByTestId("iface-guard")).toBeInTheDocument();
     expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
   });

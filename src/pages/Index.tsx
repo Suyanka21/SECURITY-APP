@@ -38,7 +38,7 @@ function FullScreenLoader() {
 }
 
 const Index = () => {
-  const { state, resetOnboarding } = useOnboarding();
+  const { state, skipOnboarding } = useOnboarding();
   const auth = useAuth();
 
   if (auth.status === "loading") return <FullScreenLoader />;
@@ -46,9 +46,10 @@ const Index = () => {
   if (auth.status === "unauthenticated") {
     // onboarding-role `resident` → informational state (§5.3), not a login
     // prompt — residents act through one-off links. Staff who tapped the
-    // wrong tile leave via the button, which clears the stored role.
+    // wrong tile leave via the button, which clears the stored role and
+    // marks onboarding done so the gate does not re-open the picker.
     if (state.role === "resident") {
-      return <ResidentMagicLinkInfo onStaffSignIn={resetOnboarding} />;
+      return <ResidentMagicLinkInfo onStaffSignIn={skipOnboarding} />;
     }
     return <LoginScreen />;
   }

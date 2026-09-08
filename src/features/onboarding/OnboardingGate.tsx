@@ -40,8 +40,13 @@ export function OnboardingGate({ children }: OnboardingGateProps) {
   const [showHelp, setShowHelp] = useState(false);
   const [welcomed, setWelcomed] = useState(readWelcomed);
 
+  // Onboarding still owed (no role picked, or walkthrough unfinished). A
+  // completed flag with no role means it was skipped: the app renders and the
+  // tutorial is re-selectable from the Help Center.
+  const onboardingPending = !state.completed;
+
   // Phase 0: First-ever launch → introduce the product before the role picker.
-  if (!state.role && !welcomed) {
+  if (onboardingPending && !state.role && !welcomed) {
     return (
       <SplashScreen
         onContinue={() => {
@@ -57,12 +62,12 @@ export function OnboardingGate({ children }: OnboardingGateProps) {
   }
 
   // Phase 1: No role selected → show role picker
-  if (!state.role) {
+  if (onboardingPending && !state.role) {
     return <RoleSelection onSelect={selectRole} />;
   }
 
   // Phase 2: Role selected but onboarding incomplete → show walkthrough
-  if (!state.completed) {
+  if (onboardingPending && state.role) {
     return (
       <OnboardingWalkthrough
         role={state.role}

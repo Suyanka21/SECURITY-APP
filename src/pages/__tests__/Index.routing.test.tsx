@@ -28,10 +28,10 @@ vi.mock("@/features/auth/LoginScreen", () => ({
 }));
 
 const mockAuth = vi.fn<[], AuthContextValue>();
-const mockResetOnboarding = vi.fn();
+const mockSkipOnboarding = vi.fn();
 const mockOnboarding = vi.fn<
   [],
-  { state: { role: StakeholderRole | null }; resetOnboarding: () => void }
+  { state: { role: StakeholderRole | null }; skipOnboarding: () => void }
 >();
 
 vi.mock("@/features/auth/AuthContext", () => ({
@@ -59,7 +59,7 @@ function setAuth(overrides: Partial<AuthContextValue> & { status: AuthStatus }) 
 function setOnboardingRole(role: StakeholderRole | null) {
   mockOnboarding.mockReturnValue({
     state: { role },
-    resetOnboarding: mockResetOnboarding,
+    skipOnboarding: mockSkipOnboarding,
   });
 }
 
@@ -110,12 +110,12 @@ describe("Index post-onboarding router", () => {
     expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
   });
 
-  it("resident info screen offers 'Staff sign in' that clears the onboarding role", () => {
+  it("resident info screen offers 'Staff sign in' that skips onboarding for staff", () => {
     setOnboardingRole("resident");
     setAuth({ status: "unauthenticated" });
     render(<Index />);
     fireEvent.click(screen.getByRole("button", { name: /staff sign in/i }));
-    expect(mockResetOnboarding).toHaveBeenCalledTimes(1);
+    expect(mockSkipOnboarding).toHaveBeenCalledTimes(1);
   });
 
   it("loading → spinner, no interface leaks", () => {

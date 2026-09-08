@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import type { OnboardingState, OnboardingStep, StakeholderRole } from "./types";
 import { STORAGE_KEYS } from "./types";
 import { getGuardSteps } from "./steps/guardSteps";
@@ -59,8 +59,40 @@ function getStepsForRole(role: StakeholderRole): OnboardingStep[] {
   }
 }
 
+/**
+ * One in-memory onboarding state shared by every `useOnboarding()` caller.
+ * The gate and the router both consume this hook; if each held its own copy,
+ * a reset in one would leave the other acting on the stale role. The cache is
+ * dropped when the last subscriber unmounts so a fresh mount re-reads storage.
+ */
+let cached: OnboardingState | null = null;
+const listeners = new Set<() => void>();
+
+function getSnapshot(): OnboardingState {
+  if (cached === null) cached = readStorage();
+  return cached;
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) cached = null;
+  };
+}
+
+function commit(next: OnboardingState): void {
+  writeStorage(next);
+  cached = next;
+  listeners.forEach((listener) => listener());
+}
+
+function update(reducer: (prev: OnboardingState) => OnboardingState): void {
+  commit(reducer(getSnapshot()));
+}
+
 export function useOnboarding() {
-  const [state, setState] = useState<OnboardingState>(readStorage);
+  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   const steps = useMemo(
     () => (state.role ? getStepsForRole(state.role) : []),
@@ -70,64 +102,42 @@ export function useOnboarding() {
   const totalSteps = steps.length;
 
   const selectRole = useCallback((role: StakeholderRole) => {
-    const next: OnboardingState = { role, completed: false, currentStep: 0 };
-    writeStorage(next);
-    setState(next);
+    commit({ role, completed: false, currentStep: 0 });
   }, []);
 
   const nextStep = useCallback(() => {
-    setState((prev) => {
+    update((prev) => {
       const next = prev.currentStep + 1;
       const stepsCount = prev.role ? getStepsForRole(prev.role).length : 0;
       if (next >= stepsCount) {
-        const finished: OnboardingState = {
-          ...prev,
-          completed: true,
-          currentStep: stepsCount - 1,
-        };
-        writeStorage(finished);
-        return finished;
+        return { ...prev, completed: true, currentStep: stepsCount - 1 };
       }
-      writeStorage({ currentStep: next });
       return { ...prev, currentStep: next };
     });
   }, []);
 
   const prevStep = useCallback(() => {
-    setState((prev) => {
-      const next = Math.max(0, prev.currentStep - 1);
-      writeStorage({ currentStep: next });
-      return { ...prev, currentStep: next };
-    });
+    update((prev) => ({ ...prev, currentStep: Math.max(0, prev.currentStep - 1) }));
   }, []);
 
   const completeOnboarding = useCallback(() => {
-    setState((prev) => {
-      const finished: OnboardingState = { ...prev, completed: true };
-      writeStorage(finished);
-      return finished;
-    });
+    update((prev) => ({ ...prev, completed: true }));
   }, []);
 
   const resetOnboarding = useCallback(() => {
-    const fresh: OnboardingState = { role: null, completed: false, currentStep: 0 };
-    writeStorage(fresh);
-    // Also clear the completed flag explicitly
+    commit({ role: null, completed: false, currentStep: 0 });
     try { localStorage.removeItem(STORAGE_KEYS.completed); } catch { /* noop */ }
     try { localStorage.removeItem(STORAGE_KEYS.step); } catch { /* noop */ }
-    setState(fresh);
+  }, []);
+
+  /** Skip straight to the app with no stored role; the tutorial stays
+   *  available from the Help Center, which sends the user back to the picker. */
+  const skipOnboarding = useCallback(() => {
+    commit({ role: null, completed: true, currentStep: 0 });
   }, []);
 
   const replayOnboarding = useCallback(() => {
-    setState((prev) => {
-      const replaying: OnboardingState = {
-        role: prev.role,
-        completed: false,
-        currentStep: 0,
-      };
-      writeStorage(replaying);
-      return replaying;
-    });
+    update((prev) => ({ role: prev.role, completed: false, currentStep: 0 }));
   }, []);
 
   return {
@@ -140,6 +150,7 @@ export function useOnboarding() {
     prevStep,
     completeOnboarding,
     resetOnboarding,
+    skipOnboarding,
     replayOnboarding,
   };
 }
