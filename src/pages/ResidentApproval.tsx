@@ -3,12 +3,16 @@
  * Source: src/docs/specs/resident-approval-flow.md §10 (resident UI).
  *
  * Mounted at /approve/:id. The single-use token comes in via the
- * `?token=` query string. The page fetches the current approval status
- * once on mount (so an already-decided link shows the outcome instead
- * of a useless form), then lets the resident approve or deny.
+ * `?token=` query string. The page previews the request once on mount
+ * (so an already-decided link shows the outcome instead of a useless
+ * form), then lets the resident approve or deny.
  *
  * Auth model (spec §11): the token in the URL IS the credential. No
- * JWT, no cookies. The resident does not need an account.
+ * JWT, no cookies. The resident does not need an account — which is
+ * why both calls go through `residentApprovalApi`, never the guard's.
+ *
+ * This is a public surface: every failure is rendered in plain language.
+ * Backend error codes and messages are mapped, never shown verbatim.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -24,10 +28,7 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import {
-  guardApprovalApi,
-  residentApprovalApi,
-} from "@/lib/api/approvals";
+import { residentApprovalApi } from "@/lib/api/approvals";
 import type { ApprovalRequestView } from "@/lib/api/types";
 
 type Phase =
@@ -36,17 +37,67 @@ type Phase =
   | { kind: "ready"; approval: ApprovalRequestView }
   | { kind: "deciding"; approval: ApprovalRequestView; decision: "approve" | "deny" }
   | { kind: "decided"; approval: ApprovalRequestView }
-  | { kind: "error"; code: string; message: string; traceId?: string };
+  | { kind: "error"; code: string; traceId?: string };
+
+interface PublicError {
+  title: string;
+  body: string;
+}
+
+/**
+ * Maps every code the resident page can receive to words a resident can
+ * act on. Unknown codes fall through to a generic retry message — the
+ * code itself is never rendered.
+ */
+export function describeApprovalError(code: string): PublicError {
+  switch (code) {
+    case "APPROVAL_TOKEN_INVALID":
+      return {
+        title: "This link isn't valid",
+        body: "The approval link is incomplete or has been altered. Open the link exactly as the guard sent it, or ask them to send a new one.",
+      };
+    case "APPROVAL_NOT_FOUND":
+      return {
+        title: "Request not found",
+        body: "We couldn't find this approval request. It may have been removed, or the link may be incomplete. Ask the guard to send a new one.",
+      };
+    case "APPROVAL_ALREADY_DECIDED":
+    case "TOKEN_ALREADY_USED":
+      return {
+        title: "Already handled",
+        body: "A decision has already been recorded for this request, so this link can't be used again. If that wasn't you, contact the gate.",
+      };
+    case "APPROVAL_EXPIRED":
+      return {
+        title: "Request expired",
+        body: "This approval link timed out before a decision was recorded. Ask the guard to send a new one.",
+      };
+    case "RATE_LIMITED":
+    case "RATE_LIMIT_EXCEEDED":
+      return {
+        title: "Too many attempts",
+        body: "Please wait a minute and open the link again.",
+      };
+    case "NETWORK_ERROR":
+    case "REQUEST_TIMEOUT":
+      return {
+        title: "Couldn't reach the gate",
+        body: "Check your connection and try again. The request is still waiting for you.",
+      };
+    default:
+      return {
+        title: "Something went wrong",
+        body: "We couldn't load this request right now. Try again in a moment, or ask the guard for help.",
+      };
+  }
+}
 
 export interface ResidentApprovalProps {
-  /** Test seam — overrides the guard status fetcher. */
-  guardApi?: typeof guardApprovalApi;
-  /** Test seam — overrides the resident decide endpoint. */
+  /** Test seam — overrides the resident preview/decide endpoints. */
   residentApi?: typeof residentApprovalApi;
 }
 
 export default function ResidentApproval({
-  guardApi = guardApprovalApi,
   residentApi = residentApprovalApi,
 }: ResidentApprovalProps = {}) {
   const { id } = useParams<{ id: string }>();
@@ -58,9 +109,10 @@ export default function ResidentApproval({
     token.length === 0 ? { kind: "missing-token" } : { kind: "loading" }
   );
   const [reason, setReason] = useState("");
+  const [reasonMissing, setReasonMissing] = useState(false);
 
-  // Fetch the current status once on mount so a stale or already-
-  // decided link shows the outcome instead of pretending to be live.
+  // Preview the request once on mount so a stale or already-decided
+  // link shows the outcome instead of pretending to be live.
   // We intentionally do NOT poll here — the resident's page is
   // user-driven, not background-driven. If the link expires while
   // the page sits open, the /decide call will fail explicitly and
@@ -69,13 +121,12 @@ export default function ResidentApproval({
     if (!id || token.length === 0) return;
     let cancelled = false;
     (async () => {
-      const result = await guardApi.getApprovalStatus(id);
+      const result = await residentApi.previewApproval(id, { token });
       if (cancelled) return;
       if (!result.ok) {
         setPhase({
           kind: "error",
           code: result.error.code,
-          message: result.error.message,
           traceId: result.error.traceId,
         });
         return;
@@ -90,20 +141,17 @@ export default function ResidentApproval({
     return () => {
       cancelled = true;
     };
-  }, [id, token, guardApi]);
+  }, [id, token, residentApi]);
 
   const decide = useCallback(
     async (decision: "approve" | "deny") => {
       if (phase.kind !== "ready") return;
       if (!id) return;
       if (decision === "deny" && reason.trim().length === 0) {
-        setPhase({
-          kind: "error",
-          code: "REASON_REQUIRED",
-          message: "Please provide a brief reason so the guard can explain.",
-        });
+        setReasonMissing(true);
         return;
       }
+      setReasonMissing(false);
       setPhase({ kind: "deciding", approval: phase.approval, decision });
       const result = await residentApi.decideApproval(id, {
         token,
@@ -114,7 +162,6 @@ export default function ResidentApproval({
         setPhase({
           kind: "error",
           code: result.error.code,
-          message: result.error.message,
           traceId: result.error.traceId,
         });
         return;
@@ -216,12 +263,26 @@ export default function ResidentApproval({
                 id="deny-reason"
                 className="focus-ring min-h-20 border border-input bg-background px-3 py-3 text-base font-medium"
                 value={reason}
-                onChange={(event) => setReason(event.target.value)}
+                onChange={(event) => {
+                  setReason(event.target.value);
+                  if (event.target.value.trim().length > 0) setReasonMissing(false);
+                }}
                 placeholder="e.g. Not expected today"
                 maxLength={200}
                 disabled={phase.kind === "deciding"}
+                aria-invalid={reasonMissing || undefined}
+                aria-describedby={reasonMissing ? "deny-reason-hint" : undefined}
               />
             </label>
+            {reasonMissing && (
+              <p
+                id="deny-reason-hint"
+                role="alert"
+                className="mt-2 text-sm font-semibold text-destructive"
+              >
+                Please add a brief reason so the guard can explain the refusal.
+              </p>
+            )}
 
             <div className="mt-5 flex flex-col gap-3 sm:flex-row">
               <button
@@ -321,12 +382,14 @@ export default function ResidentApproval({
               />
               <div>
                 <h2 className="font-display text-lg font-bold">
-                  {phase.code}
+                  {describeApprovalError(phase.code).title}
                 </h2>
-                <p className="mt-1 text-sm">{phase.message}</p>
+                <p className="mt-1 text-sm">
+                  {describeApprovalError(phase.code).body}
+                </p>
                 {phase.traceId && (
                   <p className="mt-2 text-xs opacity-80">
-                    Trace: <code>{phase.traceId}</code>
+                    Support reference: <code>{phase.traceId}</code>
                   </p>
                 )}
               </div>

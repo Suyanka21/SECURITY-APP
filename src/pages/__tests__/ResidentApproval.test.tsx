@@ -3,24 +3,22 @@
  * Source: src/docs/specs/resident-approval-flow.md §10, §11
  *
  * The page exists so a resident can approve or deny a walk-in without
- * installing the app. The token in the URL is the credential. These
- * tests verify each branch of the spec:
+ * installing the app. The token in the URL is the credential — the page
+ * must never depend on a guard session. These tests verify each branch:
  *   - missing token   → no fetch, alert with recovery hint
+ *   - preview uses the PUBLIC endpoint with the link token, never the
+ *                       guard-only status route
  *   - already decided → outcome shown, no decide form
  *   - approve happy   → decideApproval called with token + decision
- *   - deny requires reason
+ *   - deny requires reason (form stays usable)
  *   - deny happy      → decideApproval called with reason
- *   - status fetch failure surfaces backend code + message
- *   - decide failure  → error surfaced (no silent success)
+ *   - every failure   → plain language; raw codes / backend text never shown
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import ResidentApproval from "../ResidentApproval";
-import type {
-  guardApprovalApi,
-  residentApprovalApi,
-} from "@/lib/api/approvals";
+import ResidentApproval, { describeApprovalError } from "../ResidentApproval";
+import type { residentApprovalApi } from "@/lib/api/approvals";
 import type {
   ApprovalRequestView,
   ApprovalStatusResponse,
@@ -29,6 +27,12 @@ import type {
 
 const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
 const TOKEN = "b".repeat(64);
+
+type ApiFailure = {
+  ok: false;
+  status: number;
+  error: { code: string; message: string; traceId?: string };
+};
 
 function makeApproval(
   overrides: Partial<ApprovalRequestView> = {}
@@ -53,47 +57,26 @@ function makeApproval(
   };
 }
 
-function makeGuardApi(
-  statusResponse: ApprovalStatusResponse | {
-    ok: false;
-    status: number;
-    error: { code: string; message: string; traceId?: string };
-  }
-): typeof guardApprovalApi {
-  const isOk = !("ok" in statusResponse) || statusResponse.ok !== false;
+function makeResidentApi({
+  preview,
+  decide,
+}: {
+  preview?: ApprovalStatusResponse | ApiFailure;
+  decide?: { ok: true; data: DecideApprovalResponse } | ApiFailure;
+} = {}): typeof residentApprovalApi {
+  const previewResponse = preview ?? { approval: makeApproval(), traceId: "t" };
   return {
-    createApproval: vi.fn(),
-    getApprovalStatus: vi.fn(async () =>
-      isOk
-        ? {
-            ok: true as const,
-            status: 200,
-            data: statusResponse as ApprovalStatusResponse,
-          }
-        : (statusResponse as { ok: false; status: number; error: { code: string; message: string; traceId?: string } })
+    previewApproval: vi.fn(async () =>
+      "ok" in previewResponse && previewResponse.ok === false
+        ? previewResponse
+        : { ok: true as const, status: 200, data: previewResponse as ApprovalStatusResponse }
     ),
-  } as unknown as typeof guardApprovalApi;
-}
-
-function makeResidentApi(
-  decideResponse:
-    | { ok: true; data: DecideApprovalResponse }
-    | { ok: false; status: number; error: { code: string; message: string; traceId?: string } }
-): typeof residentApprovalApi {
-  return {
-    decideApproval: vi.fn(async () =>
-      decideResponse.ok
-        ? {
-            ok: true as const,
-            status: 200,
-            data: decideResponse.data,
-          }
-        : {
-            ok: false as const,
-            status: decideResponse.status,
-            error: decideResponse.error,
-          }
-    ),
+    decideApproval: vi.fn(async () => {
+      if (!decide) throw new Error("decideApproval not expected in this test");
+      return decide.ok
+        ? { ok: true as const, status: 200, data: decide.data }
+        : { ok: false as const, status: decide.status, error: decide.error };
+    }),
   } as unknown as typeof residentApprovalApi;
 }
 
@@ -114,29 +97,35 @@ function renderAt(
   );
 }
 
+/** A public page must never show these to a resident. */
+function expectNoTechnicalLeak(...raw: string[]) {
+  for (const s of raw) {
+    expect(screen.queryByText(new RegExp(s))).not.toBeInTheDocument();
+  }
+}
+
 describe("ResidentApproval page", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("missing token → renders 'Missing token' alert without fetching status", () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval(),
-      traceId: "t",
-    });
-    renderAt(`/approve/${APPROVAL_ID}`, { guardApi });
+  it("missing token → renders 'Missing token' alert without fetching", () => {
+    const residentApi = makeResidentApi();
+    renderAt(`/approve/${APPROVAL_ID}`, { residentApi });
     expect(screen.getByText(/Missing token/i)).toBeInTheDocument();
-    expect(guardApi.getApprovalStatus).not.toHaveBeenCalled();
+    expect(residentApi.previewApproval).not.toHaveBeenCalled();
   });
 
-  it("pending approval → shows visitor + reason from guard, Approve/Deny buttons enabled", async () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval({ reason: "Late delivery" }),
-      traceId: "t",
+  it("loads the request through the public preview endpoint using only the link token (no guard session)", async () => {
+    const residentApi = makeResidentApi({
+      preview: { approval: makeApproval({ reason: "Late delivery" }), traceId: "t" },
     });
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { guardApi });
+    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
     await waitFor(() => {
       expect(screen.getByText(/Maya Angelou/)).toBeInTheDocument();
+    });
+    expect(residentApi.previewApproval).toHaveBeenCalledWith(APPROVAL_ID, {
+      token: TOKEN,
     });
     expect(screen.getByText(/Late delivery/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Approve/i })).toBeEnabled();
@@ -144,27 +133,22 @@ describe("ResidentApproval page", () => {
   });
 
   it("approve happy path → calls decideApproval with token+decision and shows the success state", async () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval(),
-      traceId: "t",
-    });
     const residentApi = makeResidentApi({
-      ok: true,
-      data: {
-        approval: makeApproval({
-          status: "approved",
-          decidedAt: new Date().toISOString(),
-          entryId: "entry-new",
-        }),
-        entry: null,
-        traceId: "t",
+      decide: {
+        ok: true,
+        data: {
+          approval: makeApproval({
+            status: "approved",
+            decidedAt: new Date().toISOString(),
+            entryId: "entry-new",
+          }),
+          entry: null,
+          traceId: "t",
+        },
       },
     });
 
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, {
-      guardApi,
-      residentApi,
-    });
+    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
     await waitFor(() => {
       expect(screen.getByText(/Maya Angelou/)).toBeInTheDocument();
     });
@@ -182,56 +166,61 @@ describe("ResidentApproval page", () => {
     });
   });
 
-  it("deny without reason → surfaces REASON_REQUIRED inline without calling the API", async () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval(),
-      traceId: "t",
-    });
+  it("deny without reason → plain-language inline hint, form stays usable, no API call", async () => {
     const residentApi = makeResidentApi({
-      ok: true,
-      data: {
-        approval: makeApproval({ status: "denied" }),
-        entry: null,
-        traceId: "t",
+      decide: {
+        ok: true,
+        data: {
+          approval: makeApproval({ status: "denied", deniedReason: "Not today" }),
+          entry: null,
+          traceId: "t",
+        },
       },
     });
 
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, {
-      guardApi,
-      residentApi,
-    });
+    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
     await waitFor(() => {
       expect(screen.getByText(/Maya Angelou/)).toBeInTheDocument();
     });
     fireEvent.click(screen.getByRole("button", { name: /Deny/i }));
-    await waitFor(() => {
-      expect(screen.getByText(/REASON_REQUIRED/)).toBeInTheDocument();
-    });
+    expect(
+      screen.getByRole("alert")
+    ).toHaveTextContent(/Please add a brief reason/i);
+    expectNoTechnicalLeak("REASON_REQUIRED");
     expect(residentApi.decideApproval).not.toHaveBeenCalled();
+
+    // The resident is not thrown out of the form: fixing the omission works.
+    const box = screen.getByRole("textbox", { name: /please tell the guard why/i });
+    expect(box).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(box, { target: { value: "Not today" } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Deny/i }));
+    await waitFor(() => {
+      expect(residentApi.decideApproval).toHaveBeenCalledWith(APPROVAL_ID, {
+        token: TOKEN,
+        decision: "deny",
+        reason: "Not today",
+      });
+    });
   });
 
   it("deny with reason → calls decideApproval and shows the denied outcome", async () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval(),
-      traceId: "t",
-    });
     const residentApi = makeResidentApi({
-      ok: true,
-      data: {
-        approval: makeApproval({
-          status: "denied",
-          decidedAt: new Date().toISOString(),
-          deniedReason: "Not expected today",
-        }),
-        entry: null,
-        traceId: "t",
+      decide: {
+        ok: true,
+        data: {
+          approval: makeApproval({
+            status: "denied",
+            decidedAt: new Date().toISOString(),
+            deniedReason: "Not expected today",
+          }),
+          entry: null,
+          traceId: "t",
+        },
       },
     });
 
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, {
-      guardApi,
-      residentApi,
-    });
+    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
     await waitFor(() => {
       expect(screen.getByText(/Maya Angelou/)).toBeInTheDocument();
     });
@@ -253,16 +242,18 @@ describe("ResidentApproval page", () => {
     expect(screen.getByText(/Reason recorded: Not expected today/)).toBeInTheDocument();
   });
 
-  it("already-decided link → skips the form and shows the existing outcome", async () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval({
-        status: "approved",
-        decidedAt: new Date().toISOString(),
-        entryId: "entry-prev",
-      }),
-      traceId: "t",
+  it("already-decided link (preview returns approved) → skips the form and shows the outcome", async () => {
+    const residentApi = makeResidentApi({
+      preview: {
+        approval: makeApproval({
+          status: "approved",
+          decidedAt: new Date().toISOString(),
+          entryId: "entry-prev",
+        }),
+        traceId: "t",
+      },
     });
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { guardApi });
+    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
     await waitFor(() => {
       expect(screen.getByText(/^Approved$/)).toBeInTheDocument();
     });
@@ -271,72 +262,124 @@ describe("ResidentApproval page", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("expired link from status → shows the expired outcome, not the form", async () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval({ status: "expired" }),
-      traceId: "t",
+  it("expired link (preview returns expired) → shows the expired outcome, not the form", async () => {
+    const residentApi = makeResidentApi({
+      preview: { approval: makeApproval({ status: "expired" }), traceId: "t" },
     });
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { guardApi });
+    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
     await waitFor(() => {
       expect(screen.getByText(/^Expired$/)).toBeInTheDocument();
     });
     expect(screen.queryByRole("button", { name: /Approve/i })).not.toBeInTheDocument();
   });
 
-  it("status fetch failure → surfaces the backend code + traceId, no decide attempted", async () => {
-    const guardApi = makeGuardApi({
-      ok: false,
-      status: 404,
-      error: {
+  describe("preview failures are rendered in plain language, never as codes", () => {
+    const cases: Array<{
+      code: string;
+      status: number;
+      message: string;
+      title: RegExp;
+    }> = [
+      {
         code: "APPROVAL_NOT_FOUND",
-        message: "No approval matches that id",
-        traceId: "trace-404",
+        status: 404,
+        message: "Approval request not found",
+        title: /Request not found/i,
       },
-    });
-    const residentApi = makeResidentApi({
-      ok: true,
-      data: {
-        approval: makeApproval(),
-        entry: null,
-        traceId: "t",
+      {
+        code: "APPROVAL_TOKEN_INVALID",
+        status: 401,
+        message: "Approval token is invalid",
+        title: /This link isn't valid/i,
       },
-    });
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, {
-      guardApi,
-      residentApi,
-    });
-    await waitFor(() => {
-      expect(screen.getByText(/APPROVAL_NOT_FOUND/)).toBeInTheDocument();
-    });
-    expect(screen.getByText(/trace-404/)).toBeInTheDocument();
-    expect(residentApi.decideApproval).not.toHaveBeenCalled();
+      {
+        code: "APPROVAL_ALREADY_DECIDED",
+        status: 409,
+        message: "Approval already approved",
+        title: /Already handled/i,
+      },
+      {
+        code: "APPROVAL_EXPIRED",
+        status: 410,
+        message: "Approval has expired",
+        title: /Request expired/i,
+      },
+      {
+        code: "RATE_LIMIT_EXCEEDED",
+        status: 429,
+        message: "Too many requests from this IP",
+        title: /Too many attempts/i,
+      },
+      {
+        code: "NETWORK_ERROR",
+        status: 0,
+        message: "fetch failed: ECONNREFUSED 127.0.0.1:3001",
+        title: /Couldn't reach the gate/i,
+      },
+      {
+        code: "INTERNAL_ERROR",
+        status: 500,
+        message: "relation approval_requests does not exist",
+        title: /Something went wrong/i,
+      },
+      {
+        code: "AUTH_TOKEN_MISSING",
+        status: 401,
+        message: "Provide Bearer token in Authorization header",
+        title: /Something went wrong/i,
+      },
+    ];
+
+    for (const c of cases) {
+      it(`${c.code} → "${c.title.source}" with a support reference, no raw code or backend text`, async () => {
+        const residentApi = makeResidentApi({
+          preview: {
+            ok: false,
+            status: c.status,
+            error: { code: c.code, message: c.message, traceId: `trace-${c.status}` },
+          },
+        });
+        renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
+        const alert = await screen.findByRole("alert");
+        expect(alert).toHaveTextContent(c.title);
+        expect(alert).toHaveTextContent(/Support reference/);
+        expect(alert).toHaveTextContent(`trace-${c.status}`);
+        expectNoTechnicalLeak(c.code, c.message.slice(0, 20));
+        expect(residentApi.decideApproval).not.toHaveBeenCalled();
+        expect(screen.queryByRole("button", { name: /^Approve$/i })).not.toBeInTheDocument();
+      });
+    }
   });
 
-  it("decide failure (token already used) → surfaces backend code, no silent success", async () => {
-    const guardApi = makeGuardApi({
-      approval: makeApproval(),
-      traceId: "t",
-    });
+  it("decide failure (link already used) → plain-language 'Already handled', no silent success, no raw code", async () => {
     const residentApi = makeResidentApi({
-      ok: false,
-      status: 409,
-      error: {
-        code: "TOKEN_ALREADY_USED",
-        message: "This approval link has already been used",
-        traceId: "trace-409",
+      decide: {
+        ok: false,
+        status: 409,
+        error: {
+          code: "APPROVAL_ALREADY_DECIDED",
+          message: "Approval already denied",
+          traceId: "trace-409",
+        },
       },
     });
-    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, {
-      guardApi,
-      residentApi,
-    });
+    renderAt(`/approve/${APPROVAL_ID}?token=${TOKEN}`, { residentApi });
     await waitFor(() => {
       expect(screen.getByText(/Maya Angelou/)).toBeInTheDocument();
     });
     fireEvent.click(screen.getByRole("button", { name: /Approve/i }));
-    await waitFor(() => {
-      expect(screen.getByText(/TOKEN_ALREADY_USED/)).toBeInTheDocument();
-    });
-    expect(screen.getByText(/trace-409/)).toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Already handled/i);
+    expect(alert).toHaveTextContent(/trace-409/);
+    expectNoTechnicalLeak("APPROVAL_ALREADY_DECIDED", "Approval already denied");
+    expect(screen.queryByText(/^Approved$/)).not.toBeInTheDocument();
+  });
+
+  it("describeApprovalError never echoes the code back for unknown inputs", () => {
+    const weird = "SOME_NEW_CODE_NOBODY_MAPPED";
+    const { title, body } = describeApprovalError(weird);
+    expect(title).not.toContain(weird);
+    expect(body).not.toContain(weird);
+    expect(title.length).toBeGreaterThan(0);
   });
 });
