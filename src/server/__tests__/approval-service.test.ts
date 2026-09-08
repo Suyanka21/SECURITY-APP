@@ -15,6 +15,7 @@ import {
   decideApprovalRequest,
   getApprovalStatus,
   hashToken,
+  previewApprovalForResident,
   ServiceError,
 } from "../services/approval-service";
 import {
@@ -502,5 +503,72 @@ describe("ApprovalService.decideApprovalRequest — error paths", () => {
         fixedClock
       )
     ).rejects.toMatchObject({ code: "APPROVAL_TOKEN_INVALID", statusCode: 401 });
+  });
+});
+
+// ─── previewApprovalForResident ───────────────────────────────────────────────
+// The resident's magic-link page has no guard JWT, so it cannot use the
+// guard-scoped status route. Preview is read-only and authenticates with the
+// same token-hash check as /decide; it must never reveal a row's details to a
+// holder of the wrong token.
+
+describe("ApprovalService.previewApprovalForResident", () => {
+  it("returns the pending approval view for a valid token without mutating the row", async () => {
+    const raw = "d".repeat(64);
+    const db = makeMockDB({ approval: pendingApproval({ tokenHash: hashToken(raw) }) });
+
+    const { response, statusCode } = await previewApprovalForResident(
+      "approval-1",
+      raw,
+      db,
+      fixedClock
+    );
+
+    expect(statusCode).toBe(200);
+    expect(response.approval.status).toBe("pending");
+    expect(response.approval.visitorName).toBe("Maya Chen");
+    expect(db._getApproval()?.status).toBe("pending");
+    expect(db._getApproval()?.tokenHash).toBe(hashToken(raw));
+  });
+
+  it("returns 401 APPROVAL_TOKEN_INVALID and reveals nothing when the token is wrong", async () => {
+    const db = makeMockDB({ approval: pendingApproval({ tokenHash: hashToken("e".repeat(64)) }) });
+
+    await expect(
+      previewApprovalForResident("approval-1", "0".repeat(64), db, fixedClock)
+    ).rejects.toMatchObject({ code: "APPROVAL_TOKEN_INVALID", statusCode: 401 });
+  });
+
+  it("returns 404 APPROVAL_NOT_FOUND when the id is unknown", async () => {
+    const db = makeMockDB({ approval: null });
+
+    await expect(
+      previewApprovalForResident("nope", "a".repeat(64), db, fixedClock)
+    ).rejects.toMatchObject({ code: "APPROVAL_NOT_FOUND", statusCode: 404 });
+  });
+
+  it("returns 409 APPROVAL_ALREADY_DECIDED for a decided row regardless of token (uniform replay answer)", async () => {
+    const db = makeMockDB({
+      approval: pendingApproval({ status: "approved", tokenHash: null, decidedAt: new Date() }),
+    });
+
+    await expect(
+      previewApprovalForResident("approval-1", "a".repeat(64), db, fixedClock)
+    ).rejects.toMatchObject({ code: "APPROVAL_ALREADY_DECIDED", statusCode: 409 });
+  });
+
+  it("returns 410 APPROVAL_EXPIRED and lazily flips a pending row past expires_at", async () => {
+    const raw = "f".repeat(64);
+    const db = makeMockDB({
+      approval: pendingApproval({
+        tokenHash: hashToken(raw),
+        expiresAt: new Date(frozenMs - 1_000),
+      }),
+    });
+
+    await expect(
+      previewApprovalForResident("approval-1", raw, db, fixedClock)
+    ).rejects.toMatchObject({ code: "APPROVAL_EXPIRED", statusCode: 410 });
+    expect(db._getApproval()?.status).toBe("expired");
   });
 });

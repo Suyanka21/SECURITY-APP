@@ -31,6 +31,7 @@ import {
   handleCreateApproval,
   handleGetApprovalStatus,
   handleDecideApproval,
+  handlePreviewApproval,
 } from "./routes/approvals";
 import {
   handleListNotifications,
@@ -195,6 +196,7 @@ export function createApp(db: unknown) {
   app.post("/api/approvals", requireAuth, strictLimiter, handleCreateApproval);
   app.get("/api/approvals/:id/status", requireAuth, handleGetApprovalStatus);
   app.post("/api/approvals/:id/decide", strictLimiter, handleDecideApproval);
+  app.post("/api/approvals/:id/preview", strictLimiter, handlePreviewApproval);
 
   // Feature 2 — Notifications (spec §7)
   app.get("/api/notifications", requireAuth, handleListNotifications);
