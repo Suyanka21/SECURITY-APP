@@ -487,6 +487,46 @@ export async function decideApprovalRequest(
   db: DrizzleDB,
   clock: ServiceClock = DEFAULT_CLOCK
 ): Promise<{ response: DecideApprovalResponse; statusCode: number }> {
+  const row = await loadPendingApprovalForToken(approvalId, rawToken, db, clock);
+  const decidedAt = new Date(clock.now());
+
+  if (decision === "deny") {
+    return decideDeny(row, approvalId, reason, decidedAt, db);
+  }
+  return decideApprove(row, approvalId, decidedAt, db);
+}
+
+/**
+ * Read-only view of a pending approval for the resident's magic-link page.
+ * The page has no guard JWT, so it cannot use the guard-scoped status route;
+ * the token in the body is its only credential, checked exactly as /decide
+ * checks it. Terminal and expired rows answer uniformly (409 / 410) without
+ * revealing the visitor details, since their token hash has been wiped.
+ */
+export async function previewApprovalForResident(
+  approvalId: string,
+  rawToken: string,
+  db: DrizzleDB,
+  clock: ServiceClock = DEFAULT_CLOCK
+): Promise<{ response: ApprovalStatusResponse; statusCode: number }> {
+  const row = await loadPendingApprovalForToken(approvalId, rawToken, db, clock);
+  return {
+    response: { approval: toApprovalView(row), traceId: row.traceId },
+    statusCode: 200,
+  };
+}
+
+/**
+ * Shared resident-side precondition chain: row exists → not already decided
+ * → not expired (lazily flipping the row if it is) → token matches. Order
+ * matters: replay and expiry answer uniformly before the token is consulted.
+ */
+async function loadPendingApprovalForToken(
+  approvalId: string,
+  rawToken: string,
+  db: DrizzleDB,
+  clock: ServiceClock
+): Promise<ApprovalRow> {
   // Step 1: fetch the row by id (NOT by token hash — we want to distinguish
   // "no row" from "wrong token" so the error code is accurate).
   const rows = await (db as any)
@@ -564,57 +604,68 @@ export async function decideApprovalRequest(
     );
   }
 
-  // Step 5: branch on decision.
-  const decidedAt = new Date(nowMs);
+  return row;
+}
 
-  if (decision === "deny") {
-    const sanitized = sanitizeFreeText(reason ?? "");
-    if (sanitized.length < 1) {
-      throw new ServiceError(
-        ApprovalErrorCodes.APPROVAL_DENY_REASON_REQUIRED,
-        "A reason is required when denying",
-        422,
-        "reason"
-      );
-    }
-
-    // Single-statement update; no transaction needed.
-    await (db as any)
-      .update(approvalRequests)
-      .set({
-        status: "denied",
-        decidedAt,
-        deniedReason: sanitized,
-        tokenHash: null,
-      })
-      .where(
-        and(
-          eq(approvalRequests.id, approvalId),
-          eq(approvalRequests.status, "pending")
-        )
-      );
-
-    await emitAuditEvent(
-      "approval_denied",
-      row.requestedByGuardId,
-      row.traceId,
-      { approvalId, offlineId: row.offlineId, reason: sanitized }
+async function decideDeny(
+  row: ApprovalRow,
+  approvalId: string,
+  reason: string | undefined,
+  decidedAt: Date,
+  db: DrizzleDB
+): Promise<{ response: DecideApprovalResponse; statusCode: number }> {
+  const sanitized = sanitizeFreeText(reason ?? "");
+  if (sanitized.length < 1) {
+    throw new ServiceError(
+      ApprovalErrorCodes.APPROVAL_DENY_REASON_REQUIRED,
+      "A reason is required when denying",
+      422,
+      "reason"
     );
+  }
 
-    const view = toApprovalView({
-      ...row,
+  // Single-statement update; no transaction needed.
+  await (db as any)
+    .update(approvalRequests)
+    .set({
       status: "denied",
       decidedAt,
       deniedReason: sanitized,
       tokenHash: null,
-    });
-    return {
-      response: { approval: view, entry: null, traceId: row.traceId },
-      statusCode: 200,
-    };
-  }
+    })
+    .where(
+      and(
+        eq(approvalRequests.id, approvalId),
+        eq(approvalRequests.status, "pending")
+      )
+    );
 
-  // decision === "approve":
+  await emitAuditEvent(
+    "approval_denied",
+    row.requestedByGuardId,
+    row.traceId,
+    { approvalId, offlineId: row.offlineId, reason: sanitized }
+  );
+
+  const view = toApprovalView({
+    ...row,
+    status: "denied",
+    decidedAt,
+    deniedReason: sanitized,
+    tokenHash: null,
+  });
+  return {
+    response: { approval: view, entry: null, traceId: row.traceId },
+    statusCode: 200,
+  };
+}
+
+async function decideApprove(
+  row: ApprovalRow,
+  approvalId: string,
+  decidedAt: Date,
+  db: DrizzleDB
+): Promise<{ response: DecideApprovalResponse; statusCode: number }> {
   // Transactional approve:
   //   1) INSERT entry_records (the audit-of-record for actually letting the
   //      visitor in),

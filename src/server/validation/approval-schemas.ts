@@ -167,6 +167,16 @@ export const DecideApprovalSchema = z
 
 export type DecideApprovalInput = z.infer<typeof DecideApprovalSchema>;
 
+/**
+ * Body for POST /api/approvals/:id/preview — the resident page's read-only
+ * lookup. Same token shape as /decide; the token is the only credential.
+ */
+export const PreviewApprovalSchema = DecideApprovalSchema.innerType().pick({
+  token: true,
+});
+
+export type PreviewApprovalInput = z.infer<typeof PreviewApprovalSchema>;
+
 // ─── Response Types ──────────────────────────────────────────────────────────
 
 /**
@@ -337,5 +347,23 @@ export function validateDecideApprovalRequest(
   if (field === "token") code = ApprovalErrorCodes.APPROVAL_TOKEN_INVALID;
   else if (field === "reason") code = ApprovalErrorCodes.APPROVAL_DENY_REASON_REQUIRED;
 
+  return { success: false, code, message: issue.message, field };
+}
+
+export function validatePreviewApprovalRequest(
+  body: unknown
+):
+  | { success: true; data: PreviewApprovalInput }
+  | { success: false; code: string; message: string; field?: string } {
+  const result = PreviewApprovalSchema.safeParse(body);
+  if (result.success) {
+    return { success: true, data: result.data };
+  }
+  const issue = result.error.issues[0];
+  const field = issue.path.join(".") || undefined;
+  const code: string =
+    field === "token"
+      ? ApprovalErrorCodes.APPROVAL_TOKEN_INVALID
+      : ApprovalErrorCodes.VALIDATION_ERROR;
   return { success: false, code, message: issue.message, field };
 }

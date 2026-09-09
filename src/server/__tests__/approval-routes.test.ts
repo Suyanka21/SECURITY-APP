@@ -22,6 +22,7 @@ import {
   handleCreateApproval,
   handleGetApprovalStatus,
   handleDecideApproval,
+  handlePreviewApproval,
 } from "../routes/approvals";
 import * as service from "../services/approval-service";
 import { ServiceError } from "../services/errors";
@@ -342,6 +343,82 @@ describe("Route: POST /api/approvals/:id/decide", () => {
       body: { token: VALID_TOKEN, decision: "approve" },
     });
     await handleDecideApproval(ctx.req, ctx.res, ctx.next);
+
+    expect(ctx.getNextErr()).toBe(err);
+  });
+});
+
+// ─── POST /api/approvals/:id/preview ────────────────────────────────────────
+// The resident page has no JWT: the handler must work with NO guardId on the
+// request and treat the body token as the only credential.
+
+describe("Route: POST /api/approvals/:id/preview", () => {
+  it("returns 422 VALIDATION_ERROR for non-UUID id param", async () => {
+    const ctx = makeCtx({ params: { id: "garbage" }, body: { token: VALID_TOKEN } });
+    await handlePreviewApproval(ctx.req, ctx.res, ctx.next);
+
+    expect(ctx.getStatus()).toBe(422);
+    expect(ctx.getJson()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", field: "id" },
+    });
+  });
+
+  it("returns 401 APPROVAL_TOKEN_INVALID for a missing or malformed token", async () => {
+    for (const body of [{}, { token: "short" }, { token: 42 }]) {
+      const ctx = makeCtx({ params: { id: VALID_ID }, body });
+      await handlePreviewApproval(ctx.req, ctx.res, ctx.next);
+      expect(ctx.getStatus()).toBe(401);
+      expect(ctx.getJson()).toMatchObject({
+        error: { code: "APPROVAL_TOKEN_INVALID" },
+      });
+    }
+  });
+
+  it("delegates to service.previewApprovalForResident with id + token and no guard identity", async () => {
+    const spy = vi
+      .spyOn(service, "previewApprovalForResident")
+      .mockResolvedValue({
+        response: {
+          approval: {
+            id: VALID_ID,
+            offlineId: VALID_ID,
+            visitorName: "Maya",
+            host: "Host",
+            unit: "1A",
+            plate: null,
+            reason: "",
+            method: "walk-in",
+            requestedByGuardId: "guard-1",
+            status: "pending",
+            expiresAt: new Date().toISOString(),
+            decidedAt: null,
+            deniedReason: null,
+            entryId: null,
+            traceId: "trace-1",
+          },
+          traceId: "trace-1",
+        },
+        statusCode: 200,
+      });
+
+    const ctx = makeCtx({ params: { id: VALID_ID }, body: { token: VALID_TOKEN } });
+    expect((ctx.req as unknown as { guardId?: string }).guardId).toBeUndefined();
+    await handlePreviewApproval(ctx.req, ctx.res, ctx.next);
+
+    expect(spy).toHaveBeenCalledWith(VALID_ID, VALID_TOKEN, expect.anything());
+    expect(ctx.getStatus()).toBe(200);
+    const json = ctx.getJson() as { approval: Record<string, unknown> };
+    expect(json.approval.status).toBe("pending");
+    expect(JSON.stringify(json)).not.toContain(VALID_TOKEN);
+    expect(json.approval).not.toHaveProperty("tokenHash");
+  });
+
+  it("passes ServiceError (e.g. APPROVAL_ALREADY_DECIDED 409) to next()", async () => {
+    const err = new ServiceError("APPROVAL_ALREADY_DECIDED", "decided", 409);
+    vi.spyOn(service, "previewApprovalForResident").mockRejectedValue(err);
+
+    const ctx = makeCtx({ params: { id: VALID_ID }, body: { token: VALID_TOKEN } });
+    await handlePreviewApproval(ctx.req, ctx.res, ctx.next);
 
     expect(ctx.getNextErr()).toBe(err);
   });

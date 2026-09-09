@@ -22,12 +22,14 @@ import { randomUUID } from "crypto";
 import {
   validateCreateApprovalRequest,
   validateDecideApprovalRequest,
+  validatePreviewApprovalRequest,
   ApprovalErrorCodes,
 } from "../validation/approval-schemas";
 import {
   createApprovalRequest,
   getApprovalStatus,
   decideApprovalRequest,
+  previewApprovalForResident,
 } from "../services/approval-service";
 import { dispatchNotification } from "../services/notifications/notification-service";
 import { getNotificationProviders } from "../services/notifications/registry";
@@ -204,6 +206,58 @@ export async function handleDecideApproval(
       token,
       decision,
       reason,
+      db
+    );
+    res.status(statusCode).json(response);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/approvals/:id/preview ────────────────────────────────────────
+
+/**
+ * Resident's magic-link page loads the request it is about to decide.
+ *
+ * NO JWT required — the resident has none. The token in the body is the
+ * credential, validated and hash-compared exactly as /decide does, behind
+ * the same strict rate limiter. Read-only: never transitions the row
+ * (beyond the lazy expiry flip every read path already performs).
+ *
+ * Status codes mirror /decide: 200 / 401 / 404 / 409 / 410.
+ */
+export async function handlePreviewApproval(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const id = requireUuidParam(req.params.id, "id", res);
+    if (!id) return;
+
+    const validation = validatePreviewApprovalRequest(req.body);
+    if (!validation.success) {
+      const traceId = `trace-${randomUUID()}`;
+      const status =
+        validation.code === ApprovalErrorCodes.APPROVAL_TOKEN_INVALID
+          ? 401
+          : 422;
+      res.status(status).json({
+        error: {
+          code: validation.code,
+          message: validation.message,
+          ...(validation.field && { field: validation.field }),
+          traceId,
+        },
+      });
+      return;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (req as any).db;
+    const { response, statusCode } = await previewApprovalForResident(
+      id,
+      validation.data.token,
       db
     );
     res.status(statusCode).json(response);

@@ -328,6 +328,10 @@ export interface ApprovalStatusResponse {
 }
 
 // POST /api/approvals/:id/decide — spec §7.3
+export interface PreviewApprovalRequest {
+  token: string;
+}
+
 export interface DecideApprovalRequest {
   token: string;
   decision: ApprovalDecision;

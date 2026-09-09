@@ -9,7 +9,8 @@
  *
  *   loading  → spinner
  *   loaded   → QR + visitor name + host + unit + expiresAt + single-use note
- *   error    → explicit code panel; QR MUST NOT be rendered on error
+ *   error    → plain-language panel (code + backend text never shown);
+ *              QR MUST NOT be rendered on error
  *
  * Default-deny is the linchpin contract: any non-OK preview response
  * lands in the error panel. The QR <svg> is only mounted under the
@@ -103,9 +104,8 @@ describe("VisitorPass (Feature 6)", () => {
     expect(screen.getByTestId("visitor-pass-error-title")).toHaveTextContent(
       "Pass expired",
     );
-    expect(screen.getByTestId("visitor-pass-error-code")).toHaveTextContent(
-      "QR_EXPIRED",
-    );
+    expect(screen.queryByTestId("visitor-pass-error-code")).toBeNull();
+    expect(screen.queryByText(/QR_EXPIRED/)).toBeNull();
     // Critical default-deny: the QR <svg> must not be rendered on error.
     expect(screen.queryByTestId("visitor-pass-qr")).toBeNull();
     expect(screen.queryByTestId("visitor-pass-loaded")).toBeNull();
@@ -148,12 +148,10 @@ describe("VisitorPass (Feature 6)", () => {
     expect(screen.getByTestId("visitor-pass-error-title")).toHaveTextContent(
       "Locked",
     );
-    expect(screen.getByTestId("visitor-pass-error-code")).toHaveTextContent(
-      "INVITATION_LOCKED",
+    expect(screen.queryByText(/INVITATION_LOCKED/)).toBeNull();
+    expect(screen.getByTestId("visitor-pass-error-body")).toHaveTextContent(
+      /locked after too many incorrect PIN attempts/i,
     );
-    expect(
-      screen.getByTestId("visitor-pass-locked-note"),
-    ).toBeInTheDocument();
     // The visitor must never see a locked pass presented as valid.
     expect(screen.queryByText(/valid until/i)).toBeNull();
     expect(screen.queryByTestId("visitor-pass-expires")).toBeNull();
@@ -192,7 +190,7 @@ describe("VisitorPass (Feature 6)", () => {
     expect(screen.queryByTestId("visitor-pass-qr")).toBeNull();
   });
 
-  it("default-denies a generic 5xx: shows the 'could not load' panel + exact code", async () => {
+  it("default-denies a generic 5xx: shows the 'could not load' panel, no code, no backend text", async () => {
     const api = makeApi({
       ok: false,
       status: 500,
@@ -204,11 +202,83 @@ describe("VisitorPass (Feature 6)", () => {
       expect(screen.getByTestId("visitor-pass-error")).toBeInTheDocument();
     });
     expect(screen.getByTestId("visitor-pass-error-title")).toHaveTextContent(
-      "Could not load pass",
+      "Couldn't load your pass",
     );
-    expect(screen.getByTestId("visitor-pass-error-code")).toHaveTextContent(
-      "INTERNAL_ERROR",
-    );
+    expect(screen.queryByText(/INTERNAL_ERROR/)).toBeNull();
+    expect(screen.queryByText(/Server error\./)).toBeNull();
     expect(screen.queryByTestId("visitor-pass-qr")).toBeNull();
+  });
+  it("network failure (status 0): plain 'couldn't load' with a retry that re-calls preview", async () => {
+    const api = makeApi({
+      ok: false,
+      status: 0,
+      error: { code: "NETWORK_ERROR", message: "fetch failed: ECONNREFUSED" },
+    });
+    renderAt(api);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("visitor-pass-error")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("visitor-pass-error-title")).toHaveTextContent(
+      "Couldn't load your pass",
+    );
+    expect(screen.getByText(/check your connection/i)).toBeInTheDocument();
+    expect(screen.queryByText(/NETWORK_ERROR/)).toBeNull();
+    expect(screen.queryByText(/ECONNREFUSED/)).toBeNull();
+    expect(screen.queryByTestId("visitor-pass-qr")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await waitFor(() => {
+      expect(api.previewInvitation).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("terminal states (locked/expired/used/not found) offer no retry — only 'ask your host'", async () => {
+    const api = makeApi({
+      ok: false,
+      status: 410,
+      error: { code: "INVITATION_EXPIRED", message: "expired" },
+    });
+    renderAt(api);
+    await waitFor(() => {
+      expect(screen.getByTestId("visitor-pass-error")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
+    expect(screen.getByText(/ask your host to issue a new pass/i)).toBeInTheDocument();
+  });
+
+  it("shows the traceId only as a labelled support reference, never the code", async () => {
+    const api = makeApi({
+      ok: false,
+      status: 404,
+      error: {
+        code: "INVITATION_NOT_FOUND",
+        message: "invitation row missing for token hash",
+        traceId: "trace-abc-123",
+      },
+    });
+    renderAt(api);
+    await waitFor(() => {
+      expect(screen.getByTestId("visitor-pass-error")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Support reference/)).toBeInTheDocument();
+    expect(screen.getByText("trace-abc-123")).toBeInTheDocument();
+    expect(screen.queryByText(/INVITATION_NOT_FOUND/)).toBeNull();
+    expect(screen.queryByText(/token hash/)).toBeNull();
+  });
+
+  it("missing token in URL → 'Pass not found' panel with no fetch", async () => {
+    const api = makeApi({ ok: false, status: 404, error: { code: "x", message: "y" } });
+    render(
+      <MemoryRouter initialEntries={["/pass/"]}>
+        <Routes>
+          <Route path="/pass/:token?" element={<VisitorPass api={api} />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("visitor-pass-error-title")).toHaveTextContent("Pass not found");
+    });
+    expect(api.previewInvitation).not.toHaveBeenCalled();
   });
 });

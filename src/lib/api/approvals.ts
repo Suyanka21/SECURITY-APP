@@ -8,8 +8,8 @@
  *
  *   guardApprovalApi  → JWT-authenticated calls used by the guard's UI
  *                       (createApproval, getApprovalStatus).
- *   residentApprovalApi → unauthenticated call used by the resident's
- *                         magic-link page (decideApproval).
+ *   residentApprovalApi → unauthenticated calls used by the resident's
+ *                         magic-link page (previewApproval, decideApproval).
  *
  * The split exists because /decide does not require — and must not send —
  * an Authorization header. Keeping the surfaces separate makes it obvious
@@ -24,6 +24,7 @@ import type {
   CreateApprovalResponse,
   DecideApprovalRequest,
   DecideApprovalResponse,
+  PreviewApprovalRequest,
 } from "./types";
 
 export const guardApprovalApi = {
@@ -64,6 +65,25 @@ export const guardApprovalApi = {
 };
 
 export const residentApprovalApi = {
+  /**
+   * POST /api/approvals/:id/preview
+   *
+   * Read-only lookup for the resident's magic-link page. The guard-scoped
+   * GET /status route needs a guard JWT the resident never has, so the page
+   * proves possession of the link token in the body instead.
+   */
+  previewApproval(
+    approvalId: string,
+    input: PreviewApprovalRequest,
+    signal?: AbortSignal
+  ): Promise<ApiResult<ApprovalStatusResponse>> {
+    return apiClient.post<ApprovalStatusResponse>(
+      `/api/approvals/${encodeURIComponent(approvalId)}/preview`,
+      input,
+      { signal }
+    );
+  },
+
   /**
    * spec §7.3 — POST /api/approvals/:id/decide
    *
