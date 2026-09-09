@@ -38,6 +38,9 @@ function validOverrideInput() {
     guardId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     reason: "Emergency maintenance required for unit plumbing",
     traceId: "trace-test-001",
+    // Caller's transaction handle — the override_authorized audit row is
+    // written through it. Table-agnostic no-op here (no DB in unit tests).
+    tx: { insert: () => ({ values: async () => {} }) },
   };
 }
 

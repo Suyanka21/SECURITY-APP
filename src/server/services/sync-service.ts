@@ -199,6 +199,7 @@ async function processOneEntry(
           guardId,
           reason: entry.reason,
           traceId,
+          tx,
         });
         await tx.insert(overrideEvents).values(toOverrideRow(overrideResult));
       }

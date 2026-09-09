@@ -22,7 +22,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { emitAuditEvent } from "./audit-logger";
+import { emitAuditEvent, type AuditWriter } from "./audit-logger";
 import { ServiceError } from "./errors";
 
 // ─── Override Types ──────────────────────────────────────────────────────────
@@ -36,6 +36,12 @@ export interface OverrideInput {
   reason: string;
   /** Server-generated trace ID from entry creation */
   traceId: string;
+  /**
+   * The caller's open transaction. The override_authorized audit row is
+   * written through it so the audit record commits or rolls back together
+   * with the override_events row — never one without the other.
+   */
+  tx: AuditWriter;
 }
 
 export interface OverrideResult {
@@ -81,13 +87,15 @@ export class OverrideError extends ServiceError {
  * 1. reason MUST be ≥ 8 chars after trim → OverrideError
  * 2. guardId MUST be non-empty → OverrideError
  * 3. entryId MUST be non-empty → OverrideError
- * 4. Audit event MUST be emitted before returning
+ * 4. Audit event MUST be emitted before returning, inside `input.tx`, so it
+ *    cannot outlive a rolled-back override (rejection events deliberately use
+ *    the shared audit connection so they survive the rollback)
  *
  * @returns OverrideResult with auditEventEmitted=true (always)
  * @throws OverrideError if any hard rule is violated
  */
 export async function createOverrideEvent(input: OverrideInput): Promise<OverrideResult> {
-  const { entryId, guardId, reason, traceId } = input;
+  const { entryId, guardId, reason, traceId, tx } = input;
 
   // ── Hard Rule 1: Override MUST include reason ──────────────────────────
   // Source: contract §3.2 — "OVERRIDE_REASON_TOO_SHORT"
@@ -155,12 +163,18 @@ export async function createOverrideEvent(input: OverrideInput): Promise<Overrid
   // ── Hard Rule 3: Override MUST generate audit event ────────────────────
   // Source: contract §5 — override_flow_entered event
   // Source: DEFINITION — "Every override, approval, or bypass must be logged"
-  await emitAuditEvent("override_authorized", guardId, traceId, {
-    overrideId,
-    entryId,
-    reason: trimmedReason,
-    reasonLength: trimmedReason.length,
-  });
+  await emitAuditEvent(
+    "override_authorized",
+    guardId,
+    traceId,
+    {
+      overrideId,
+      entryId,
+      reason: trimmedReason,
+      reasonLength: trimmedReason.length,
+    },
+    { tx }
+  );
 
   // Mark that audit event was successfully emitted
   result.auditEventEmitted = true;

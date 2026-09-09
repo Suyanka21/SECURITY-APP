@@ -300,6 +300,7 @@ export async function createDeliveryEntry(
         guardId: input.guardId,
         reason: input.reason,
         traceId,
+        tx,
       });
       await tx.insert(overrideEvents).values(toOverrideRow(overrideResult));
     }

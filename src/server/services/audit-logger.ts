@@ -140,6 +140,23 @@ type AuditDB = {
   insert: (table: any) => { values: (data: any) => Promise<void> };
 };
 
+/**
+ * Anything with a Drizzle-style insert — the shared audit connection or a
+ * caller's open transaction handle.
+ */
+export type AuditWriter = AuditDB;
+
+export interface EmitAuditOptions {
+  /**
+   * Write the audit row through this transaction instead of the shared
+   * audit connection, so the row commits or rolls back together with the
+   * business rows in that transaction. Use for events that assert a row
+   * exists (e.g. override_authorized); leave unset for events that must
+   * survive a rollback (e.g. override_rejected).
+   */
+  tx?: AuditWriter;
+}
+
 let auditDB: AuditDB | null = null;
 
 /**
@@ -178,7 +195,8 @@ export async function emitAuditEvent(
   type: AuditEventType,
   guardId: string,
   traceId: string,
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  options: EmitAuditOptions = {}
 ): Promise<AuditEvent> {
   const event: AuditEvent = {
     id: randomUUID(),
@@ -206,9 +224,12 @@ export async function emitAuditEvent(
 
   // Layer 3: DB persistence (AWAITED — no silent failures)
   // [C4/S1 FIX] Removed fire-and-forget .catch() — errors now propagate
-  // If auditDB is null (test environment), skip silently (in-memory is sufficient)
-  if (auditDB) {
-    await persistAuditEvent(event);
+  // A caller's transaction always wins so the row is atomic with the
+  // caller's writes. Otherwise use the shared audit connection; if none is
+  // configured (unit tests), skip silently (in-memory is sufficient).
+  const writer = options.tx ?? auditDB;
+  if (writer) {
+    await persistAuditEvent(event, writer);
   }
 
   return event;
@@ -221,9 +242,7 @@ export async function emitAuditEvent(
  * [M3 FIX] payload is now JSONB — passed as a native object, not JSON.stringify'd.
  * Validation ensures payload is always valid JSON before insert.
  */
-async function persistAuditEvent(event: AuditEvent): Promise<void> {
-  if (!auditDB) return;
-
+async function persistAuditEvent(event: AuditEvent, writer: AuditWriter): Promise<void> {
   // [M3 FIX] Validate payload is serializable JSON before DB write.
   // Source: API-and-Interface-Design — "Validate at boundary"
   // Catches: circular references, BigInt, undefined values, functions
@@ -232,7 +251,7 @@ async function persistAuditEvent(event: AuditEvent): Promise<void> {
   // Dynamic import to avoid circular dependency with schema
   const { auditEvents } = await import("@/db/schema");
 
-  await auditDB.insert(auditEvents).values({
+  await writer.insert(auditEvents).values({
     id: event.id,
     eventType: event.type,
     guardId: event.guardId,
