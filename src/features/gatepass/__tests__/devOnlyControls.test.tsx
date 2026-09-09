@@ -213,4 +213,101 @@ describe("useGatePassController — browser connectivity", () => {
     expect(syncEntries).toHaveBeenCalledTimes(1);
     expect(hook.result.current.state.pendingSync).toHaveLength(0);
   });
+
+  it("still auto-syncs when the reconnect lands while another request is in flight", async () => {
+    const syncEntries = vi.fn(async (input: { entries: { offlineId: string }[] }) => ({
+      ok: true as const,
+      status: 200,
+      data: {
+        results: input.entries.map((e) => ({
+          offlineId: e.offlineId,
+          status: "created",
+          entry: {
+            id: `srv-${e.offlineId}`,
+            visitorName: "Ada Lovelace",
+            host: "Bola",
+            unit: "4A",
+            plate: null,
+            reason: "",
+            method: "walk-in",
+            guardId: "11111111-1111-4111-8111-111111111111",
+            createdAt: new Date().toISOString(),
+            status: "logged",
+            syncState: "synced",
+          },
+        })),
+        traceId: "trace-sync",
+      },
+    }));
+    let settleScan: (() => void) | undefined;
+    const validateQr = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          settleScan = () =>
+            resolve({
+              ok: false,
+              status: 0,
+              error: { code: "NETWORK_ERROR", message: "dropped" },
+            });
+        })
+    );
+    const { useGatePassController } = await import("../useGatePassController");
+    const hook = renderHook(() =>
+      useGatePassController({
+        identity: {
+          guardId: "11111111-1111-4111-8111-111111111111",
+          name: "N. Adeyemi",
+          badgeNumber: "G-001",
+          role: "guard",
+        },
+        api: buildApi({
+          syncEntries: syncEntries as unknown as GatePassApi["syncEntries"],
+          validateQr: validateQr as unknown as GatePassApi["validateQr"],
+        }),
+      })
+    );
+
+    // Queue one entry through a transport failure while the browser still
+    // reports online (a real link that cannot reach the backend).
+    await act(async () => {
+      hook.result.current.dispatch({ type: "NAVIGATE", mode: "walkin" });
+      hook.result.current.dispatch({ type: "UPDATE_DRAFT", field: "visitorName", value: "Ada Lovelace" });
+      hook.result.current.dispatch({ type: "UPDATE_DRAFT", field: "host", value: "Bola" });
+      hook.result.current.dispatch({ type: "UPDATE_DRAFT", field: "unit", value: "4A" });
+    });
+    await act(async () => {
+      await hook.result.current.submitEntry();
+    });
+    expect(hook.result.current.state.pendingSync).toHaveLength(1);
+    expect(syncEntries).not.toHaveBeenCalled();
+
+    // A scan goes in flight, then the link drops and comes back before the
+    // scan settles.
+    let scanPromise!: Promise<void>;
+    act(() => {
+      hook.result.current.dispatch({ type: "START_CAMERA" });
+    });
+    act(() => {
+      scanPromise = hook.result.current.scanQr("qr-token-1");
+    });
+    expect(hook.result.current.state.inFlight).toBe(true);
+    // Drop and restore the link while the scan is still pending.
+    setOnLine(false);
+    act(() => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    setOnLine(true);
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    expect(syncEntries).not.toHaveBeenCalled();
+
+    await act(async () => {
+      settleScan?.();
+      await scanPromise;
+    });
+    expect(hook.result.current.state.inFlight).toBe(false);
+    expect(syncEntries).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.state.pendingSync).toHaveLength(0);
+  });
 });

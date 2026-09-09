@@ -1335,22 +1335,31 @@ export function useGatePassController(
     [notificationsApi],
   );
 
-  // Auto-sync on network restore. If the guard toggled back online and
-  // there are queued entries, attempt a sync so floating records get
-  // reconciled without the guard having to remember to press a button.
+  // Auto-sync on network restore. When the console comes back online with
+  // queued entries, attempt a sync so floating records get reconciled
+  // without the guard having to remember to press a button. A reconnect
+  // that lands while another request is in flight is remembered and the
+  // sync runs once that request settles, so the transition is never lost.
   // (Records still cannot vanish silently — every per-entry result is
   // surfaced in `lastSyncResults`.)
   const lastNetwork = useRef(state.network);
+  const reconnectPending = useRef(false);
   useEffect(() => {
-    if (
-      lastNetwork.current === "offline" &&
-      state.network === "online" &&
-      state.pendingSync.length > 0 &&
-      !state.inFlight
-    ) {
-      void syncPending();
+    if (lastNetwork.current === "offline" && state.network === "online") {
+      reconnectPending.current = true;
+    }
+    if (state.network === "offline") {
+      reconnectPending.current = false;
     }
     lastNetwork.current = state.network;
+    if (
+      reconnectPending.current &&
+      state.network === "online" &&
+      !state.inFlight
+    ) {
+      reconnectPending.current = false;
+      if (state.pendingSync.length > 0) void syncPending();
+    }
   }, [state.network, state.pendingSync.length, state.inFlight, syncPending]);
 
   // ─── Visitor profile CRUD callbacks (Feature 4) ────────────────────
