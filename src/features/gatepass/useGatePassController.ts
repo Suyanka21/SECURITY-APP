@@ -395,6 +395,26 @@ export function useGatePassController(
     dispatch({ type: "SESSION_IDENTITY", identity });
   }, [identity]);
 
+  // Follow the browser's real connectivity. `offline` is authoritative
+  // (the device knows it has no link); `online` only means a link exists,
+  // so a request can still fail with status 0 and be queued — the two
+  // paths compose. Nothing here is simulated.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const apply = () =>
+      dispatch({
+        type: "SET_NETWORK",
+        network: window.navigator.onLine ? "online" : "offline",
+      });
+    if (!window.navigator.onLine) apply();
+    window.addEventListener("online", apply);
+    window.addEventListener("offline", apply);
+    return () => {
+      window.removeEventListener("online", apply);
+      window.removeEventListener("offline", apply);
+    };
+  }, []);
+
   // Keep latest state in a ref so callbacks don't re-create on every
   // state change (avoids re-binding panels each render).
   const stateRef = useRef(state);

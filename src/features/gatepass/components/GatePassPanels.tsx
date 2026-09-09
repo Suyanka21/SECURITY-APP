@@ -24,6 +24,7 @@ import {
   X as XIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { DEV_TOOLS_ENABLED, DEV_TOOLS_LABEL } from "../devTools";
 import type {
   EntryDraft,
   GatePassAction,
@@ -163,15 +164,46 @@ export function StatusBanner({ state, actions }: Props) {
           )}
         </div>
       </div>
-      <button
-        className="focus-ring border border-current px-4 py-2 text-sm font-semibold transition-transform hover:-translate-y-0.5"
-        onClick={() =>
-          actions.setNetwork(state.network === "online" ? "offline" : "online")
-        }
-      >
-        Simulate {state.network === "online" ? "offline" : "online"}
-      </button>
+      {import.meta.env.DEV && DEV_TOOLS_ENABLED && (
+        <DevOnlyButton
+          onClick={() =>
+            actions.setNetwork(state.network === "online" ? "offline" : "online")
+          }
+        >
+          Simulate {state.network === "online" ? "offline" : "online"}
+        </DevOnlyButton>
+      )}
     </div>
+  );
+}
+
+/**
+ * A control that fakes a device/network state. Only rendered in dev
+ * builds, and unmissably marked so nobody mistakes a simulation for the
+ * real thing. Call sites are guarded by the literal `import.meta.env.DEV`
+ * (so the production bundle drops this code entirely) AND by the flag
+ * module (so tests can exercise the production shape).
+ */
+function DevOnlyButton({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid="dev-only-control"
+      title="Development-only control. Fakes a state for testing; not a real device or network event."
+      className="focus-ring inline-flex items-center gap-2 border-2 border-dashed border-fuchsia-600 bg-fuchsia-600/10 px-3 py-2 text-sm font-semibold text-fuchsia-700"
+      onClick={onClick}
+    >
+      <span className="bg-fuchsia-600 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-white">
+        {DEV_TOOLS_LABEL}
+      </span>
+      {children}
+    </button>
   );
 }
 
@@ -291,12 +323,11 @@ export function QrScanPanel({ state, dispatch, actions }: Props) {
           >
             {scanning ? "Validating…" : "Validate QR"}
           </button>
-          <button
-            className="focus-ring border border-destructive p-3 text-sm font-semibold text-destructive"
-            onClick={() => dispatch({ type: "CAMERA_FAILED" })}
-          >
-            Camera failed
-          </button>
+          {import.meta.env.DEV && DEV_TOOLS_ENABLED && (
+            <DevOnlyButton onClick={() => dispatch({ type: "CAMERA_FAILED" })}>
+              Camera failed
+            </DevOnlyButton>
+          )}
         </div>
         {state.qrState === "valid" && (
           <p className="mt-3 text-sm text-success-foreground">
