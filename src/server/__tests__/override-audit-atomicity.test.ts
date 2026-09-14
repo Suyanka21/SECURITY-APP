@@ -190,6 +190,15 @@ describe("override_authorized audit row is atomic with the override row", () => 
     expectNoAuthorizedAnywhere(h);
   });
 
+  const expectExactlyOneAuthorized = (h: ReturnType<typeof makeDB>) => {
+    expect(h.committedOverrides()).toHaveLength(1);
+    const rows = h.persistedOverrideAuthorized();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].traceId).toBe(h.committedOverrides()[0].row.traceId);
+    expect(getAuditEventsByType("override_authorized")).toHaveLength(1);
+    expect(authorizedOnStdout()).toHaveLength(1);
+  };
+
   it("createEntry: a successful override commits exactly one override_authorized row with the override", async () => {
     const h = makeDB({ failOverrideInsert: false });
     setAuditDB(h.auditDB);
@@ -197,12 +206,47 @@ describe("override_authorized audit row is atomic with the override row", () => 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await createEntry(overrideEntryInput(), h.db as any);
 
-    expect(h.committedOverrides()).toHaveLength(1);
-    const rows = h.persistedOverrideAuthorized();
-    expect(rows).toHaveLength(1);
-    expect(rows[0].traceId).toBe(h.committedOverrides()[0].row.traceId);
-    expect(getAuditEventsByType("override_authorized")).toHaveLength(1);
-    expect(authorizedOnStdout()).toHaveLength(1);
+    expectExactlyOneAuthorized(h);
+  });
+
+  it("createDeliveryEntry: a successful override commits exactly one override_authorized row with the override", async () => {
+    const h = makeDB({ failOverrideInsert: false });
+    setAuditDB(h.auditDB);
+
+    await createDeliveryEntry(
+      {
+        ...overrideEntryInput(),
+        host: "Reception",
+        entryKind: "delivery",
+        deliveryCategory: "parcel",
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      h.db as any,
+    );
+
+    expectExactlyOneAuthorized(h);
+  });
+
+  it("syncEntries: a successful override commits exactly one override_authorized row with the override", async () => {
+    const h = makeDB({ failOverrideInsert: false });
+    setAuditDB(h.auditDB);
+
+    const { response } = await syncEntries(
+      {
+        guardId: GUARD_ID,
+        entries: [
+          {
+            offlineId: "66666666-6666-6666-6666-666666666666",
+            ...overrideEntryInput(),
+          },
+        ],
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      h.db as any,
+    );
+
+    expect(response.results[0].status).toBe("synced");
+    expectExactlyOneAuthorized(h);
   });
 
   it("override_rejected is still persisted even though the transaction rolls back", async () => {
