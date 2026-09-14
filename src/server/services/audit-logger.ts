@@ -140,6 +140,28 @@ type AuditDB = {
   insert: (table: any) => { values: (data: any) => Promise<void> };
 };
 
+/**
+ * Anything with a Drizzle-style insert — the shared audit connection or a
+ * caller's open transaction handle.
+ */
+export type AuditWriter = AuditDB;
+
+export interface EmitAuditOptions {
+  /**
+   * Write the audit row through this transaction instead of the shared
+   * audit connection, so the row commits or rolls back together with the
+   * business rows in that transaction. Use for events that assert a row
+   * exists (e.g. override_authorized); leave unset for events that must
+   * survive a rollback (e.g. override_rejected).
+   *
+   * In this mode the event is NOT yet published to the in-memory log or
+   * stdout — nothing may observe an authorization before it commits. The
+   * caller must call `publishAuditEvent(event)` once the transaction has
+   * resolved.
+   */
+  tx?: AuditWriter;
+}
+
 let auditDB: AuditDB | null = null;
 
 /**
@@ -178,7 +200,8 @@ export async function emitAuditEvent(
   type: AuditEventType,
   guardId: string,
   traceId: string,
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  options: EmitAuditOptions = {}
 ): Promise<AuditEvent> {
   const event: AuditEvent = {
     id: randomUUID(),
@@ -189,6 +212,32 @@ export async function emitAuditEvent(
     payload,
   };
 
+  if (options.tx) {
+    // Transactional mode: only the DB row, inside the caller's tx.
+    // Publication (memory + stdout) is deferred to publishAuditEvent()
+    // after commit, so a rollback leaves no trace anywhere.
+    await persistAuditEvent(event, options.tx);
+    return event;
+  }
+
+  publishAuditEvent(event);
+
+  // Layer 3: DB persistence (AWAITED — no silent failures)
+  // [C4/S1 FIX] Removed fire-and-forget .catch() — errors now propagate
+  // If auditDB is null (test environment), skip silently (in-memory is sufficient)
+  if (auditDB) {
+    await persistAuditEvent(event, auditDB);
+  }
+
+  return event;
+}
+
+/**
+ * Publishes an already-persisted event to the in-memory log and stdout.
+ * Called by emitAuditEvent for non-transactional events, and by callers
+ * of transactional emits once their transaction has committed.
+ */
+export function publishAuditEvent(event: AuditEvent): void {
   // Layer 1: In-memory store (always succeeds)
   auditLog.push(event);
 
@@ -201,17 +250,8 @@ export async function emitAuditEvent(
   // Layer 2: Stdout log for observability (always succeeds)
   // Security: Never log sensitive data (QR tokens, passwords)
   console.log(
-    `[AUDIT] ${event.type} | guard=${guardId} | trace=${traceId} | ${JSON.stringify(payload)}`
+    `[AUDIT] ${event.type} | guard=${event.guardId} | trace=${event.traceId} | ${JSON.stringify(event.payload)}`
   );
-
-  // Layer 3: DB persistence (AWAITED — no silent failures)
-  // [C4/S1 FIX] Removed fire-and-forget .catch() — errors now propagate
-  // If auditDB is null (test environment), skip silently (in-memory is sufficient)
-  if (auditDB) {
-    await persistAuditEvent(event);
-  }
-
-  return event;
 }
 
 /**
@@ -221,9 +261,7 @@ export async function emitAuditEvent(
  * [M3 FIX] payload is now JSONB — passed as a native object, not JSON.stringify'd.
  * Validation ensures payload is always valid JSON before insert.
  */
-async function persistAuditEvent(event: AuditEvent): Promise<void> {
-  if (!auditDB) return;
-
+async function persistAuditEvent(event: AuditEvent, writer: AuditWriter): Promise<void> {
   // [M3 FIX] Validate payload is serializable JSON before DB write.
   // Source: API-and-Interface-Design — "Validate at boundary"
   // Catches: circular references, BigInt, undefined values, functions
@@ -232,7 +270,7 @@ async function persistAuditEvent(event: AuditEvent): Promise<void> {
   // Dynamic import to avoid circular dependency with schema
   const { auditEvents } = await import("@/db/schema");
 
-  await auditDB.insert(auditEvents).values({
+  await writer.insert(auditEvents).values({
     id: event.id,
     eventType: event.type,
     guardId: event.guardId,

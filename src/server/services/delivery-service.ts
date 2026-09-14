@@ -19,7 +19,12 @@ import {
   authorizationDecisions,
   overrideEvents,
 } from "@/db/schema";
-import { createOverrideEvent, toOverrideRow } from "./override-service";
+import {
+  createOverrideEvent,
+  publishOverrideAudit,
+  toOverrideRow,
+  type OverrideResult,
+} from "./override-service";
 import { emitAuditEvent } from "./audit-logger";
 import { ServiceError } from "./errors";
 import { EntryErrorCodes } from "../validation/entry-schemas";
@@ -290,20 +295,23 @@ export async function createDeliveryEntry(
     deliveryCategory: input.deliveryCategory as DeliveryCategory,
   };
 
+  let overrideResult: OverrideResult | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (db as any).transaction(async (tx: any) => {
     await tx.insert(entryRecords).values(entryRow);
 
     if (input.method === "override") {
-      const overrideResult = await createOverrideEvent({
+      overrideResult = await createOverrideEvent({
         entryId,
         guardId: input.guardId,
         reason: input.reason,
         traceId,
+        tx,
       });
       await tx.insert(overrideEvents).values(toOverrideRow(overrideResult));
     }
   });
+  if (overrideResult) publishOverrideAudit(overrideResult);
 
   await emitAuditEvent("delivery_entry_logged", input.guardId, traceId, {
     entryId,

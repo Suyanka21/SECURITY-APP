@@ -29,7 +29,12 @@ import { eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { guards, entryRecords, syncEvents, overrideEvents } from "@/db/schema";
 import { ServiceError } from "./entry-service";
-import { createOverrideEvent, toOverrideRow } from "./override-service";
+import {
+  createOverrideEvent,
+  publishOverrideAudit,
+  toOverrideRow,
+  type OverrideResult,
+} from "./override-service";
 import { emitAuditEvent } from "./audit-logger";
 import { SyncErrorCodes } from "../validation/sync-schemas";
 import type {
@@ -188,21 +193,24 @@ async function processOneEntry(
     };
 
     // Atomic transaction: entry + override (if applicable)
+    let overrideResult: OverrideResult | null = null;
     await (db as any).transaction(async (tx: any) => {
       // Insert entry record
       await tx.insert(entryRecords).values(entryRow);
 
       // If override, create override event via hardened service + insert in same tx
       if (entry.method === "override") {
-        const overrideResult = await createOverrideEvent({
+        overrideResult = await createOverrideEvent({
           entryId,
           guardId,
           reason: entry.reason,
           traceId,
+          tx,
         });
         await tx.insert(overrideEvents).values(toOverrideRow(overrideResult));
       }
     });
+    if (overrideResult) publishOverrideAudit(overrideResult);
 
     // sync_events insert AFTER transaction commit — audit record, not part of atomic unit
     // Source: contract §3.3 — EVENT: entry_synced
