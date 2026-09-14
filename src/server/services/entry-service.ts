@@ -23,7 +23,12 @@ import {
 } from "@/db/schema";
 import type { CreateEntryInput, CreateEntryResponse } from "../validation/entry-schemas";
 import { EntryErrorCodes } from "../validation/entry-schemas";
-import { createOverrideEvent, toOverrideRow } from "./override-service";
+import {
+  createOverrideEvent,
+  publishOverrideAudit,
+  toOverrideRow,
+  type OverrideResult,
+} from "./override-service";
 import { emitAuditEvent } from "./audit-logger";
 import { checkWatchlistForEntry } from "./watchlist-service";
 
@@ -156,6 +161,7 @@ export async function createEntry(
   // Source: TRUSTLESS-AUDIT-REPORT [H1] — "Entry + override not transactional"
   // HARD RULE: If ANY insert fails, the ENTIRE operation rolls back.
   // No partial writes allowed — an override entry CANNOT exist without its override_events record.
+  let overrideResult: OverrideResult | null = null;
   await (db as any).transaction(async (tx: any) => {
     // Insert entry record
     await tx.insert(entryRecords).values(entryRow);
@@ -163,7 +169,7 @@ export async function createEntry(
     // If override method, create override event within the SAME transaction
     // Source: DEFINITION §2D — "Manual Override: Entry logged with metadata"
     if (input.method === "override") {
-      const overrideResult = await createOverrideEvent({
+      overrideResult = await createOverrideEvent({
         entryId,
         guardId: input.guardId,
         reason: input.reason,
@@ -174,6 +180,7 @@ export async function createEntry(
       await tx.insert(overrideEvents).values(toOverrideRow(overrideResult));
     }
   });
+  if (overrideResult) publishOverrideAudit(overrideResult);
 
   // [C4/S1 FIX] Await audit persistence — no silent drops
   await emitAuditEvent("entry_created", input.guardId, traceId, {

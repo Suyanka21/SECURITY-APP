@@ -153,6 +153,11 @@ export interface EmitAuditOptions {
    * business rows in that transaction. Use for events that assert a row
    * exists (e.g. override_authorized); leave unset for events that must
    * survive a rollback (e.g. override_rejected).
+   *
+   * In this mode the event is NOT yet published to the in-memory log or
+   * stdout — nothing may observe an authorization before it commits. The
+   * caller must call `publishAuditEvent(event)` once the transaction has
+   * resolved.
    */
   tx?: AuditWriter;
 }
@@ -207,6 +212,32 @@ export async function emitAuditEvent(
     payload,
   };
 
+  if (options.tx) {
+    // Transactional mode: only the DB row, inside the caller's tx.
+    // Publication (memory + stdout) is deferred to publishAuditEvent()
+    // after commit, so a rollback leaves no trace anywhere.
+    await persistAuditEvent(event, options.tx);
+    return event;
+  }
+
+  publishAuditEvent(event);
+
+  // Layer 3: DB persistence (AWAITED — no silent failures)
+  // [C4/S1 FIX] Removed fire-and-forget .catch() — errors now propagate
+  // If auditDB is null (test environment), skip silently (in-memory is sufficient)
+  if (auditDB) {
+    await persistAuditEvent(event, auditDB);
+  }
+
+  return event;
+}
+
+/**
+ * Publishes an already-persisted event to the in-memory log and stdout.
+ * Called by emitAuditEvent for non-transactional events, and by callers
+ * of transactional emits once their transaction has committed.
+ */
+export function publishAuditEvent(event: AuditEvent): void {
   // Layer 1: In-memory store (always succeeds)
   auditLog.push(event);
 
@@ -219,20 +250,8 @@ export async function emitAuditEvent(
   // Layer 2: Stdout log for observability (always succeeds)
   // Security: Never log sensitive data (QR tokens, passwords)
   console.log(
-    `[AUDIT] ${event.type} | guard=${guardId} | trace=${traceId} | ${JSON.stringify(payload)}`
+    `[AUDIT] ${event.type} | guard=${event.guardId} | trace=${event.traceId} | ${JSON.stringify(event.payload)}`
   );
-
-  // Layer 3: DB persistence (AWAITED — no silent failures)
-  // [C4/S1 FIX] Removed fire-and-forget .catch() — errors now propagate
-  // A caller's transaction always wins so the row is atomic with the
-  // caller's writes. Otherwise use the shared audit connection; if none is
-  // configured (unit tests), skip silently (in-memory is sufficient).
-  const writer = options.tx ?? auditDB;
-  if (writer) {
-    await persistAuditEvent(event, writer);
-  }
-
-  return event;
 }
 
 /**

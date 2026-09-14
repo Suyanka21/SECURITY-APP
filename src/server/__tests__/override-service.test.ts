@@ -18,6 +18,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   createOverrideEvent,
+  publishOverrideAudit,
   OverrideError,
 } from "../services/override-service";
 import {
@@ -131,6 +132,9 @@ describe("OverrideService — Hard Rule Enforcement", () => {
     const result = await createOverrideEvent(input);
 
     expect(result.auditEventEmitted).toBe(true);
+    // Not visible until the caller's transaction commits
+    expect(getAuditEventsByType("override_authorized").length).toBe(0);
+    publishOverrideAudit(result);
 
     const events = getAuditEventsByType("override_authorized");
     expect(events.length).toBe(1);
@@ -218,8 +222,8 @@ describe("OverrideService — Hard Rule Enforcement", () => {
 describe("AuditLogger — Override Integration", () => {
   // Test 13: Audit log accumulates events
   it("accumulates override events in audit log", async () => {
-    await createOverrideEvent(validOverrideInput());
-    await createOverrideEvent(validOverrideInput());
+    publishOverrideAudit(await createOverrideEvent(validOverrideInput()));
+    publishOverrideAudit(await createOverrideEvent(validOverrideInput()));
 
     const log = getAuditLog();
     expect(log.length).toBe(2);
@@ -228,7 +232,7 @@ describe("AuditLogger — Override Integration", () => {
 
   // Test 14: clearAuditLog resets state
   it("clears audit log for test isolation", async () => {
-    await createOverrideEvent(validOverrideInput());
+    publishOverrideAudit(await createOverrideEvent(validOverrideInput()));
     expect(getAuditLog().length).toBe(1);
 
     clearAuditLog();

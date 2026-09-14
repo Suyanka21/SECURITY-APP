@@ -3,9 +3,10 @@
  * GatePass — override_authorized audit row is atomic with the override row.
  *
  * Failure-injection tests: the override_events insert is forced to fail
- * inside the caller's transaction. Afterwards NO persisted
- * override_authorized audit row may exist anywhere — not on the
- * independent audit connection, not in the committed transaction.
+ * inside the caller's transaction. Afterwards NO override_authorized
+ * record may exist anywhere — not on the independent audit connection,
+ * not in the committed transaction, not in the in-memory log served by
+ * /api/audit, not on stdout.
  *
  * Covers every caller of createOverrideEvent: entry-service,
  * delivery-service, sync-service.
@@ -19,6 +20,7 @@ import {
   setAuditDB,
   clearAuditDB,
   clearAuditLog,
+  getAuditEventsByType,
 } from "../services/audit-logger";
 import {
   guards,
@@ -102,11 +104,26 @@ function makeDB(opts: { failOverrideInsert: boolean }) {
 }
 
 describe("override_authorized audit row is atomic with the override row", () => {
-  beforeEach(() => clearAuditLog());
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    clearAuditLog();
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
   afterEach(() => {
     clearAuditDB();
     clearAuditLog();
+    logSpy.mockRestore();
   });
+
+  const authorizedOnStdout = () =>
+    logSpy.mock.calls.filter((c) => String(c[0]).includes("override_authorized"));
+
+  const expectNoAuthorizedAnywhere = (h: ReturnType<typeof makeDB>) => {
+    expect(h.committedOverrides()).toHaveLength(0);
+    expect(h.persistedOverrideAuthorized()).toHaveLength(0);
+    expect(getAuditEventsByType("override_authorized")).toHaveLength(0);
+    expect(authorizedOnStdout()).toHaveLength(0);
+  };
 
   const overrideEntryInput = () => ({
     visitorName: "Maya Chen",
@@ -128,8 +145,7 @@ describe("override_authorized audit row is atomic with the override row", () => 
       /Simulated DB failure/,
     );
 
-    expect(h.committedOverrides()).toHaveLength(0);
-    expect(h.persistedOverrideAuthorized()).toHaveLength(0);
+    expectNoAuthorizedAnywhere(h);
   });
 
   it("createDeliveryEntry: a failed override insert leaves no persisted override_authorized row", async () => {
@@ -149,8 +165,7 @@ describe("override_authorized audit row is atomic with the override row", () => 
       ),
     ).rejects.toThrow(/Simulated DB failure/);
 
-    expect(h.committedOverrides()).toHaveLength(0);
-    expect(h.persistedOverrideAuthorized()).toHaveLength(0);
+    expectNoAuthorizedAnywhere(h);
   });
 
   it("syncEntries: a rejected override entry leaves no persisted override_authorized row", async () => {
@@ -172,8 +187,7 @@ describe("override_authorized audit row is atomic with the override row", () => 
     );
 
     expect(response.results[0].status).toBe("rejected");
-    expect(h.committedOverrides()).toHaveLength(0);
-    expect(h.persistedOverrideAuthorized()).toHaveLength(0);
+    expectNoAuthorizedAnywhere(h);
   });
 
   it("createEntry: a successful override commits exactly one override_authorized row with the override", async () => {
@@ -187,6 +201,8 @@ describe("override_authorized audit row is atomic with the override row", () => 
     const rows = h.persistedOverrideAuthorized();
     expect(rows).toHaveLength(1);
     expect(rows[0].traceId).toBe(h.committedOverrides()[0].row.traceId);
+    expect(getAuditEventsByType("override_authorized")).toHaveLength(1);
+    expect(authorizedOnStdout()).toHaveLength(1);
   });
 
   it("override_rejected is still persisted even though the transaction rolls back", async () => {

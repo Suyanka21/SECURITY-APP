@@ -22,7 +22,12 @@
  */
 
 import { randomUUID } from "crypto";
-import { emitAuditEvent, type AuditWriter } from "./audit-logger";
+import {
+  emitAuditEvent,
+  publishAuditEvent,
+  type AuditEvent,
+  type AuditWriter,
+} from "./audit-logger";
 import { ServiceError } from "./errors";
 
 // ─── Override Types ──────────────────────────────────────────────────────────
@@ -59,6 +64,12 @@ export interface OverrideResult {
   traceId: string;
   /** Audit event emitted */
   auditEventEmitted: boolean;
+  /**
+   * The override_authorized event, persisted inside the caller's tx but not
+   * yet published. Pass the result to publishOverrideAudit() after the
+   * transaction commits.
+   */
+  auditEvent: AuditEvent;
 }
 
 // ─── Override Errors ─────────────────────────────────────────────────────────
@@ -150,20 +161,11 @@ export async function createOverrideEvent(input: OverrideInput): Promise<Overrid
   const overrideId = randomUUID();
   const now = new Date();
 
-  const result: OverrideResult = {
-    id: overrideId,
-    entryId,
-    guardId,
-    reason: trimmedReason,
-    createdAt: now.toISOString(),
-    traceId,
-    auditEventEmitted: false, // Set to true after audit emit
-  };
-
   // ── Hard Rule 3: Override MUST generate audit event ────────────────────
   // Source: contract §5 — override_flow_entered event
   // Source: DEFINITION — "Every override, approval, or bypass must be logged"
-  await emitAuditEvent(
+  // Persisted through the caller's tx; published after commit.
+  const auditEvent = await emitAuditEvent(
     "override_authorized",
     guardId,
     traceId,
@@ -176,10 +178,26 @@ export async function createOverrideEvent(input: OverrideInput): Promise<Overrid
     { tx }
   );
 
-  // Mark that audit event was successfully emitted
-  result.auditEventEmitted = true;
+  return {
+    id: overrideId,
+    entryId,
+    guardId,
+    reason: trimmedReason,
+    createdAt: now.toISOString(),
+    traceId,
+    auditEventEmitted: true,
+    auditEvent,
+  };
+}
 
-  return result;
+/**
+ * Publishes the override_authorized event to the in-memory audit log and
+ * stdout. Call ONLY after the transaction that inserted the override row
+ * has committed — the DB audit row is already atomic with the override;
+ * this makes it visible to /api/audit reads and operators.
+ */
+export function publishOverrideAudit(result: OverrideResult): void {
+  publishAuditEvent(result.auditEvent);
 }
 
 /**
