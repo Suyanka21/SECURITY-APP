@@ -10,7 +10,7 @@
  * - Can guardId still be injected manually? → Tests 4-5 prove NO
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { requireAuth, generateGuardToken, getJWTSecret } from "../middleware/auth";
 import type { AuthenticatedRequest } from "../middleware/auth";
 import type { Request, Response } from "express";
@@ -245,51 +245,54 @@ describe("Token Generation Utility", () => {
   });
 });
 
-// ─── [M2 FIX] Production JWT_SECRET Validation ──────────────────────────────
-// Source: Trustless-System-Auditor — "Simulate missing JWT_SECRET in production"
-// Source: Security-and-Hardening — "No fallback secrets in production"
-// Source: Code-Review-and-Quality — "Fail loudly on misconfiguration"
+// ─── Legacy JWT_SECRET in production ────────────────────────────────────────
+// JWT_SECRET is legacy: production requires SUPABASE_URL (see
+// src/server/config/production-config.ts), which makes the HS256 path
+// unreachable. It must therefore NOT block startup — but the dev fallback
+// must never be accepted in production either.
 
-describe("Auth — Production JWT_SECRET Fail-Fast", () => {
+describe("Auth — legacy JWT_SECRET is not a production startup requirement", () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
-    // Restore environment
     process.env = { ...originalEnv };
   });
 
-  // Test 12: Missing JWT_SECRET in production → FATAL error
-  it("throws fatal error when JWT_SECRET is missing in production", async () => {
-    // Simulate production with no secret
+  it("module loads in production without JWT_SECRET (no fatal)", async () => {
     process.env.NODE_ENV = "production";
     delete process.env.JWT_SECRET;
 
-    // Dynamic re-import triggers resolveJWTSecret() at module load
-    await expect(async () => {
-      // Clear module cache to force re-evaluation
-      const modulePath = "../middleware/auth";
-      // Use vi.importActual to bypass vitest caching and re-execute the module
-      await import(/* @vite-ignore */ modulePath + "?nocache=" + Date.now());
-    }).rejects.toThrow(/JWT_SECRET/);
+    const mod = await import(/* @vite-ignore */ "../middleware/auth?nocache=" + Date.now());
+    expect(() => mod.getJWTSecret()).toThrow(/JWT_SECRET/);
   });
 
-  // Test 13: Dev fallback secret in production → FATAL error
-  it("throws fatal error when JWT_SECRET is set to dev fallback in production", async () => {
+  it("never accepts the dev fallback secret in production", async () => {
     process.env.NODE_ENV = "production";
     process.env.JWT_SECRET = "gatepass-dev-secret-change-in-production";
 
-    await expect(async () => {
-      const modulePath = "../middleware/auth";
-      await import(/* @vite-ignore */ modulePath + "?nocache2=" + Date.now());
-    }).rejects.toThrow(/JWT_SECRET/);
+    const mod = await import(/* @vite-ignore */ "../middleware/auth?nocache2=" + Date.now());
+    expect(() => mod.getJWTSecret()).toThrow(/JWT_SECRET/);
   });
 
-  // Test 14: Valid JWT_SECRET in production → no error
-  it("accepts a proper JWT_SECRET in production without error", async () => {
+  it("refuses legacy tokens with AUTH_MISCONFIGURED when production has no usable secret", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.JWT_SECRET;
+    delete process.env.SUPABASE_URL;
+
+    const mod = await import(/* @vite-ignore */ "../middleware/auth?nocache4=" + Date.now());
+    const ctx = createMockContext({ Authorization: "Bearer anything" });
+
+    await mod.requireAuth(ctx.req, ctx.res, ctx.next);
+
+    expect(ctx.wasNextCalled()).toBe(false);
+    expect(ctx.getStatus()).toBe(503);
+    expect(ctx.getBody().error.code).toBe("AUTH_MISCONFIGURED");
+  });
+
+  it("accepts a proper JWT_SECRET in production", async () => {
     process.env.NODE_ENV = "production";
     process.env.JWT_SECRET = "a-real-strong-production-secret-32chars!";
 
-    // Should NOT throw
     const mod = await import(/* @vite-ignore */ "../middleware/auth?nocache3=" + Date.now());
     expect(mod.getJWTSecret()).toBe("a-real-strong-production-secret-32chars!");
   });

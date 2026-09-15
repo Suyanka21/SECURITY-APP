@@ -8,6 +8,9 @@
  */
 
 import "dotenv/config";
+// Side-effect import, evaluated before ./app and @/db: a misconfigured
+// production deploy fails here, before the DB pool or auth middleware exist.
+import "./config/assert-startup";
 import { createApp } from "./app";
 import { db, pool } from "@/db";
 import { setAuditDB } from "./services/audit-logger";
