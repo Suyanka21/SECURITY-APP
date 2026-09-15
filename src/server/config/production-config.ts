@@ -39,6 +39,30 @@ function isLocalOrigin(origin: string): boolean {
   );
 }
 
+/**
+ * A deployable origin is exactly `scheme://host[:port]` — no path, query or
+ * trailing slash (CORS compares origins byte-for-byte) — and, unless it is a
+ * localhost origin, it must be https so tokens are never sent in clear.
+ */
+function originProblem(origin: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return `"${origin}" is not a valid URL`;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return `"${origin}" must use http:// or https://`;
+  }
+  if (url.origin !== origin) {
+    return `"${origin}" must be a bare origin (scheme://host[:port], no path or trailing slash)`;
+  }
+  if (url.protocol === "http:" && !isLocalOrigin(origin)) {
+    return `"${origin}" must use https:// (plain http is only allowed for localhost)`;
+  }
+  return null;
+}
+
 function requirePresent(
   env: ProductionEnv,
   name: string,
@@ -95,16 +119,25 @@ export function collectProductionConfigProblems(
         name: "ALLOWED_ORIGINS",
         reason: "must not contain a wildcard origin",
       });
-    } else if (list.every(isLocalOrigin)) {
-      problems.push({
-        name: "ALLOWED_ORIGINS",
-        reason: "only lists localhost origins — real browsers would be refused by CORS",
-      });
+    } else {
+      for (const origin of list) {
+        const reason = originProblem(origin);
+        if (reason) problems.push({ name: "ALLOWED_ORIGINS", reason });
+      }
+      if (list.every(isLocalOrigin)) {
+        problems.push({
+          name: "ALLOWED_ORIGINS",
+          reason: "only lists localhost origins — real browsers would be refused by CORS",
+        });
+      }
     }
   }
 
   const publicOrigin = requirePresent(env, "APP_PUBLIC_ORIGIN", problems);
-  if (publicOrigin && isLocalOrigin(publicOrigin)) {
+  const publicOriginReason = publicOrigin ? originProblem(publicOrigin) : null;
+  if (publicOriginReason) {
+    problems.push({ name: "APP_PUBLIC_ORIGIN", reason: publicOriginReason });
+  } else if (publicOrigin && isLocalOrigin(publicOrigin)) {
     problems.push({
       name: "APP_PUBLIC_ORIGIN",
       reason:

@@ -100,6 +100,31 @@ describe("production config fail-fast", () => {
     expect(names(mixed)).toEqual([]);
   });
 
+  it("rejects malformed, non-http(s), path-bearing and plain-http public origins", () => {
+    for (const bad of [
+      "gatepass.estate.co.ke",
+      "ftp://gatepass.estate.co.ke",
+      "javascript:alert(1)",
+      "https://gatepass.estate.co.ke/",
+      "https://gatepass.estate.co.ke/app",
+      "http://gatepass.estate.co.ke",
+      "not a url",
+    ]) {
+      const allowed = deployable();
+      allowed.ALLOWED_ORIGINS = `https://gatepass.estate.co.ke,${bad}`;
+      expect(names(allowed), `ALLOWED_ORIGINS=${bad}`).toEqual(["ALLOWED_ORIGINS"]);
+
+      const pub = deployable();
+      pub.APP_PUBLIC_ORIGIN = bad;
+      expect(names(pub), `APP_PUBLIC_ORIGIN=${bad}`).toEqual(["APP_PUBLIC_ORIGIN"]);
+    }
+
+    const ok = deployable();
+    ok.ALLOWED_ORIGINS = "https://gatepass.estate.co.ke:8443,http://localhost:5173";
+    ok.APP_PUBLIC_ORIGIN = "https://gate.example.com:8443";
+    expect(names(ok)).toEqual([]);
+  });
+
   it("rejects a localhost APP_PUBLIC_ORIGIN (links would be unreachable)", () => {
     const env = deployable();
     env.APP_PUBLIC_ORIGIN = "http://localhost:5173";
