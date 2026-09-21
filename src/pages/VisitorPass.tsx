@@ -24,6 +24,7 @@
  * QR is ever rendered.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PublicFooter } from "@/features/public-info/PublicFooter";
 import { useParams } from "react-router-dom";
 import { AlertTriangle, Clock3, Loader2, Lock, ShieldAlert } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
@@ -235,6 +236,7 @@ export default function VisitorPass({ api = visitorInvitationsApi }: VisitorPass
             </section>
           );
         })()}
+        <PublicFooter />
       </div>
     </main>
   );
