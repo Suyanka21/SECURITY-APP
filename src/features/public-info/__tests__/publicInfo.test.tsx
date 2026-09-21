@@ -130,6 +130,27 @@ describe("support contact", () => {
       readSupportContact({ VITE_SUPPORT_EMAIL: "  gate@estate.test ", VITE_SUPPORT_PHONE: "" })
     ).toEqual({ email: "gate@estate.test", phone: null, configured: true });
     expect(readSupportContact({ VITE_SUPPORT_PHONE: "0700000000" }).configured).toBe(true);
+    expect(readSupportContact({ VITE_SUPPORT_PHONE: "+254 700 000 000" }).configured).toBe(true);
+  });
+
+  it("drops values that are not plainly an email or a dialable number", () => {
+    const bad = [
+      { VITE_SUPPORT_EMAIL: "javascript:alert(1)" },
+      { VITE_SUPPORT_EMAIL: "gate@estate.test?subject=x&body=<b>" },
+      { VITE_SUPPORT_EMAIL: "not-an-email" },
+      { VITE_SUPPORT_EMAIL: "a b@estate.test" },
+      { VITE_SUPPORT_PHONE: "call me" },
+      { VITE_SUPPORT_PHONE: "+254700000000;phone-context=evil" },
+      { VITE_SUPPORT_PHONE: "javascript:alert(1)" },
+      { VITE_SUPPORT_PHONE: "12" },
+    ];
+    for (const env of bad) {
+      expect(readSupportContact(env), JSON.stringify(env)).toEqual({
+        email: null,
+        phone: null,
+        configured: false,
+      });
+    }
   });
 });
 
