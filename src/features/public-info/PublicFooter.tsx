@@ -1,11 +1,6 @@
 import { Link } from "react-router-dom";
 
-export const PUBLIC_INFO_LINKS = [
-  { to: "/legal/privacy", label: "Privacy notice" },
-  { to: "/legal/terms", label: "Terms of use" },
-  { to: "/support", label: "Support" },
-  { to: "/support/incident", label: "Report a problem" },
-] as const;
+import { PUBLIC_INFO_LINKS } from "./publicInfoLinks";
 
 /**
  * Role-neutral footer. Mounted on every public surface (visitor pass, resident

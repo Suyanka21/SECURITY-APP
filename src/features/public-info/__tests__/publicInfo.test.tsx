@@ -23,7 +23,8 @@ vi.mock("@/features/auth/AuthContext", () => ({
 }));
 
 import App from "@/App";
-import { PublicFooter, PUBLIC_INFO_LINKS } from "../PublicFooter";
+import { PublicFooter } from "../PublicFooter";
+import { PUBLIC_INFO_LINKS } from "../publicInfoLinks";
 import { DRAFT_LEGAL_LABEL } from "../PublicInfoLayout";
 import { readSupportContact } from "../supportContact";
 
