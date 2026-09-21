@@ -64,4 +64,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # Compile-only check: this artifact is never deployed, so the
+      # production browser-config gate (vite.config.ts) is opted out.
       - run: npm run build
+        env:
+          GATEPASS_ALLOW_UNCONFIGURED_BUILD: "1"

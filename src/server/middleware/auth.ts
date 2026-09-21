@@ -48,31 +48,22 @@ export interface JWTPayload {
 const DEV_FALLBACK_SECRET = "gatepass-dev-secret-change-in-production";
 const JWT_ALGORITHM = "HS256" as const;
 
-// [M2 FIX] Production fail-fast guard for JWT_SECRET
+// JWT_SECRET is the legacy self-issued HS256 secret. It is only consulted
+// when SUPABASE_URL is unset (development / tests). Production startup
+// requires SUPABASE_URL (src/server/config/production-config.ts), so this
+// path is unreachable there and JWT_SECRET is NOT a production requirement.
+// The dev fallback is never accepted in production: if the legacy path is
+// somehow reached without a real secret, every token is refused.
 // Source: Security-and-Hardening — "No fallback secrets in production"
-// Source: Code-Review-and-Quality — "Fail loudly on misconfiguration"
-//
-// In production: missing JWT_SECRET is a FATAL error → process refuses to start.
-// In development: a warning is logged, dev fallback is used for convenience.
-function resolveJWTSecret(): string {
+function resolveJWTSecret(): string | null {
   const envSecret = process.env.JWT_SECRET;
   const isProduction = process.env.NODE_ENV === "production";
 
-  if (isProduction && (!envSecret || envSecret === DEV_FALLBACK_SECRET)) {
-    // FATAL: Production must NEVER use a fallback/hardcoded secret.
-    // This prevents the server from starting in an insecure state.
-    const message =
-      "[FATAL] JWT_SECRET is missing or set to the dev fallback in production. " +
-      "Set a strong, unique JWT_SECRET environment variable before deploying. " +
-      "The server will NOT start without it.";
-    console.error(message);
-    throw new Error(message);
-  }
-
-  if (!envSecret) {
+  if (!envSecret || envSecret === DEV_FALLBACK_SECRET) {
+    if (isProduction) return null;
     console.warn(
       "[AUTH] WARNING: JWT_SECRET not set. Using dev fallback. " +
-        "This is acceptable for development but MUST be changed for production."
+        "This is acceptable for development only."
     );
     return DEV_FALLBACK_SECRET;
   }
@@ -83,9 +74,13 @@ function resolveJWTSecret(): string {
 const JWT_SECRET = resolveJWTSecret();
 
 /**
- * Returns the JWT secret. Exported for token generation in tests.
+ * Returns the legacy JWT secret. Exported for token generation in tests.
+ * Throws when no usable secret exists (production without JWT_SECRET).
  */
 export function getJWTSecret(): string {
+  if (JWT_SECRET === null) {
+    throw new Error("JWT_SECRET is not configured for legacy token signing");
+  }
   return JWT_SECRET;
 }
 
@@ -153,6 +148,18 @@ export async function requireAuth(
   }
 
   // ─── Legacy self-issued mode (development / tests) ───────────────────────────
+  if (JWT_SECRET === null) {
+    res.status(503).json({
+      error: {
+        code: "AUTH_MISCONFIGURED",
+        message:
+          "Authentication is not configured on this server (no Supabase URL and no legacy secret).",
+        traceId,
+      },
+    });
+    return;
+  }
+
   try {
     // Verify JWT signature and expiration
     const payload = jwt.verify(token, JWT_SECRET, {
@@ -290,7 +297,7 @@ export function generateGuardToken(
 ): string {
   return jwt.sign(
     { sub: guardId },
-    JWT_SECRET,
+    getJWTSecret(),
     { algorithm: JWT_ALGORITHM, expiresIn }
   );
 }
