@@ -104,7 +104,28 @@ export type AuditEventType =
   | "watchlist_entry_added"
   | "watchlist_matched"
   | "watchlist_entry_reviewed"
-  | "watchlist_entry_removed";
+  | "watchlist_entry_removed"
+  // Source: src/docs/specs/resident-portal.md §3.5 — Resident Portal.
+  // unit_* / unit_claim_code_issued / resident_deactivated are admin actions
+  // (guard actor). resident_claimed and resident_registration_* are the
+  // resident's own actions and carry residentId instead of guardId. Payloads
+  // never contain a raw claim code — only its hash prefix at most.
+  // Migration: drizzle/0014_units_residents.sql.
+  | "unit_created"
+  | "unit_deactivated"
+  | "unit_claim_code_issued"
+  | "resident_claimed"
+  | "resident_deactivated"
+  | "resident_registration_created"
+  | "resident_registration_removed";
+
+/**
+ * Who performed the action. Exactly one of the two is set — mirrored by the
+ * DB CHECK audit_events_exactly_one_actor.
+ */
+export type AuditActor =
+  | { kind: "guard"; guardId: string }
+  | { kind: "resident"; residentId: string };
 
 export interface AuditEvent {
   /** Unique immutable event ID */
@@ -113,8 +134,10 @@ export interface AuditEvent {
   type: AuditEventType;
   /** ISO 8601 server timestamp — NEVER client-generated */
   timestamp: string;
-  /** Guard who triggered this action */
-  guardId: string;
+  /** Guard who triggered this action — null when a resident did */
+  guardId: string | null;
+  /** Resident who triggered this action — null when a guard did */
+  residentId: string | null;
   /** Server-generated trace ID for correlation */
   traceId: string;
   /** Event-specific payload */
@@ -203,11 +226,36 @@ export async function emitAuditEvent(
   payload: Record<string, unknown> = {},
   options: EmitAuditOptions = {}
 ): Promise<AuditEvent> {
+  return emitActorAuditEvent(type, { kind: "guard", guardId }, traceId, payload, options);
+}
+
+/**
+ * Emits an audit event performed by a resident (Resident Portal). Same
+ * persistence and publication semantics as emitAuditEvent.
+ */
+export async function emitResidentAuditEvent(
+  type: AuditEventType,
+  residentId: string,
+  traceId: string,
+  payload: Record<string, unknown> = {},
+  options: EmitAuditOptions = {}
+): Promise<AuditEvent> {
+  return emitActorAuditEvent(type, { kind: "resident", residentId }, traceId, payload, options);
+}
+
+async function emitActorAuditEvent(
+  type: AuditEventType,
+  actor: AuditActor,
+  traceId: string,
+  payload: Record<string, unknown>,
+  options: EmitAuditOptions
+): Promise<AuditEvent> {
   const event: AuditEvent = {
     id: randomUUID(),
     type,
     timestamp: new Date().toISOString(),
-    guardId,
+    guardId: actor.kind === "guard" ? actor.guardId : null,
+    residentId: actor.kind === "resident" ? actor.residentId : null,
     traceId,
     payload,
   };
@@ -249,8 +297,12 @@ export function publishAuditEvent(event: AuditEvent): void {
 
   // Layer 2: Stdout log for observability (always succeeds)
   // Security: Never log sensitive data (QR tokens, passwords)
+  const actor =
+    event.guardId !== null
+      ? `guard=${event.guardId}`
+      : `resident=${event.residentId}`;
   console.log(
-    `[AUDIT] ${event.type} | guard=${event.guardId} | trace=${event.traceId} | ${JSON.stringify(event.payload)}`
+    `[AUDIT] ${event.type} | ${actor} | trace=${event.traceId} | ${JSON.stringify(event.payload)}`
   );
 }
 
@@ -274,6 +326,7 @@ async function persistAuditEvent(event: AuditEvent, writer: AuditWriter): Promis
     id: event.id,
     eventType: event.type,
     guardId: event.guardId,
+    residentId: event.residentId,
     traceId: event.traceId,
     payload: validatedPayload,
     createdAt: new Date(event.timestamp),
