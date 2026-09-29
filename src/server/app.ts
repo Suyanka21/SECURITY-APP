@@ -184,7 +184,10 @@ export function createApp(db: unknown) {
   app.use("/api/entries/sync", requireAuth, strictLimiter, syncRouter);
   app.use("/api/entries", requireAuth, strictLimiter, entriesRouter);
   app.use("/api/visitors", requireAuth, visitorsRouter);
-  app.use("/api/audit", requireAuth, auditRouter);
+  // Audit log is a supervisor/admin review surface: never public, and not
+  // readable by a plain guard (it spans every guard's activity). The guard
+  // console keeps its own local, in-session trail and never calls this.
+  app.use("/api/audit", requireAuth, requireRole("admin", "senior-guard"), auditRouter);
 
   // ─── Resident Approval Routes ──────────────────────────────────────
   // Source: src/docs/specs/resident-approval-flow.md §7.

@@ -10,6 +10,7 @@
  */
 
 import { useState, type FormEvent } from "react";
+import { PublicFooter } from "@/features/public-info/PublicFooter";
 import { ShieldCheck, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -110,6 +111,7 @@ export function LoginScreen() {
             {submitting ? "Signing in…" : "Sign in"}
           </Button>
         </form>
+        <PublicFooter />
       </div>
     </div>
   );

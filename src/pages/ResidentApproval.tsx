@@ -15,6 +15,7 @@
  * Backend error codes and messages are mapped, never shown verbatim.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PublicFooter } from "@/features/public-info/PublicFooter";
 import {
   useNavigate,
   useParams,
@@ -344,6 +345,7 @@ export default function ResidentApproval({
             </div>
           </section>
         )}
+        <PublicFooter />
       </div>
     </main>
   );
