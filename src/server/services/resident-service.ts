@@ -136,7 +136,7 @@ function isoOrNull(value: Date | null): string | null {
  * Constraint name of a Postgres unique_violation, whether raw from pg or
  * wrapped by Drizzle (`cause`); "" if pg did not name it, null if not 23505.
  */
-function uniqueViolationConstraint(err: unknown): string | null {
+export function uniqueViolationConstraint(err: unknown): string | null {
   if (typeof err !== "object" || err === null) return null;
   const { code, constraint, cause } = err as {
     code?: unknown;

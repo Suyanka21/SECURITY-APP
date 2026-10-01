@@ -18,6 +18,13 @@
  *   no-guard-profile — a valid Supabase session exists but no linked guard row
  *                      (403 AUTH_NO_GUARD_LINK) → explicit not-available state,
  *                      never the guard console.
+ *   resident         — no guard row, but the phone-OTP session resolves to an
+ *                      active resident (GET /api/resident/me) → resident portal
+ *   resident-unclaimed — phone session with no resident row yet → claim screen
+ *   resident-inactive  — phone session whose resident/unit was deactivated
+ *
+ * Resident identity is never cached: a transport failure while resolving a
+ * resident fails closed (unauthenticated), unlike the guard console.
  *
  * Transport failures are NOT logouts. A network drop mid-shift used to resolve
  * to `unauthenticated`, which swapped the console for a login screen the guard
@@ -42,6 +49,7 @@ import {
 import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 import { setAuthToken } from "@/lib/api/auth";
 import { authApi, type AuthMe, type AuthRole } from "@/lib/api/me";
+import { residentApi, type ResidentMe } from "@/lib/api/resident";
 import {
   cachedIdentityToMe,
   clearCachedIdentity,
@@ -53,7 +61,10 @@ export type AuthStatus =
   | "loading"
   | "unauthenticated"
   | "authenticated"
-  | "no-guard-profile";
+  | "no-guard-profile"
+  | "resident"
+  | "resident-unclaimed"
+  | "resident-inactive";
 
 export interface SignInResult {
   ok: boolean;
@@ -66,6 +77,8 @@ export interface AuthContextValue {
   role: AuthRole | null;
   /** Guard identity from /api/auth/me; only set when authenticated. */
   me: AuthMe | null;
+  /** Resident identity from /api/resident/me; only set when status === "resident". */
+  resident: ResidentMe | null;
   /**
    * False when `me` came from the identity cache or survived a failed
    * re-check — the guard is working offline on an unverified identity and the
@@ -77,6 +90,10 @@ export interface AuthContextValue {
   /** Last login/resolution error message for display. */
   error: string | null;
   signIn(email: string, password: string): Promise<SignInResult>;
+  /** Resident phone-OTP: request an SMS code for an E.164 number. */
+  sendPhoneOtp(phoneE164: string): Promise<SignInResult>;
+  /** Resident phone-OTP: verify the SMS code and resolve the session. */
+  verifyPhoneOtp(phoneE164: string, code: string): Promise<SignInResult>;
   signOut(): Promise<void>;
   /** Re-resolve the role from the server (e.g. after external token change). */
   refresh(): Promise<void>;
@@ -88,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [role, setRole] = useState<AuthRole | null>(null);
   const [me, setMe] = useState<AuthMe | null>(null);
+  const [resident, setResident] = useState<ResidentMe | null>(null);
   const [identityVerified, setIdentityVerified] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,6 +115,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // resolveRole when the identity outlives a failed re-check.
   const meRef = useRef<AuthMe | null>(null);
   const supabaseUserIdRef = useRef<string | null>(null);
+  // Phone on the Supabase session: only phone-OTP users can be residents.
+  const supabasePhoneRef = useRef<string | null>(null);
 
   const applyMe = useCallback((next: AuthMe | null, verified: boolean) => {
     meRef.current = next;
@@ -105,11 +125,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIdentityVerified(next ? verified : false);
   }, []);
 
+  const resolveResident = useCallback(async () => {
+    const res = await residentApi.me();
+    if (!mountedRef.current) return;
+    if (res.ok) {
+      setResident(res.data.resident);
+      setError(null);
+      setStatus("resident");
+      return;
+    }
+    setResident(null);
+    if (res.status === 403) {
+      setStatus(
+        res.error.code === "AUTH_NO_RESIDENT_LINK" ? "resident-unclaimed" : "resident-inactive",
+      );
+      return;
+    }
+    if (res.status !== 401) setError(res.error.message);
+    setStatus("unauthenticated");
+  }, []);
+
   const resolveRole = useCallback(async () => {
     const res = await authApi.me();
     if (!mountedRef.current) return;
 
     if (res.ok) {
+      setResident(null);
       applyMe(res.data, true);
       writeCachedIdentity(supabaseUserIdRef.current, res.data);
       setError(null);
@@ -122,6 +163,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (res.status === 403) {
       applyMe(null, false);
       clearCachedIdentity();
+      if (supabasePhoneRef.current) {
+        await resolveResident();
+        return;
+      }
+      setResident(null);
       setStatus("no-guard-profile");
       return;
     }
@@ -158,7 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setError(res.error.message);
     }
     setStatus("unauthenticated");
-  }, [applyMe]);
+  }, [applyMe, resolveResident]);
 
   const refresh = useCallback(async () => {
     setStatus("loading");
@@ -175,6 +221,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data } = await supabase.auth.getSession();
         setAuthToken(data.session?.access_token ?? null);
         supabaseUserIdRef.current = data.session?.user.id ?? null;
+        supabasePhoneRef.current = data.session?.user.phone || null;
       }
       await resolveRole();
     })();
@@ -184,6 +231,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const sub = supabase?.auth.onAuthStateChange((_event, session) => {
       setAuthToken(session?.access_token ?? null);
       supabaseUserIdRef.current = session?.user.id ?? supabaseUserIdRef.current;
+      supabasePhoneRef.current = session ? session.user.phone || null : null;
       void resolveRole();
     });
 
@@ -216,7 +264,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Feed the freshly-issued token to the API client, then resolve the role
       // from the server (never from the Supabase session).
       supabaseUserIdRef.current = data.session?.user.id ?? data.user?.id ?? null;
+      supabasePhoneRef.current = null;
       setAuthToken(data.session?.access_token ?? null);
+      await resolveRole();
+      return { ok: true };
+    },
+    [resolveRole],
+  );
+
+  const sendPhoneOtp = useCallback(async (phoneE164: string): Promise<SignInResult> => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      const message = "Sign-in is not configured in this build.";
+      setError(message);
+      return { ok: false, message };
+    }
+    setError(null);
+    const { error: otpError } = await supabase.auth.signInWithOtp({ phone: phoneE164 });
+    if (otpError) return { ok: false, message: otpError.message };
+    return { ok: true };
+  }, []);
+
+  const verifyPhoneOtp = useCallback(
+    async (phoneE164: string, code: string): Promise<SignInResult> => {
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        const message = "Sign-in is not configured in this build.";
+        setError(message);
+        return { ok: false, message };
+      }
+      setError(null);
+      const { data, error: verifyError } = await supabase.auth.verifyOtp({
+        phone: phoneE164,
+        token: code,
+        type: "sms",
+      });
+      if (verifyError || !data.session) {
+        return { ok: false, message: verifyError?.message ?? "Verification failed." };
+      }
+      supabaseUserIdRef.current = data.session.user.id;
+      supabasePhoneRef.current = data.session.user.phone || phoneE164;
+      setAuthToken(data.session.access_token);
       await resolveRole();
       return { ok: true };
     },
@@ -230,8 +318,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearCachedIdentity();
     meRef.current = null;
     supabaseUserIdRef.current = null;
+    supabasePhoneRef.current = null;
     if (!mountedRef.current) return;
     setMe(null);
+    setResident(null);
     setRole(null);
     setIdentityVerified(false);
     setError(null);
@@ -243,14 +333,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       role,
       me,
+      resident,
       identityVerified,
       loginAvailable: isSupabaseConfigured(),
       error,
       signIn,
+      sendPhoneOtp,
+      verifyPhoneOtp,
       signOut,
       refresh,
     }),
-    [status, role, me, identityVerified, error, signIn, signOut, refresh],
+    [
+      status,
+      role,
+      me,
+      resident,
+      identityVerified,
+      error,
+      signIn,
+      sendPhoneOtp,
+      verifyPhoneOtp,
+      signOut,
+      refresh,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

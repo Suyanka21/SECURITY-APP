@@ -74,11 +74,16 @@ import {
   adminResidentsRouter,
   adminUnitsRouter,
   handleClaimUnit,
+  handleIssueResidentPass,
   handleResidentMe,
 } from "./routes/residents";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
-import { requireResidentAuth, requireSupabaseUser } from "./middleware/resident-auth";
+import {
+  requireResidentAuth,
+  requireSupabaseUser,
+  type ResidentRequest,
+} from "./middleware/resident-auth";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -107,6 +112,20 @@ const GLOBAL_RATE_LIMIT = {
     error: {
       code: "RATE_LIMIT_EXCEEDED",
       message: "Too many requests. Please wait before retrying.",
+      traceId: "rate-limited",
+    },
+  },
+};
+
+const RESIDENT_PASS_RATE_LIMIT = {
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: "RATE_LIMIT_EXCEEDED",
+      message: "Too many passes issued. Please wait before trying again.",
       traceId: "rate-limited",
     },
   },
@@ -320,6 +339,18 @@ export function createApp(db: unknown) {
   );
   app.post("/api/resident/claim", strictLimiter, requireSupabaseUser, handleClaimUnit);
   app.get("/api/resident/me", requireResidentAuth, handleResidentMe);
+  // R2 capability 1. Rate-limited per resident (after auth), not per IP:
+  // residents share carrier NAT, and the 10-open-pass cap bounds the rest.
+  const residentPassLimiter = rateLimit({
+    ...RESIDENT_PASS_RATE_LIMIT,
+    keyGenerator: (req) => (req as ResidentRequest).resident.residentId,
+  });
+  app.post(
+    "/api/resident/passes",
+    requireResidentAuth,
+    residentPassLimiter,
+    handleIssueResidentPass
+  );
 
   // Feature 5 — Shift Log Aggregation (spec §4, §9).
   // Read-only aggregation over entry_records + audit_events. Admin or

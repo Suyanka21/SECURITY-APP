@@ -5,10 +5,10 @@
  *
  * Routing keys off the DB-verified auth-role ONLY. The cosmetic onboarding-role
  * participates in exactly one decision: with NO staff session, a `resident`
- * onboarding-role sees the §5.3 magic-link info state instead of a login prompt
- * (residents never sign in to a console). A real session always wins over that
+ * onboarding-role sees the resident phone sign-in instead of the staff login
+ * (resident-portal.md §4). A real session always wins over that
  * stored value — it is a tap on a tile, not a credential — and the info screen
- * carries a "Staff sign in" exit so a wrong tap is recoverable without wiping
+ * resident sign-in carries a "Staff sign in" exit so a wrong tap is recoverable without wiping
  * browser storage. There is NO silent fallback to the guard console — an
  * unhandled role gets an explicit not-available state.
  */
@@ -20,10 +20,12 @@ import { AdminDashboard } from "@/features/admin/AdminDashboard";
 import { useAuth } from "@/features/auth/AuthContext";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import {
-  ResidentMagicLinkInfo,
   RoleInterfaceNotAvailable,
   NoGuardProfileNotice,
 } from "@/features/auth/NotAvailable";
+import { ResidentLogin } from "@/features/resident/ResidentLogin";
+import { ClaimUnitScreen, ResidentAccessEnded } from "@/features/resident/ClaimUnitScreen";
+import { ResidentPortal } from "@/features/resident/ResidentPortal";
 import { useOnboarding } from "@/features/onboarding/useOnboarding";
 
 function FullScreenLoader() {
@@ -44,14 +46,22 @@ const Index = () => {
   if (auth.status === "loading") return <FullScreenLoader />;
 
   if (auth.status === "unauthenticated") {
-    // onboarding-role `resident` → informational state (§5.3), not a login
-    // prompt — residents act through one-off links. Staff who tapped the
-    // wrong tile leave via the button, which clears the stored role and
-    // marks onboarding done so the gate does not re-open the picker.
+    // onboarding-role `resident` → resident phone sign-in. Staff who tapped
+    // the wrong tile leave via its "Staff sign in" button, which clears the
+    // stored role and marks onboarding done so the gate does not re-open the
+    // picker.
     if (state.role === "resident") {
-      return <ResidentMagicLinkInfo onStaffSignIn={skipOnboarding} />;
+      return <ResidentLogin onStaffSignIn={skipOnboarding} />;
     }
     return <LoginScreen />;
+  }
+
+  if (auth.status === "resident" && auth.resident) {
+    return <ResidentPortal resident={auth.resident} onSignOut={() => void auth.signOut()} />;
+  }
+  if (auth.status === "resident-unclaimed") return <ClaimUnitScreen />;
+  if (auth.status === "resident-inactive") {
+    return <ResidentAccessEnded onSignOut={() => void auth.signOut()} />;
   }
 
   if (auth.status === "no-guard-profile") {
