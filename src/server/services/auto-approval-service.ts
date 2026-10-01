@@ -25,10 +25,18 @@
  *     its failure NEVER blocks the auto-approval.
  */
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
-import { autoApprovalRules, guards } from "@/db/schema";
-import { emitAuditEvent } from "./audit-logger";
+import type * as Schema from "@/db/schema";
+import {
+  autoApprovalRules,
+  guards,
+  residents,
+  unitRegistrations,
+  units,
+} from "@/db/schema";
+import { emitAuditEvent, emitResidentAuditEvent } from "./audit-logger";
 import { ServiceError } from "./errors";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -65,7 +73,9 @@ export interface AutoApprovalRuleRow {
   host: string;
   unit: string;
   plateRequired: string | null;
-  createdByGuardId: string;
+  /** NULL iff created by a resident (DB CHECK: exactly one creator). */
+  createdByGuardId: string | null;
+  createdByResidentId?: string | null;
   active: boolean;
   expiresAt: Date;
   createdAt: Date;
@@ -170,6 +180,123 @@ export async function evaluate(
   db: DrizzleDB,
   now: () => Date = () => new Date(),
 ): Promise<AutoApprovalDecision> {
+  const decision = await evaluateExactTriple(input, db, now);
+  if (decision.match) return decision;
+
+  const plate = compactPlate(input.plate ?? "");
+  const unit = (input.unit ?? "").trim();
+  if (!plate || !unit) return decision;
+  try {
+    return (await evaluateResidentVehicle(unit, plate, db, now())) ?? decision;
+  } catch {
+    return decision;
+  }
+}
+
+/** Uppercases and strips separators so "KDA 123X" and "kda-123x" compare equal. */
+export function compactPlate(raw: string): string {
+  return raw.toUpperCase().replace(/[^0-9A-Z]/g, "");
+}
+
+async function auditRuleExpired(rule: AutoApprovalRuleRow): Promise<void> {
+  const traceId = `auto-approval-${rule.id}`;
+  const payload = {
+    ruleId: rule.id,
+    visitorName: rule.visitorName,
+    host: rule.host,
+    unit: rule.unit,
+    expiresAt: new Date(rule.expiresAt).toISOString(),
+  };
+  // Best-effort: a failure here MUST NOT crash the evaluator.
+  try {
+    if (rule.createdByGuardId) {
+      await emitAuditEvent("auto_approval_rule_expired", rule.createdByGuardId, traceId, payload);
+    } else if (rule.createdByResidentId) {
+      await emitResidentAuditEvent(
+        "auto_approval_rule_expired",
+        rule.createdByResidentId,
+        traceId,
+        payload,
+      );
+    }
+  } catch {
+    /* swallow — see evaluate() docstring */
+  }
+}
+
+/**
+ * Resident-registered vehicles (Resident Portal R3, owner-approved): a rule
+ * owned by an active `unit_registrations` row of kind 'vehicle' matches on
+ * unit + plate, whatever visitor name / host the guard typed. Only consulted
+ * after the exact-triple path did not match, and only for rules created by
+ * the registering resident whose unit and resident rows are still active.
+ * Returns null when no such rule applies, so the caller keeps the original
+ * non-match reason. Staff-created rules never reach this path.
+ */
+async function evaluateResidentVehicle(
+  unit: string,
+  plate: string,
+  db: DrizzleDB,
+  nowDate: Date,
+): Promise<AutoApprovalDecision | null> {
+  const rdb = db as unknown as NodePgDatabase<typeof Schema>;
+  const rows = await rdb
+    .select({
+      rule: autoApprovalRules,
+      kind: unitRegistrations.kind,
+      residentId: unitRegistrations.residentId,
+    })
+    .from(unitRegistrations)
+    .innerJoin(autoApprovalRules, eq(autoApprovalRules.id, unitRegistrations.autoApprovalRuleId))
+    .innerJoin(units, eq(units.id, unitRegistrations.unitId))
+    .innerJoin(residents, eq(residents.id, unitRegistrations.residentId))
+    .where(
+      and(
+        eq(unitRegistrations.kind, "vehicle"),
+        isNull(unitRegistrations.deletedAt),
+        eq(unitRegistrations.plateNorm, plate),
+        eq(units.labelNorm, normalize(unit)),
+        eq(units.isActive, true),
+        eq(residents.isActive, true),
+        eq(autoApprovalRules.active, true),
+        eq(autoApprovalRules.createdByResidentId, unitRegistrations.residentId),
+      ),
+    );
+
+  const candidates = rows
+    .filter(
+      (r) =>
+        r.kind === "vehicle" &&
+        r.rule.active &&
+        r.rule.createdByGuardId === null &&
+        r.rule.createdByResidentId === r.residentId,
+    )
+    .map((r) => r.rule)
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  if (candidates.length === 0) return null;
+
+  const live = candidates.find((r) => new Date(r.expiresAt).getTime() > nowDate.getTime());
+  if (!live) {
+    await auditRuleExpired(candidates[0]);
+    return { match: false, rule: null, reason: "RULE_EXPIRED" };
+  }
+
+  try {
+    await rdb
+      .update(autoApprovalRules)
+      .set({ lastMatchedAt: nowDate, matchCount: live.matchCount + 1, updatedAt: nowDate })
+      .where(eq(autoApprovalRules.id, live.id));
+  } catch {
+    /* swallow — match is still valid even if bump fails */
+  }
+  return { match: true, rule: live, reason: null };
+}
+
+async function evaluateExactTriple(
+  input: AutoApprovalInput,
+  db: DrizzleDB,
+  now: () => Date,
+): Promise<AutoApprovalDecision> {
   try {
     const visitorName = (input.visitorName ?? "").trim();
     const host = (input.host ?? "").trim();
@@ -217,23 +344,7 @@ export async function evaluate(
     const nowDate = now();
     if (new Date(top.expiresAt).getTime() <= nowDate.getTime()) {
       // Lazy expiry. Audit so admins can find expired rules later.
-      // Best-effort: a failure here MUST NOT crash the evaluator.
-      try {
-        await emitAuditEvent(
-          "auto_approval_rule_expired",
-          top.createdByGuardId,
-          `auto-approval-${top.id}`,
-          {
-            ruleId: top.id,
-            visitorName: top.visitorName,
-            host: top.host,
-            unit: top.unit,
-            expiresAt: new Date(top.expiresAt).toISOString(),
-          },
-        );
-      } catch {
-        /* swallow — see method docstring */
-      }
+      await auditRuleExpired(top);
       return { match: false, rule: null, reason: "RULE_EXPIRED" };
     }
 

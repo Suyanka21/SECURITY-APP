@@ -15,6 +15,10 @@
  *   POST   /api/resident/claim   requireSupabaseUser — redeem a claim code
  *   GET    /api/resident/me      requireResidentAuth — identity + unit
  *   POST   /api/resident/passes  requireResidentAuth — issue a visitor pass for own unit
+ *   GET    /api/resident/registrations            own household members / vehicles
+ *   POST   /api/resident/registrations            register a person or vehicle
+ *   DELETE /api/resident/registrations/:id        remove own registration
+ *   POST   /api/resident/registrations/:id/renew  extend own registration 90 days
  *
  * Identity, unit and phone come from the verified token / DB rows, never
  * from the body.
@@ -37,11 +41,20 @@ import {
 } from "../services/resident-service";
 import { issueResidentPass } from "../services/resident-pass-service";
 import {
+  createRegistration,
+  listRegistrations,
+  removeRegistration,
+  renewRegistration,
+  RESIDENT_RENEW_PROMPT_DAYS,
+} from "../services/unit-registration-service";
+import {
   ClaimUnitSchema,
+  CreateRegistrationSchema,
   CreateUnitSchema,
   IssueClaimCodeSchema,
   ListResidentsQuerySchema,
   ListUnitsQuerySchema,
+  RegistrationParamsSchema,
   ResidentErrorCodes,
   ResidentIssuePassSchema,
   ResidentParamsSchema,
@@ -234,6 +247,86 @@ export async function handleIssueResidentPass(
     const { resident } = req as ResidentRequest;
     const result = await issueResidentPass(body.data, resident, getDb(req));
     res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Resident: household members, workers, vehicles (R3) ────────────────────
+
+export async function handleListRegistrations(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { resident } = req as ResidentRequest;
+    const registrations = await listRegistrations(resident, getDb(req));
+    res.status(200).json({
+      registrations,
+      count: registrations.length,
+      renewPromptDays: RESIDENT_RENEW_PROMPT_DAYS,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function handleCreateRegistration(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const body = CreateRegistrationSchema.safeParse(req.body);
+    if (!body.success) {
+      const { message, field } = firstIssue(body.error);
+      invalidInput(res, message, field);
+      return;
+    }
+    const { resident } = req as ResidentRequest;
+    const registration = await createRegistration(body.data, resident, getDb(req));
+    res.status(201).json({ registration });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function handleRemoveRegistration(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const params = RegistrationParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      const { message, field } = firstIssue(params.error);
+      invalidInput(res, message, field);
+      return;
+    }
+    const { resident } = req as ResidentRequest;
+    const removed = await removeRegistration(params.data.id, resident, getDb(req));
+    res.status(200).json({ registration: removed });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function handleRenewRegistration(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const params = RegistrationParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      const { message, field } = firstIssue(params.error);
+      invalidInput(res, message, field);
+      return;
+    }
+    const { resident } = req as ResidentRequest;
+    const registration = await renewRegistration(params.data.id, resident, getDb(req));
+    res.status(200).json({ registration });
   } catch (err) {
     next(err);
   }

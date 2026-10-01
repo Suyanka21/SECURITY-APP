@@ -99,6 +99,13 @@
       "when": 1786400000000,
       "tag": "0014_units_residents",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1786500000000,
+      "tag": "0015_unit_registrations",
+      "breakpoints": true
     }
   ]
 }

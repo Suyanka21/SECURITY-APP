@@ -237,13 +237,14 @@ GET  /api/resident/me                          → { resident, unit }
 POST /api/resident/claim                       → { code }  (token-authed, NOT resident-authed —
                                                   the only route a linked-nothing user can call)
 POST /api/resident/passes                      → capability 1
-POST /api/resident/household                   → capability 2
-GET  /api/resident/household
-DELETE /api/resident/household/:id             → soft-delete profile + deactivate rule
-POST /api/resident/vehicles                    → capability 3
-GET  /api/resident/vehicles
-DELETE /api/resident/vehicles/:id
+GET    /api/resident/registrations             → capabilities 2 + 3 (own registrations only)
+POST   /api/resident/registrations             → { kind: 'person', label } | { kind: 'vehicle', label, plate }
+DELETE /api/resident/registrations/:id         → soft-delete profile + deactivate rule
+POST   /api/resident/registrations/:id/renew   → rule expires_at = now + 90 days
 ```
+
+As built (R3): one resource for both kinds, so list/remove/renew share one
+ownership check. Another resident's id is a 404, never a 403.
 
 Admin (`requireAuth` + `requireRole('admin')`):
 ```
@@ -340,12 +341,39 @@ Vehicle = `kind='vehicle'` → profile (name = label) + rule with
 
 Cap: 20 registrations per unit (both kinds combined).
 
+**As built in R3 (owner decisions 2026-05, §11 rows R3-a..c):**
+- Migration `0015_unit_registrations.sql`. `profile`/`rule` FKs are `NOT NULL`;
+  generated `plate_norm` (uppercase, separators stripped) with a partial
+  UNIQUE `(unit_id, plate_norm) WHERE kind='vehicle' AND deleted_at IS NULL`.
+- `visitor_profiles.deleted_by_resident_id`; the soft-delete CHECK is now
+  "active ⇒ no remover, deleted ⇒ exactly one remover (guard or resident)".
+- Writes go through `unit-registration-service.ts`, not `createVisitorProfile`
+  / `seedAutoApprovalRule`: those take a guard id and audit outside any
+  transaction. The resident service locks unit then resident, writes profile +
+  rule + registration + audit row in one transaction, then publishes. The
+  active-triple uniqueness is checked explicitly inside that transaction.
+- `kind='person'` takes **no plate** (a person rule pinned to a plate would
+  refuse them on foot). Profile/rule `visitor_name` = label; for vehicles
+  `"<label> (<PLATE>)"` with `plate_required = plate`.
+- **Matching.** Person rules match only on the existing exact
+  name/host/unit triple — the portal copy says so plainly. Resident
+  **vehicle** rules additionally match in `evaluate()` on unit + plate,
+  ignoring name/host, via a second lookup that runs only when the unchanged
+  triple lookup did not match, and only for rules owned by a live
+  `unit_registrations` row with `kind='vehicle'` whose resident and unit are
+  active and whose `created_by_resident_id` is that resident. Staff rules never
+  enter this path. Expired rules return `RULE_EXPIRED`; the expiry audit row is
+  attributed to the creating resident when there is no creating guard.
+- Resident deactivation disables that resident's active rules (unit
+  deactivation already disabled the unit's rules). A rule switched off by
+  staff stays off: renew returns `409 REGISTRATION_DISABLED`.
+
 ### 3.5 Audit
 
 New `audit_events.event_type` values (enum migration like 0006/0010):
 `unit_created`, `unit_deactivated`, `unit_claim_code_issued`, `resident_claimed`,
 `resident_deactivated`, `resident_registration_created`,
-`resident_registration_removed`. Existing `qr_invitation_issued` gains
+`resident_registration_removed`, and (0015) `resident_registration_renewed`. Existing `qr_invitation_issued` gains
 `actor: { kind: 'resident', residentId, unitId }` in payload. No raw codes,
 tokens or phone numbers in payloads (phone appears only as last-4).
 
@@ -457,6 +485,9 @@ tested live; R1 and R2 server tests run in legacy mode without it.
 | 4 | Unit deactivation vs issued passes | **Auto-expire** outstanding passes for that unit label on deactivation (fail-closed). Implemented in R1 `deactivateUnit`. |
 | 5 | Household rule TTL | **90 days with renew prompt.** Household members are not permanent pre-approvals. |
 | 6 | Who issues claim codes | **Admin only** (account-provisioning level). May extend to senior-guard later on a real operational need. |
+| R3-a | Resident removal of a registration | **`visitor_profiles.deleted_by_resident_id`**, same shape as `created_by_*`; CHECK requires exactly one remover. |
+| R3-b | Expiry audit for resident-created rules | **Attributed to the resident** (no creating guard exists). |
+| R3-c | Vehicle matching | **Resident-vehicle rules match on plate within the unit**, name/host ignored; staff rules and household rules keep the exact triple unchanged. Household copy states the exact-name limitation. |
 | §2.5 | Attribution columns | **Approved:** nullable `created_by_resident_id` on `visitor_profiles` and `auto_approval_rules`, `created_by_guard_id` relaxed to nullable, `CHECK (num_nonnulls(...) = 1)`; `authorization_decisions.issued_by_resident_id` added; `audit_events` gains `resident_id` with an exactly-one-actor CHECK. Migration `0014_units_residents.sql`. |
 
 ## 10. Open questions (resolved — see §11; kept for the record)
