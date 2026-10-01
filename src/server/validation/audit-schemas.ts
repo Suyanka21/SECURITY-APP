@@ -25,6 +25,11 @@ const AUDIT_EVENT_TYPES = [
   "flow_reset",
   "camera_initialized",
   "camera_failure",
+  "unit_created",
+  "unit_deactivated",
+  "unit_claim_code_issued",
+  "resident_claimed",
+  "resident_deactivated",
 ] as const;
 
 /**

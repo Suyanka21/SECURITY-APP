@@ -654,7 +654,6 @@ describe("audit API resident actor", () => {
   it("/api/audit/events and /reconstruct return residentId (guardId null) for resident events", async () => {
     const { resident } = await claimedResident(`RP-AU${Date.now() % 100000}`);
 
-    // eventType filter only accepts the original 13 types; page the whole (per-test) log instead.
     const list = await api("GET", "/api/audit/events?pageSize=100", staffToken(adminId));
     expect(list.status, JSON.stringify(list.body)).toBe(200);
     const events = list.body.events as Array<{ residentId: string | null; guardId: string | null; traceId: string }>;
@@ -672,6 +671,33 @@ describe("audit API resident actor", () => {
     );
     expect(staffEvents.length).toBeGreaterThan(0);
     expect(staffEvents.every((e) => e.guardId === adminId && e.residentId === null)).toBe(true);
+  });
+});
+
+describe("audit API eventType filter covers resident/unit events", () => {
+  it.each([
+    "unit_created",
+    "unit_claim_code_issued",
+    "resident_claimed",
+    "resident_deactivated",
+    "unit_deactivated",
+  ] as const)("?eventType=%s returns only, and at least one, event of that type", async (eventType) => {
+    const { unit, resident } = await claimedResident(`RP-EF${Date.now() % 100000}`);
+    const deactRes = await api("POST", `/api/admin/residents/${resident.id}/deactivate`, staffToken(adminId));
+    expect(deactRes.status, JSON.stringify(deactRes.body)).toBe(200);
+    const deactUnit = await api("POST", `/api/admin/units/${unit.id}/deactivate`, staffToken(adminId));
+    expect(deactUnit.status, JSON.stringify(deactUnit.body)).toBe(200);
+
+    const all = await api("GET", "/api/audit/events?pageSize=100", staffToken(adminId));
+    expect(all.status, JSON.stringify(all.body)).toBe(200);
+    const allTypes = new Set((all.body.events as Array<{ type: string }>).map((e) => e.type));
+    expect(allTypes.size).toBeGreaterThan(1);
+
+    const r = await api("GET", `/api/audit/events?eventType=${eventType}&pageSize=100`, staffToken(adminId));
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const events = r.body.events as Array<{ type: string }>;
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((e) => e.type === eventType)).toBe(true);
   });
 });
 

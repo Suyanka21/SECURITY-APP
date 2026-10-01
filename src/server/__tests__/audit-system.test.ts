@@ -253,6 +253,16 @@ describe("Audit Query Validation", () => {
     expect(result.success).toBe(true);
   });
 
+  it.each([
+    "unit_created",
+    "unit_deactivated",
+    "unit_claim_code_issued",
+    "resident_claimed",
+    "resident_deactivated",
+  ])("accepts eventType=%s", (eventType) => {
+    expect(validateAuditQuery({ eventType }).success).toBe(true);
+  });
+
   // Test 15: Invalid eventType → rejected
   it("rejects invalid event type", () => {
     const result = validateAuditQuery({
