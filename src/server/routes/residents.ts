@@ -14,6 +14,7 @@
  * Resident:
  *   POST   /api/resident/claim   requireSupabaseUser — redeem a claim code
  *   GET    /api/resident/me      requireResidentAuth — identity + unit
+ *   POST   /api/resident/passes  requireResidentAuth — issue a visitor pass for own unit
  *
  * Identity, unit and phone come from the verified token / DB rows, never
  * from the body.
@@ -34,6 +35,7 @@ import {
   listUnits,
   type ResidentDb,
 } from "../services/resident-service";
+import { issueResidentPass } from "../services/resident-pass-service";
 import {
   ClaimUnitSchema,
   CreateUnitSchema,
@@ -41,6 +43,7 @@ import {
   ListResidentsQuerySchema,
   ListUnitsQuerySchema,
   ResidentErrorCodes,
+  ResidentIssuePassSchema,
   ResidentParamsSchema,
   UnitParamsSchema,
 } from "../validation/resident-schemas";
@@ -214,6 +217,26 @@ export function handleResidentMe(req: Request, res: Response): void {
       unitLabel: resident.unitLabel,
     },
   });
+}
+
+export async function handleIssueResidentPass(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const body = ResidentIssuePassSchema.safeParse(req.body);
+    if (!body.success) {
+      const { message, field } = firstIssue(body.error);
+      invalidInput(res, message, field);
+      return;
+    }
+    const { resident } = req as ResidentRequest;
+    const result = await issueResidentPass(body.data, resident, getDb(req));
+    res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
 }
 
 // ─── Routers ─────────────────────────────────────────────────────────────────

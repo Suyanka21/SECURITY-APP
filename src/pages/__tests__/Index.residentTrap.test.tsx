@@ -38,10 +38,13 @@ function setAuth(status: AuthStatus, role: AuthContextValue["role"] = null) {
     status,
     role,
     me: null,
+    resident: null,
     identityVerified: true,
     loginAvailable: true,
     error: null,
     signIn: vi.fn(),
+    sendPhoneOtp: vi.fn(),
+    verifyPhoneOtp: vi.fn(),
     signOut: vi.fn().mockResolvedValue(undefined),
     refresh: vi.fn().mockResolvedValue(undefined),
   });
@@ -70,11 +73,11 @@ describe("App — resident onboarding-role trap (real gate + real router)", () =
     vi.clearAllMocks();
   });
 
-  it("the original trap: stored resident role + no session shows the info screen, not the login", () => {
+  it("the original trap: stored resident role + no session shows the resident sign-in, not the staff login", () => {
     storeResidentOnboarding(true);
     setAuth("unauthenticated");
     renderApp();
-    expect(screen.getByTestId("resident-not-available")).toBeInTheDocument();
+    expect(screen.getByTestId("resident-login")).toBeInTheDocument();
     expect(screen.queryByTestId("iface-login")).not.toBeInTheDocument();
   });
 
@@ -86,7 +89,7 @@ describe("App — resident onboarding-role trap (real gate + real router)", () =
     fireEvent.click(screen.getByTestId("resident-staff-sign-in"));
 
     expect(screen.getByTestId("iface-login")).toBeInTheDocument();
-    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resident-login")).not.toBeInTheDocument();
     expect(screen.queryByTestId("role-resident")).not.toBeInTheDocument();
     expect(localStorage.getItem(STORAGE_KEYS.role)).toBeNull();
     expect(localStorage.getItem(STORAGE_KEYS.completed)).toBe("true");
@@ -102,7 +105,7 @@ describe("App — resident onboarding-role trap (real gate + real router)", () =
     fireEvent.click(screen.getByTestId("help-replay-tutorial"));
 
     expect(screen.getByTestId("role-guard")).toBeInTheDocument();
-    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resident-login")).not.toBeInTheDocument();
     expect(localStorage.getItem(STORAGE_KEYS.role)).toBeNull();
   });
 
@@ -111,7 +114,7 @@ describe("App — resident onboarding-role trap (real gate + real router)", () =
     setAuth("authenticated", "guard");
     renderApp();
     expect(screen.getByTestId("iface-guard")).toBeInTheDocument();
-    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resident-login")).not.toBeInTheDocument();
   });
 
   it("an unfinished resident walkthrough completes into the guard console, not the resident screen", () => {
@@ -128,6 +131,6 @@ describe("App — resident onboarding-role trap (real gate + real router)", () =
 
     // …and the moment it hands over, the DB-verified session wins.
     expect(screen.getByTestId("iface-guard")).toBeInTheDocument();
-    expect(screen.queryByTestId("resident-not-available")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resident-login")).not.toBeInTheDocument();
   });
 });

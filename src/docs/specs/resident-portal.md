@@ -276,6 +276,24 @@ Client: one form → result screen with QR preview, "Share via WhatsApp"
 (`navigator.share` → fallback `https://wa.me/?text=…` → fallback copy). The
 PIN is shown once with "send this separately" copy.
 
+**As built in R2** (`src/server/services/resident-pass-service.ts`):
+- Separate `issueResidentPass()` rather than a discriminated actor on
+  `issueVisitorInvitation()`. The resident path needs the unit row locked
+  `FOR UPDATE`, the resident row `FOR SHARE`, the open-pass count, the insert
+  and the `qr_invitation_issued` audit row in **one** transaction (published
+  only after commit). The staff service has none of that, and its behaviour is
+  left untouched. Both share `mintRawToken`, `hashQrToken`, `buildPassUrl`,
+  `generatePassRef`, `generatePin`/`hashPin`, so the row and response are
+  identical in shape and redeem through the same preview/scan/PIN paths.
+- The cap counts **resident-issued** (`issued_by_resident_id IS NOT NULL`),
+  unused, unexpired passes for the unit. Staff-issued passes for the same unit
+  do not consume it.
+- `ttlHours` > 48 is rejected (422), not clamped. Default 24.
+- Rate limit: 30 issues/hour keyed by resident id (after auth), on top of the
+  global limiter.
+- Audit: `audit_events.resident_id` = resident, `guard_id` NULL; payload has
+  `qrTokenHash`, never the raw token, PIN or phone.
+
 ### 3.4 Capabilities 2 & 3 — write into existing matching tables via a thin scoped table
 
 **Decision: thin resident-scoped table feeding the existing rows, not direct writes.**
@@ -347,6 +365,14 @@ residents are online-only; the offline cache stays guard-console-only per PR #27
 
 `ResidentPortal`: header (name · unit · sign out), three cards in the agreed
 priority order, each a single form. Public footer from PR #35. Nothing else.
+
+**As built in R2:** the portal renders capability 1 (`SendPassCard`) only; the
+household and vehicle cards arrive with R3 rather than as placeholders. The
+resident lookup runs only when the Supabase session carries a phone (an email
+staff account without a guard row still gets `no-guard-profile`). Statuses:
+`resident` → portal, `resident-unclaimed` → `ClaimUnitScreen`,
+`resident-inactive` → access-ended notice, transport failure → signed out
+(fail closed, no cache).
 
 ---
 

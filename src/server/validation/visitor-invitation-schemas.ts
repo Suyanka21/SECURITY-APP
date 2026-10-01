@@ -50,7 +50,7 @@ export const MAX_TTL_HOURS = 168; // 7 days
 // (authorization_visitor_name_not_empty / host / unit) — see src/db/schema.ts
 // lines 178-194.
 
-const visitorNameSchema = z
+export const visitorNameSchema = z
   .string()
   .trim()
   .min(1, "visitorName must be 1..120 characters")
@@ -69,7 +69,7 @@ const unitSchema = z
   .max(30, "unit must be 1..30 characters");
 
 // Plate is optional; when present, mirrors entry_records.plate format.
-const plateSchema = z
+export const plateSchema = z
   .string()
   .trim()
   .min(1, "plate must be 1..12 characters when provided")

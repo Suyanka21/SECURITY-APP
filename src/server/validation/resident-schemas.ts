@@ -13,6 +13,11 @@ import {
   DEFAULT_CLAIM_CODE_TTL_HOURS,
   MAX_CLAIM_CODE_TTL_HOURS,
 } from "../services/resident-service";
+import {
+  RESIDENT_DEFAULT_PASS_TTL_HOURS,
+  RESIDENT_MAX_PASS_TTL_HOURS,
+} from "../services/resident-pass-service";
+import { plateSchema, visitorNameSchema } from "./visitor-invitation-schemas";
 
 export const ResidentErrorCodes = {
   RESIDENT_INVALID_INPUT: "RESIDENT_INVALID_INPUT",
@@ -73,4 +78,21 @@ export const ClaimUnitSchema = z.object({
     .trim()
     .min(1, "Your name is required")
     .max(RESIDENT_NAME_MAX, `Name must be at most ${RESIDENT_NAME_MAX} characters`),
+});
+
+// Resident pass body: visitor fields only. host/unit/phone/role are not
+// accepted — unknown keys are stripped and the server derives them.
+export const ResidentIssuePassSchema = z.object({
+  visitorName: visitorNameSchema,
+  plate: plateSchema.nullable().optional().transform((p) => p ?? null),
+  ttlHours: z
+    .number()
+    .int("ttlHours must be a whole number")
+    .min(1, "ttlHours must be at least 1")
+    .max(
+      RESIDENT_MAX_PASS_TTL_HOURS,
+      `ttlHours cannot exceed ${RESIDENT_MAX_PASS_TTL_HOURS}`,
+    )
+    .optional()
+    .default(RESIDENT_DEFAULT_PASS_TTL_HOURS),
 });
