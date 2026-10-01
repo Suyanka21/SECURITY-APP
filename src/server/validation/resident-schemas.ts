@@ -17,6 +17,7 @@ import {
   RESIDENT_DEFAULT_PASS_TTL_HOURS,
   RESIDENT_MAX_PASS_TTL_HOURS,
 } from "../services/resident-pass-service";
+import { compactPlate } from "../services/auto-approval-service";
 import { plateSchema, visitorNameSchema } from "./visitor-invitation-schemas";
 
 export const ResidentErrorCodes = {
@@ -95,4 +96,36 @@ export const ResidentIssuePassSchema = z.object({
     )
     .optional()
     .default(RESIDENT_DEFAULT_PASS_TTL_HOURS),
+});
+
+export const REGISTRATION_LABEL_MAX = 60;
+
+function registrationLabel(what: string) {
+  return z
+    .string({ required_error: `${what} is required` })
+    .trim()
+    .min(1, `${what} is required`)
+    .max(REGISTRATION_LABEL_MAX, `${what} must be at most ${REGISTRATION_LABEL_MAX} characters`);
+}
+
+// Registration body: kind + label (+ plate for vehicles). host, unit,
+// notes, watchFlag and attribution are not accepted — unknown keys are
+// stripped and the server derives host/unit from the resident row.
+export const CreateRegistrationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("person"), label: registrationLabel("Name") }),
+  z.object({
+    kind: z.literal("vehicle"),
+    label: registrationLabel("Vehicle description"),
+    plate: z
+      .string({ required_error: "Number plate is required" })
+      .trim()
+      .min(1, "Number plate is required")
+      .max(12, "Number plate must be at most 12 characters")
+      .transform((s) => s.toUpperCase())
+      .refine((s) => compactPlate(s).length >= 2, "Enter the vehicle's number plate"),
+  }),
+]);
+
+export const RegistrationParamsSchema = z.object({
+  id: z.string().uuid("Registration id must be a UUID"),
 });
