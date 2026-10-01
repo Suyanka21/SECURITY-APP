@@ -50,6 +50,8 @@ export interface SupabaseVerifiedToken {
   /** Supabase auth.users UUID — maps to guards.supabase_user_id. */
   sub: string;
   email?: string;
+  /** E.164 phone for phone-OTP users (residents). Absent for email users. */
+  phone?: string;
 }
 
 /**
@@ -74,5 +76,12 @@ export async function verifySupabaseToken(
   return {
     sub: payload.sub,
     email: typeof payload.email === "string" ? payload.email : undefined,
+    phone: normalizePhoneClaim(payload.phone),
   };
+}
+
+/** Supabase stores phones without the leading '+'; E.164 needs it. */
+export function normalizePhoneClaim(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  return raw.startsWith("+") ? raw : `+${raw}`;
 }

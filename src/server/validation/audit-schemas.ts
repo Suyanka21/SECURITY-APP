@@ -25,6 +25,11 @@ const AUDIT_EVENT_TYPES = [
   "flow_reset",
   "camera_initialized",
   "camera_failure",
+  "unit_created",
+  "unit_deactivated",
+  "unit_claim_code_issued",
+  "resident_claimed",
+  "resident_deactivated",
 ] as const;
 
 /**
@@ -66,7 +71,8 @@ export interface AuditQueryResponse {
     id: string;
     type: string;
     timestamp: string;
-    guardId: string;
+    guardId: string | null;
+    residentId: string | null;
     traceId: string;
     payload: Record<string, unknown>;
   }>;
@@ -85,7 +91,8 @@ export interface ReconstructResponse {
     id: string;
     type: string;
     timestamp: string;
-    guardId: string;
+    guardId: string | null;
+    residentId: string | null;
     payload: Record<string, unknown>;
   }>;
   timeline: Array<{

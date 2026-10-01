@@ -70,8 +70,15 @@ import {
 } from "./routes/deliveries";
 import { handleGetMe } from "./routes/auth";
 import { handleProvisionAccount } from "./routes/accounts";
+import {
+  adminResidentsRouter,
+  adminUnitsRouter,
+  handleClaimUnit,
+  handleResidentMe,
+} from "./routes/residents";
 import { errorHandler } from "./middleware/error-handler";
 import { requireAuth, requireRole } from "./middleware/auth";
+import { requireResidentAuth, requireSupabaseUser } from "./middleware/resident-auth";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -290,6 +297,29 @@ export function createApp(db: unknown) {
     requireRole("admin"),
     handleProvisionAccount
   );
+
+  // Resident Portal R1 (spec §2–3) — units, residents, claim codes.
+  // Admin-only management (decision §10.6: claim codes are provisioning, same
+  // level as staff accounts). Resident routes use the SEPARATE resident
+  // middleware: a guard token has no residents row → AUTH_NO_RESIDENT_LINK,
+  // and a resident token has no guards row → requireAuth AUTH_NO_GUARD_LINK,
+  // so neither side can ever satisfy the other's routes.
+  app.use(
+    "/api/admin/units",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin"),
+    adminUnitsRouter
+  );
+  app.use(
+    "/api/admin/residents",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin"),
+    adminResidentsRouter
+  );
+  app.post("/api/resident/claim", strictLimiter, requireSupabaseUser, handleClaimUnit);
+  app.get("/api/resident/me", requireResidentAuth, handleResidentMe);
 
   // Feature 5 — Shift Log Aggregation (spec §4, §9).
   // Read-only aggregation over entry_records + audit_events. Admin or

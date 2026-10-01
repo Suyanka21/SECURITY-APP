@@ -27,6 +27,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -237,6 +238,15 @@ export const authorizationDecisions = pgTable(
       precision: 3,
       withTimezone: true,
     }),
+
+    /**
+     * Resident who issued this pass (Resident Portal, spec §2.5). NULL for
+     * staff-issued passes, whose issuer lives in the qr_invitation_issued
+     * audit row. Migration 0014.
+     */
+    issuedByResidentId: uuid("issued_by_resident_id").references(
+      () => residents.id
+    ),
 
     /** Server-generated creation timestamp */
     createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
@@ -1193,10 +1203,17 @@ export const autoApprovalRules = pgTable(
      */
     plateRequired: text("plate_required"),
 
-    /** The guard / admin who seeded this rule */
-    createdByGuardId: uuid("created_by_guard_id")
-      .notNull()
-      .references(() => guards.id),
+    /**
+     * The guard / admin who seeded this rule. NULL iff the rule was created
+     * by a resident (created_by_resident_id) — DB CHECK requires exactly one.
+     * Source: src/docs/specs/resident-portal.md §2.5. Migration 0014.
+     */
+    createdByGuardId: uuid("created_by_guard_id").references(() => guards.id),
+
+    /** The resident who created this rule for their own unit (R3). */
+    createdByResidentId: uuid("created_by_resident_id").references(
+      () => residents.id
+    ),
 
     /** Hard kill switch — false stops the rule firing immediately */
     active: boolean("active").notNull().default(true),
@@ -1257,6 +1274,10 @@ export const autoApprovalRules = pgTable(
     ),
     // Admin queries by guard + active + expiry
     index("auto_approval_rules_guard_idx").on(table.createdByGuardId),
+    check(
+      "auto_approval_exactly_one_creator",
+      sql`num_nonnulls(${table.createdByGuardId}, ${table.createdByResidentId}) = 1`
+    ),
   ]
 );
 
@@ -1339,10 +1360,17 @@ export const visitorProfiles = pgTable(
      */
     watchFlag: boolean("watch_flag").notNull().default(false),
 
-    /** Guard / admin who created this profile */
-    createdByGuardId: uuid("created_by_guard_id")
-      .notNull()
-      .references(() => guards.id),
+    /**
+     * Guard / admin who created this profile. NULL iff created by a resident
+     * (created_by_resident_id) — DB CHECK requires exactly one.
+     * Source: src/docs/specs/resident-portal.md §2.5. Migration 0014.
+     */
+    createdByGuardId: uuid("created_by_guard_id").references(() => guards.id),
+
+    /** The resident who registered this profile for their own unit (R3). */
+    createdByResidentId: uuid("created_by_resident_id").references(
+      () => residents.id
+    ),
 
     /** Server-generated creation timestamp */
     createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
@@ -1397,6 +1425,10 @@ export const visitorProfiles = pgTable(
     // WHERE deleted_at IS NULL lives in the migration SQL.
     index("visitor_profiles_host_unit_idx").on(table.host, table.unit),
     index("visitor_profiles_creator_idx").on(table.createdByGuardId),
+    check(
+      "visitor_profile_exactly_one_creator",
+      sql`num_nonnulls(${table.createdByGuardId}, ${table.createdByResidentId}) = 1`
+    ),
   ]
 );
 
@@ -1417,6 +1449,167 @@ export const visitorProfilesRelations = relations(
     }),
   })
 );
+
+// ─── Resident Portal: units / residents / claim codes ───────────────────────
+// Source: src/docs/specs/resident-portal.md §2 (data model). Migration 0014.
+//
+// HARD RULES:
+// - A resident is NEVER a row in `guards`; requireRole can never be satisfied
+//   by a resident token. Residents get requireResidentAuth (middleware/auth.ts).
+// - Exactly one unit per resident, structurally: supabase_user_id UNIQUE +
+//   unit_id NOT NULL, and no application path updates unit_id.
+// - Existing matching tables keep the TEXT `unit` label; `units.label` is
+//   the canonical source of that label (label_norm UNIQUE, see migration).
+// - Claim codes are stored as HMAC(PIN_PEPPER, code) — never raw.
+
+export const units = pgTable(
+  "units",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** The value written into authorization_decisions.unit etc. */
+    label: text("label").notNull(),
+
+    /** lower(trim(label)) — GENERATED column in the migration; read-only here. */
+    labelNorm: text("label_norm")
+      .notNull()
+      .generatedAlwaysAs(sql`lower(trim("label"))`),
+
+    isActive: boolean("is_active").notNull().default(true),
+
+    /** The admin who registered the unit */
+    createdByGuardId: uuid("created_by_guard_id")
+      .notNull()
+      .references(() => guards.id),
+
+    deactivatedAt: timestamp("deactivated_at", { precision: 3, withTimezone: true }),
+    deactivatedByGuardId: uuid("deactivated_by_guard_id").references(() => guards.id),
+
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check("units_label_bounded", sql`length(trim(${table.label})) BETWEEN 1 AND 32`),
+    check(
+      "units_deactivation_consistent",
+      sql`(${table.isActive} = true AND ${table.deactivatedAt} IS NULL AND ${table.deactivatedByGuardId} IS NULL) OR (${table.isActive} = false AND ${table.deactivatedAt} IS NOT NULL AND ${table.deactivatedByGuardId} IS NOT NULL)`
+    ),
+    uniqueIndex("units_label_norm_unique").on(table.labelNorm),
+  ]
+);
+
+export const residents = pgTable(
+  "residents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /**
+     * auth.users.id of the phone-OTP Supabase user. One row per unit
+     * membership; at most one ACTIVE row per user (partial unique index).
+     * Cross-schema FK added (guarded) in migration 0014.
+     */
+    supabaseUserId: uuid("supabase_user_id").notNull(),
+
+    /** The ONE unit this resident acts for. Never updated in place. */
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id),
+
+    displayName: text("display_name").notNull(),
+
+    /** Copied from auth.users.phone at claim time. E.164. Unique among active rows. */
+    phoneE164: text("phone_e164").notNull(),
+
+    isActive: boolean("is_active").notNull().default(true),
+
+    claimedAt: timestamp("claimed_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deactivatedAt: timestamp("deactivated_at", { precision: 3, withTimezone: true }),
+    deactivatedByGuardId: uuid("deactivated_by_guard_id").references(() => guards.id),
+
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "residents_name_bounded",
+      sql`length(trim(${table.displayName})) BETWEEN 1 AND 120`
+    ),
+    check("residents_phone_e164_format", sql`${table.phoneE164} ~ '^\+[1-9][0-9]{7,14}$'`),
+    check(
+      "residents_deactivation_consistent",
+      sql`(${table.isActive} = true AND ${table.deactivatedAt} IS NULL AND ${table.deactivatedByGuardId} IS NULL) OR (${table.isActive} = false AND ${table.deactivatedAt} IS NOT NULL AND ${table.deactivatedByGuardId} IS NOT NULL)`
+    ),
+    index("residents_unit_idx").on(table.unitId),
+    index("residents_supabase_user_idx").on(table.supabaseUserId),
+    uniqueIndex("residents_active_user_unique")
+      .on(table.supabaseUserId)
+      .where(sql`${table.isActive} = true`),
+    uniqueIndex("residents_active_phone_unique")
+      .on(table.phoneE164)
+      .where(sql`${table.isActive} = true`),
+  ]
+);
+
+export const unitClaimCodes = pgTable(
+  "unit_claim_codes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id),
+
+    /** HMAC-SHA256(PIN_PEPPER, normalized code). The raw code is shown to the admin once. */
+    codeHash: text("code_hash").notNull().unique(),
+
+    issuedByGuardId: uuid("issued_by_guard_id")
+      .notNull()
+      .references(() => guards.id),
+
+    expiresAt: timestamp("expires_at", { precision: 3, withTimezone: true }).notNull(),
+
+    usedAt: timestamp("used_at", { precision: 3, withTimezone: true }),
+    usedByResidentId: uuid("used_by_resident_id").references(() => residents.id),
+
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "unit_claim_codes_used_consistent",
+      sql`(${table.usedAt} IS NULL) = (${table.usedByResidentId} IS NULL)`
+    ),
+    index("unit_claim_codes_unit_idx").on(table.unitId),
+  ]
+);
+
+/**
+ * Per-caller lockout for wrong claim codes. A wrong code matches no row, so
+ * the counter lives on the Supabase user attempting the claim.
+ */
+export const residentClaimAttempts = pgTable("resident_claim_attempts", {
+  supabaseUserId: uuid("supabase_user_id").primaryKey(),
+  failedAttempts: integer("failed_attempts").notNull().default(0),
+  lockedUntil: timestamp("locked_until", { precision: 3, withTimezone: true }),
+  lastFailedAt: timestamp("last_failed_at", { precision: 3, withTimezone: true }),
+  updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const residentsRelations = relations(residents, ({ one }) => ({
+  unit: one(units, { fields: [residents.unitId], references: [units.id] }),
+}));
 
 // ─── Enum: Audit Event Types ─────────────────────────────────────────────────
 // Source: contract §5 — Backend Event Traceability Matrix
@@ -1513,6 +1706,17 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "watchlist_matched",
   "watchlist_entry_reviewed",
   "watchlist_entry_removed",
+  // Source: src/docs/specs/resident-portal.md §3.5 — Resident Portal.
+  // unit_* and unit_claim_code_issued are admin actions (guard actor);
+  // resident_claimed / resident_registration_* carry a resident actor.
+  // Migration: drizzle/0014_units_residents.sql.
+  "unit_created",
+  "unit_deactivated",
+  "unit_claim_code_issued",
+  "resident_claimed",
+  "resident_deactivated",
+  "resident_registration_created",
+  "resident_registration_removed",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────
@@ -1525,7 +1729,9 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
 // - COMPLETE: Every system action generates an event
 // - RECONSTRUCTABLE: Full system state can be rebuilt from events
 
-export const auditEvents = pgTable("audit_events", {
+export const auditEvents = pgTable(
+  "audit_events",
+  {
   /** Server-generated immutable event ID */
   id: uuid("id").primaryKey().defaultRandom(),
 
@@ -1533,11 +1739,15 @@ export const auditEvents = pgTable("audit_events", {
   // Source: contract §5 — event type column
   eventType: auditEventTypeEnum("event_type").notNull(),
 
-  /** Guard who triggered this action */
+  /**
+   * Guard who triggered this action. NULL iff the actor is a resident
+   * (resident_id) — DB CHECK audit_events_exactly_one_actor. Migration 0014.
+   */
   // Source: contract §5 — guardId in every event
-  guardId: uuid("guard_id")
-    .notNull()
-    .references(() => guards.id),
+  guardId: uuid("guard_id").references(() => guards.id),
+
+  /** Resident who triggered this action (Resident Portal). */
+  residentId: uuid("resident_id").references(() => residents.id),
 
   /** Server-generated trace ID for cross-event correlation */
   // Source: contract §5 — traceId in every event
@@ -1555,12 +1765,24 @@ export const auditEvents = pgTable("audit_events", {
   createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+  },
+  (table) => [
+    check(
+      "audit_events_exactly_one_actor",
+      sql`num_nonnulls(${table.guardId}, ${table.residentId}) = 1`
+    ),
+  ]
+);
 
 export const auditEventsRelations = relations(auditEvents, ({ one }) => ({
-  /** The guard who generated this event */
+  /** The guard who generated this event (NULL for resident actions) */
   guard: one(guards, {
     fields: [auditEvents.guardId],
     references: [guards.id],
+  }),
+  /** The resident who generated this event (NULL for staff actions) */
+  resident: one(residents, {
+    fields: [auditEvents.residentId],
+    references: [residents.id],
   }),
 }));
