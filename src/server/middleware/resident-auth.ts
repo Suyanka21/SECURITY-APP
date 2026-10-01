@@ -192,7 +192,9 @@ export async function requireResidentAuth(
       .innerJoin(units, eq(units.id, residents.unitId))
       .where(eq(residents.supabaseUserId, login.supabaseUserId));
 
-    const row = rows[0];
+    // A user who moved units has one inactive row per past unit and at most
+    // one active row (partial unique index); the active row wins.
+    const row = rows.find((r) => r.residentActive) ?? rows[0];
     if (!row) {
       sendError(res, 403, "AUTH_NO_RESIDENT_LINK", "This account is not linked to a resident unit.", traceId);
       return;

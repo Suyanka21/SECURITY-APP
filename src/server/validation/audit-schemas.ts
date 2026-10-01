@@ -66,7 +66,8 @@ export interface AuditQueryResponse {
     id: string;
     type: string;
     timestamp: string;
-    guardId: string;
+    guardId: string | null;
+    residentId: string | null;
     traceId: string;
     payload: Record<string, unknown>;
   }>;
@@ -85,7 +86,8 @@ export interface ReconstructResponse {
     id: string;
     type: string;
     timestamp: string;
-    guardId: string;
+    guardId: string | null;
+    residentId: string | null;
     payload: Record<string, unknown>;
   }>;
   timeline: Array<{

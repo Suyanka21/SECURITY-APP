@@ -108,8 +108,8 @@ export async function handleDeactivateUnit(req: Request, res: Response, next: Ne
     }
     const guardId = (req as AuthenticatedRequest).guardId;
     const result = await deactivateUnit(params.data.id, guardId, getDb(req));
-    const { expiredPassCount, deactivatedResidentCount, ...unit } = result;
-    res.status(200).json({ unit, expiredPassCount, deactivatedResidentCount });
+    const { expiredPassCount, deactivatedResidentCount, disabledRuleCount, ...unit } = result;
+    res.status(200).json({ unit, expiredPassCount, deactivatedResidentCount, disabledRuleCount });
   } catch (err) {
     next(err);
   }

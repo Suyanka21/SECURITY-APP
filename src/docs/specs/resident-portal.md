@@ -97,10 +97,10 @@ to issue claim codes against.
 ```sql
 CREATE TABLE residents (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  supabase_user_id  uuid NOT NULL UNIQUE,           -- auth.users.id (FK added guarded, like migration 0009)
+  supabase_user_id  uuid NOT NULL,                  -- auth.users.id (FK added guarded, like migration 0009)
   unit_id           uuid NOT NULL REFERENCES units(id),
   display_name      text NOT NULL,
-  phone_e164        text NOT NULL UNIQUE,           -- copied from auth.users.phone at claim time
+  phone_e164        text NOT NULL,                  -- copied from auth.users.phone at claim time
   is_active         boolean NOT NULL DEFAULT true,
   claimed_at        timestamptz(3) NOT NULL DEFAULT now(),
   deactivated_at    timestamptz(3),
@@ -113,12 +113,20 @@ CREATE TABLE residents (
     CHECK ((deactivated_at IS NULL) = (deactivated_by_guard_id IS NULL))
 );
 CREATE INDEX residents_unit_idx ON residents(unit_id);
+CREATE INDEX residents_supabase_user_idx ON residents(supabase_user_id);
+CREATE UNIQUE INDEX residents_active_user_unique  ON residents(supabase_user_id) WHERE is_active = true;
+CREATE UNIQUE INDEX residents_active_phone_unique ON residents(phone_e164)       WHERE is_active = true;
 ```
 
-**Exactly-one-unit is structural:** `unit_id NOT NULL` + `supabase_user_id
-UNIQUE` means a Supabase user can be a resident of at most one unit. Moving
-units = admin deactivates the old row and issues a new claim code; no
-`UPDATE unit_id` path exists.
+**Exactly-one-unit is structural:** `unit_id NOT NULL` + at most one *active*
+row per `supabase_user_id` (partial unique index) means a Supabase user acts
+for at most one unit at a time. A `residents` row is one **membership** (user ×
+unit) and is never re-pointed: moving units = admin deactivates the old row and
+issues a new claim code; redeeming it **inserts a new row**. No `UPDATE
+unit_id` path exists, so every historical reference (`unit_claim_codes.
+used_by_resident_id`, `audit_events.resident_id`, resident-created profiles,
+rules and passes) keeps resolving to the unit it was made for.
+`requireResidentAuth` resolves the active row only.
 
 `residents` is deliberately **not** a row in `guards` with `role='resident'`:
 `requireAuth` resolves `sub → guards.supabase_user_id` and `requireRole` reads
@@ -155,7 +163,9 @@ helper as PINs) rather than a bare SHA-256, so a database leak alone cannot be
 replayed as a code. Wrong-code lockout is tracked per **authenticated Supabase
 user** (`resident_claim_attempts`: 5 failures → 15-minute lock) instead of a
 counter on the code row, because a wrong code cannot be mapped to any code
-row. The caller receives generic `CLAIM_CODE_INVALID` / `CLAIM_CODE_EXPIRED`
+row. Failures older than the 15-minute window are forgotten (the count restarts
+atomically in the same upsert), so only 5 failures *within* a window lock. The
+caller receives generic `CLAIM_CODE_INVALID` / `CLAIM_CODE_EXPIRED`
 (never "used" vs "unknown"). Unit labels are unique case/whitespace-
 insensitively via a generated `label_norm` column.
 
@@ -239,8 +249,11 @@ Admin (`requireAuth` + `requireRole('admin')`):
 ```
 POST /api/admin/units                 GET /api/admin/units
 POST /api/admin/units/:id/claim-codes         → raw code returned exactly once
-POST /api/admin/units/:id/deactivate          → cascades: residents inactive, open passes for the label expired (§11.4);
-                                                  active rules for the label deactivated lands with R3
+POST /api/admin/units/:id/deactivate          → cascades in one transaction: residents inactive, open passes for the
+                                                  label expired (§11.4), active auto-approval rules for the label
+                                                  deactivated (active=false). Claim-code issuance and claim redemption
+                                                  share-lock the unit row, so neither can commit against a unit whose
+                                                  deactivation (FOR UPDATE) committed first.
 GET  /api/admin/residents?unitId=&includeInactive=
 POST /api/admin/residents/:id/deactivate
 ```

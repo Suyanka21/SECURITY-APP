@@ -24,6 +24,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "@/db/schema";
 import {
   authorizationDecisions,
+  autoApprovalRules,
   residentClaimAttempts,
   residents,
   unitClaimCodes,
@@ -131,12 +132,23 @@ function isoOrNull(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
-/** Postgres unique_violation, whether raw from pg or wrapped by Drizzle (`cause`). */
+/**
+ * Constraint name of a Postgres unique_violation, whether raw from pg or
+ * wrapped by Drizzle (`cause`); "" if pg did not name it, null if not 23505.
+ */
+function uniqueViolationConstraint(err: unknown): string | null {
+  if (typeof err !== "object" || err === null) return null;
+  const { code, constraint, cause } = err as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  if (code === "23505") return typeof constraint === "string" ? constraint : "";
+  return uniqueViolationConstraint(cause);
+}
+
 function isUniqueViolation(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const { code, cause } = err as { code?: unknown; cause?: unknown };
-  if (code === "23505") return true;
-  return isUniqueViolation(cause);
+  return uniqueViolationConstraint(err) !== null;
 }
 
 // ─── Units (admin) ───────────────────────────────────────────────────────────
@@ -178,13 +190,22 @@ export async function createUnit(
   const traceId = `trace-${randomUUID()}`;
   const label = input.label.trim();
 
-  let created: { id: string };
+  let created: { id: string; event: AuditEvent };
   try {
-    const rows = await db
-      .insert(units)
-      .values({ label, createdByGuardId: adminGuardId })
-      .returning({ id: units.id });
-    created = rows[0];
+    created = await db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(units)
+        .values({ label, createdByGuardId: adminGuardId })
+        .returning({ id: units.id });
+      const event = await emitAuditEvent(
+        "unit_created",
+        adminGuardId,
+        traceId,
+        { unitId: rows[0].id, label },
+        { tx },
+      );
+      return { id: rows[0].id, event };
+    });
   } catch (err) {
     if (isUniqueViolation(err)) {
       throw new ServiceError(
@@ -198,10 +219,7 @@ export async function createUnit(
     throw err;
   }
 
-  await emitAuditEvent("unit_created", adminGuardId, traceId, {
-    unitId: created.id,
-    label,
-  });
+  publishAuditEvent(created.event);
   return unitView(db, created.id);
 }
 
@@ -234,6 +252,12 @@ export async function listUnits(
   }));
 }
 
+export type UnitDeactivated = UnitView & {
+  expiredPassCount: number;
+  deactivatedResidentCount: number;
+  disabledRuleCount: number;
+};
+
 /**
  * Deactivates a unit. Per spec §10 decision 4, every open pass issued for the
  * unit's label is expired in the same transaction, and every active resident
@@ -243,7 +267,7 @@ export async function deactivateUnit(
   unitId: string,
   adminGuardId: string,
   db: ResidentDb,
-): Promise<UnitView & { expiredPassCount: number; deactivatedResidentCount: number }> {
+): Promise<UnitDeactivated> {
   const traceId = `trace-${randomUUID()}`;
   const now = new Date();
 
@@ -302,6 +326,19 @@ export async function deactivateUnit(
       )
       .returning({ id: authorizationDecisions.id });
 
+    // Standing auto-approval rules for the label are passes too: a unit that
+    // no longer exists must not keep waving visitors through.
+    const disabledRules = await tx
+      .update(autoApprovalRules)
+      .set({ active: false, updatedAt: now })
+      .where(
+        and(
+          sql`lower(trim(${autoApprovalRules.unit})) = ${normalizeUnitLabel(unit.label)}`,
+          eq(autoApprovalRules.active, true),
+        ),
+      )
+      .returning({ id: autoApprovalRules.id });
+
     const event = await emitAuditEvent(
       "unit_deactivated",
       adminGuardId,
@@ -311,6 +348,7 @@ export async function deactivateUnit(
         label: unit.label,
         deactivatedResidentCount: deactivatedResidents.length,
         expiredPassCount: expiredPasses.length,
+        disabledRuleCount: disabledRules.length,
       },
       { tx },
     );
@@ -319,6 +357,7 @@ export async function deactivateUnit(
       event,
       expiredPassCount: expiredPasses.length,
       deactivatedResidentCount: deactivatedResidents.length,
+      disabledRuleCount: disabledRules.length,
     };
   });
 
@@ -328,6 +367,7 @@ export async function deactivateUnit(
     ...view,
     expiredPassCount: result.expiredPassCount,
     deactivatedResidentCount: result.deactivatedResidentCount,
+    disabledRuleCount: result.disabledRuleCount,
   };
 }
 
@@ -339,25 +379,6 @@ export async function issueClaimCode(
   db: ResidentDb,
 ): Promise<ClaimCodeIssued> {
   const traceId = `trace-${randomUUID()}`;
-
-  const unitRows = await db
-    .select({ id: units.id, label: units.label, isActive: units.isActive })
-    .from(units)
-    .where(eq(units.id, input.unitId));
-  const unit = unitRows[0];
-  if (!unit) {
-    throw new ServiceError("UNIT_NOT_FOUND", "Unit not found", 404, "unitId", traceId);
-  }
-  if (!unit.isActive) {
-    throw new ServiceError(
-      "UNIT_INACTIVE",
-      "Cannot issue a claim code for a deactivated unit",
-      409,
-      "unitId",
-      traceId,
-    );
-  }
-
   const ttlHours = clampClaimCodeTtlHours(input.ttlHours);
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
 
@@ -366,28 +387,55 @@ export async function issueClaimCode(
     const normalized = generateClaimCode();
     const codeHash = hashClaimCode(normalized);
     try {
-      const rows = await db
-        .insert(unitClaimCodes)
-        .values({
-          unitId: unit.id,
-          codeHash,
-          issuedByGuardId: adminGuardId,
-          expiresAt,
-        })
-        .returning({ id: unitClaimCodes.id });
-      const claimCodeId = rows[0].id;
+      // The unit row is share-locked so a concurrent deactivateUnit (FOR
+      // UPDATE) cannot commit between the active check and the insert; the
+      // code row and its audit row commit together or not at all.
+      const issued = await db.transaction(async (tx) => {
+        const unitRows = await tx
+          .select({ id: units.id, label: units.label, isActive: units.isActive })
+          .from(units)
+          .where(eq(units.id, input.unitId))
+          .for("share");
+        const unit = unitRows[0];
+        if (!unit) {
+          throw new ServiceError("UNIT_NOT_FOUND", "Unit not found", 404, "unitId", traceId);
+        }
+        if (!unit.isActive) {
+          throw new ServiceError(
+            "UNIT_INACTIVE",
+            "Cannot issue a claim code for a deactivated unit",
+            409,
+            "unitId",
+            traceId,
+          );
+        }
 
-      await emitAuditEvent("unit_claim_code_issued", adminGuardId, traceId, {
-        claimCodeId,
-        unitId: unit.id,
-        label: unit.label,
-        expiresAt: iso(expiresAt),
+        const rows = await tx
+          .insert(unitClaimCodes)
+          .values({
+            unitId: unit.id,
+            codeHash,
+            issuedByGuardId: adminGuardId,
+            expiresAt,
+          })
+          .returning({ id: unitClaimCodes.id });
+        const claimCodeId = rows[0].id;
+
+        const event = await emitAuditEvent(
+          "unit_claim_code_issued",
+          adminGuardId,
+          traceId,
+          { claimCodeId, unitId: unit.id, label: unit.label, expiresAt: iso(expiresAt) },
+          { tx },
+        );
+        return { claimCodeId, unit, event };
       });
 
+      publishAuditEvent(issued.event);
       return {
-        claimCodeId,
-        unitId: unit.id,
-        unitLabel: unit.label,
+        claimCodeId: issued.claimCodeId,
+        unitId: issued.unit.id,
+        unitLabel: issued.unit.label,
         code: formatClaimCode(normalized),
         expiresAt: iso(expiresAt),
       };
@@ -433,6 +481,7 @@ async function recordClaimFailure(
   supabaseUserId: string,
 ): Promise<{ attemptsRemaining: number; lockedUntil: Date | null }> {
   const now = new Date();
+  const windowStart = new Date(now.getTime() - CLAIM_LOCK_WINDOW_MS);
   const rows = await db
     .insert(residentClaimAttempts)
     .values({
@@ -445,7 +494,8 @@ async function recordClaimFailure(
     .onConflictDoUpdate({
       target: residentClaimAttempts.supabaseUserId,
       set: {
-        failedAttempts: sql`${residentClaimAttempts.failedAttempts} + 1`,
+        // Failures older than the window are forgotten: the count restarts.
+        failedAttempts: sql`CASE WHEN ${residentClaimAttempts.lastFailedAt} IS NULL OR ${residentClaimAttempts.lastFailedAt} < ${windowStart} THEN 1 ELSE ${residentClaimAttempts.failedAttempts} + 1 END`,
         lastFailedAt: now,
         updatedAt: now,
       },
@@ -504,12 +554,11 @@ export async function claimUnit(
   try {
     outcome = await db.transaction(async (tx) => {
       const existing = await tx
-        .select({ id: residents.id, isActive: residents.isActive })
+        .select({ id: residents.id })
         .from(residents)
-        .where(eq(residents.supabaseUserId, input.supabaseUserId))
+        .where(and(eq(residents.supabaseUserId, input.supabaseUserId), eq(residents.isActive, true)))
         .for("update");
-      const previous = existing[0];
-      if (previous?.isActive) {
+      if (existing.length > 0) {
         throw new ServiceError(
           "RESIDENT_ALREADY_CLAIMED",
           "This account is already linked to a unit",
@@ -542,39 +591,45 @@ export async function claimUnit(
         throw new ClaimRefusal("CLAIM_CODE_EXPIRED", "This code is invalid or has expired.", 403, traceId);
       }
 
-      // A deactivated resident (moved out) re-claims by redeeming a new code:
-      // the SAME row is re-pointed at the new unit, so one Supabase user is
-      // always exactly one resident row. This is the only unit-change path.
+      // Share-lock the unit so a concurrent deactivateUnit cannot commit
+      // between this check and the resident insert.
+      const lockedUnit = await tx
+        .select({ isActive: units.isActive })
+        .from(units)
+        .where(eq(units.id, code.unitId))
+        .for("share");
+      if (!lockedUnit[0]?.isActive) {
+        throw new ClaimRefusal("CLAIM_CODE_INVALID", "This code is invalid or has expired.", 403, traceId);
+      }
+
+      // Every claim inserts a NEW membership row. A resident who moved out
+      // (old row deactivated) gets a fresh row for the new unit, so the old
+      // row — and everything referencing it — still resolves to the old unit.
       let inserted: { id: string };
       try {
-        const rows = previous
-          ? await tx
-              .update(residents)
-              .set({
-                unitId: code.unitId,
-                displayName,
-                phoneE164,
-                isActive: true,
-                claimedAt: now,
-                deactivatedAt: null,
-                deactivatedByGuardId: null,
-                updatedAt: now,
-              })
-              .where(eq(residents.id, previous.id))
-              .returning({ id: residents.id })
-          : await tx
-              .insert(residents)
-              .values({
-                supabaseUserId: input.supabaseUserId,
-                unitId: code.unitId,
-                displayName,
-                phoneE164,
-                claimedAt: now,
-              })
-              .returning({ id: residents.id });
+        const rows = await tx
+          .insert(residents)
+          .values({
+            supabaseUserId: input.supabaseUserId,
+            unitId: code.unitId,
+            displayName,
+            phoneE164,
+            claimedAt: now,
+          })
+          .returning({ id: residents.id });
         inserted = rows[0];
       } catch (err) {
-        if (isUniqueViolation(err)) {
+        const constraint = uniqueViolationConstraint(err);
+        if (constraint === "residents_active_user_unique") {
+          throw new ServiceError(
+            "RESIDENT_ALREADY_CLAIMED",
+            "This account is already linked to a unit",
+            409,
+            undefined,
+            traceId,
+          );
+        }
+        if (constraint !== null) {
           throw new ServiceError(
             "RESIDENT_PHONE_TAKEN",
             "This phone number is already linked to a unit",

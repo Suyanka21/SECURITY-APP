@@ -181,6 +181,17 @@ describe("requireResidentAuth — Supabase mode", () => {
     expect(ctx.wasNextCalled()).toBe(false);
   });
 
+  it("a user who moved units resolves to the ACTIVE membership, not an older inactive row", async () => {
+    verifyMock.mockResolvedValue({ sub: "sb-user-1" });
+    const oldRow = { ...ACTIVE, residentId: "res-old", unitId: "unit-old", unitLabel: "3A", residentActive: false };
+    const ctx = makeCtx("Bearer t", [oldRow, { ...ACTIVE, residentId: "res-new", unitId: "unit-new", unitLabel: "9C" }]);
+    await requireResidentAuth(ctx.req, ctx.res, ctx.next);
+    expect(ctx.wasNextCalled()).toBe(true);
+    const identity = (ctx.req as ResidentRequest).resident;
+    expect(identity.residentId).toBe("res-new");
+    expect(identity.unitId).toBe("unit-new");
+  });
+
   it("active resident on an inactive unit → 403 UNIT_INACTIVE", async () => {
     verifyMock.mockResolvedValue({ sub: "sb-user-1" });
     const ctx = makeCtx("Bearer t", [{ ...ACTIVE, unitActive: false }]);

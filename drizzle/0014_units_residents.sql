@@ -16,9 +16,10 @@
 -- SAME transaction that marks the code used. The DB stores only the HMAC
 -- of the code (peppered with PIN_PEPPER, like one-time PINs).
 --
--- EXACTLY-ONE-UNIT is structural: residents.supabase_user_id UNIQUE +
--- unit_id NOT NULL, and no application path updates unit_id. Moving units
--- = deactivate + redeem a new code.
+-- EXACTLY-ONE-UNIT is structural: at most one ACTIVE residents row per
+-- supabase_user_id (partial unique index) + unit_id NOT NULL, and no
+-- application path updates unit_id. Moving units = deactivate + redeem a new
+-- code, which inserts a NEW row (history keeps pointing at the old unit).
 --
 -- ATTRIBUTION (spec §2.5, approved): visitor_profiles and
 -- auto_approval_rules gain a nullable created_by_resident_id; the existing
@@ -68,7 +69,7 @@ DO $$ BEGIN
  ALTER TABLE "units" ADD CONSTRAINT "units_deactivated_by_guard_id_guards_id_fk" FOREIGN KEY ("deactivated_by_guard_id") REFERENCES "public"."guards"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
 
--- Step 3: residents — one Supabase user ↔ one resident ↔ one unit.
+-- Step 3: residents — one row per (Supabase user, unit) membership; at most one active.
 CREATE TABLE IF NOT EXISTS "residents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"supabase_user_id" uuid NOT NULL,
@@ -81,13 +82,18 @@ CREATE TABLE IF NOT EXISTS "residents" (
 	"deactivated_by_guard_id" uuid,
 	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "residents_supabase_user_id_unique" UNIQUE("supabase_user_id"),
-	CONSTRAINT "residents_phone_e164_unique" UNIQUE("phone_e164"),
 	CONSTRAINT "residents_name_bounded" CHECK (length(trim("residents"."display_name")) BETWEEN 1 AND 120),
 	CONSTRAINT "residents_phone_e164_format" CHECK ("residents"."phone_e164" ~ '^\+[1-9][0-9]{7,14}$'),
 	CONSTRAINT "residents_deactivation_consistent" CHECK (("residents"."is_active" = true AND "residents"."deactivated_at" IS NULL AND "residents"."deactivated_by_guard_id" IS NULL) OR ("residents"."is_active" = false AND "residents"."deactivated_at" IS NOT NULL AND "residents"."deactivated_by_guard_id" IS NOT NULL))
 );--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "residents_unit_idx" ON "residents" ("unit_id");--> statement-breakpoint
+-- One row per (user, unit) membership: moving units deactivates the old row
+-- and the next claim inserts a new one, so historical references (used claim
+-- codes, audit_events.resident_id, resident-created rows) keep resolving to
+-- the unit they were made for. At most ONE active row per user and per phone.
+CREATE INDEX IF NOT EXISTS "residents_supabase_user_idx" ON "residents" ("supabase_user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "residents_active_user_unique" ON "residents" ("supabase_user_id") WHERE "residents"."is_active" = true;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "residents_active_phone_unique" ON "residents" ("phone_e164") WHERE "residents"."is_active" = true;--> statement-breakpoint
 DO $$ BEGIN
  ALTER TABLE "residents" ADD CONSTRAINT "residents_unit_id_units_id_fk" FOREIGN KEY ("unit_id") REFERENCES "public"."units"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint

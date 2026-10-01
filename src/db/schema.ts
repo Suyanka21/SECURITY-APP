@@ -1508,10 +1508,11 @@ export const residents = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
 
     /**
-     * auth.users.id of the phone-OTP Supabase user. UNIQUE ⇒ one resident
-     * identity per login. Cross-schema FK added (guarded) in migration 0014.
+     * auth.users.id of the phone-OTP Supabase user. One row per unit
+     * membership; at most one ACTIVE row per user (partial unique index).
+     * Cross-schema FK added (guarded) in migration 0014.
      */
-    supabaseUserId: uuid("supabase_user_id").notNull().unique(),
+    supabaseUserId: uuid("supabase_user_id").notNull(),
 
     /** The ONE unit this resident acts for. Never updated in place. */
     unitId: uuid("unit_id")
@@ -1520,8 +1521,8 @@ export const residents = pgTable(
 
     displayName: text("display_name").notNull(),
 
-    /** Copied from auth.users.phone at claim time. E.164. */
-    phoneE164: text("phone_e164").notNull().unique(),
+    /** Copied from auth.users.phone at claim time. E.164. Unique among active rows. */
+    phoneE164: text("phone_e164").notNull(),
 
     isActive: boolean("is_active").notNull().default(true),
 
@@ -1549,6 +1550,13 @@ export const residents = pgTable(
       sql`(${table.isActive} = true AND ${table.deactivatedAt} IS NULL AND ${table.deactivatedByGuardId} IS NULL) OR (${table.isActive} = false AND ${table.deactivatedAt} IS NOT NULL AND ${table.deactivatedByGuardId} IS NOT NULL)`
     ),
     index("residents_unit_idx").on(table.unitId),
+    index("residents_supabase_user_idx").on(table.supabaseUserId),
+    uniqueIndex("residents_active_user_unique")
+      .on(table.supabaseUserId)
+      .where(sql`${table.isActive} = true`),
+    uniqueIndex("residents_active_phone_unique")
+      .on(table.phoneE164)
+      .where(sql`${table.isActive} = true`),
   ]
 );
 

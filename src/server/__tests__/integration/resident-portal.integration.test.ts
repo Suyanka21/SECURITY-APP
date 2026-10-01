@@ -37,6 +37,7 @@ import * as schema from "@/db/schema";
 import {
   auditEvents,
   authorizationDecisions,
+  autoApprovalRules,
   guards,
   residentClaimAttempts,
   residents,
@@ -51,7 +52,8 @@ import {
   getAuditLog,
   setAuditDB,
 } from "../../services/audit-logger";
-import { MAX_CLAIM_ATTEMPTS } from "../../services/resident-service";
+import { CLAIM_LOCK_WINDOW_MS, MAX_CLAIM_ATTEMPTS } from "../../services/resident-service";
+import { evaluate } from "../../services/auto-approval-service";
 
 // ─── Environment ─────────────────────────────────────────────────────────────
 
@@ -68,6 +70,8 @@ const createdUnitIds: string[] = [];
 
 const TRIGGER_FN = "gatepass_test_fail_claim_consume";
 const TRIGGER_NAME = "gatepass_test_fail_claim_consume_trg";
+const AUDIT_TRIGGER_FN = "gatepass_test_fail_unit_audit";
+const AUDIT_TRIGGER_NAME = "gatepass_test_fail_unit_audit_trg";
 
 beforeAll(async () => {
   delete process.env.SUPABASE_URL;
@@ -114,6 +118,26 @@ beforeAll(async () => {
     FOR EACH ROW EXECUTE FUNCTION ${sql.raw(TRIGGER_FN)}();
   `);
 
+  // Failure injection: the audit row for a unit labelled AFU-* (unit_created)
+  // or AFC-* (unit_claim_code_issued) raises a real Postgres error.
+  await db.execute(sql`
+    CREATE OR REPLACE FUNCTION ${sql.raw(AUDIT_TRIGGER_FN)}() RETURNS trigger AS $$
+    BEGIN
+      IF (NEW.event_type::text = 'unit_created' AND NEW.payload->>'label' LIKE 'AFU-%')
+         OR (NEW.event_type::text = 'unit_claim_code_issued' AND NEW.payload->>'label' LIKE 'AFC-%') THEN
+        RAISE EXCEPTION 'injected audit persistence failure';
+      END IF;
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
+  await db.execute(sql`DROP TRIGGER IF EXISTS ${sql.raw(AUDIT_TRIGGER_NAME)} ON audit_events`);
+  await db.execute(sql`
+    CREATE TRIGGER ${sql.raw(AUDIT_TRIGGER_NAME)}
+    BEFORE INSERT ON audit_events
+    FOR EACH ROW EXECUTE FUNCTION ${sql.raw(AUDIT_TRIGGER_FN)}();
+  `);
+
 });
 
 // A fresh app per test so the shared strictLimiter (60/window per IP, which
@@ -146,6 +170,7 @@ afterEach(async () => {
     await db.delete(residents).where(inArray(residents.unitId, createdUnitIds));
     if (labels.length > 0) {
       await db.delete(authorizationDecisions).where(inArray(authorizationDecisions.unit, labels));
+      await db.delete(autoApprovalRules).where(inArray(autoApprovalRules.unit, labels));
     }
     await db.delete(units).where(inArray(units.id, createdUnitIds));
     createdUnitIds.length = 0;
@@ -156,6 +181,8 @@ afterEach(async () => {
 afterAll(async () => {
   await db.execute(sql`DROP TRIGGER IF EXISTS ${sql.raw(TRIGGER_NAME)} ON unit_claim_codes`);
   await db.execute(sql`DROP FUNCTION IF EXISTS ${sql.raw(TRIGGER_FN)}()`);
+  await db.execute(sql`DROP TRIGGER IF EXISTS ${sql.raw(AUDIT_TRIGGER_NAME)} ON audit_events`);
+  await db.execute(sql`DROP FUNCTION IF EXISTS ${sql.raw(AUDIT_TRIGGER_FN)}()`);
   await db.delete(auditEvents).where(inArray(auditEvents.guardId, [adminId, guardId]));
   await db.delete(guards).where(inArray(guards.id, [adminId, guardId]));
   clearAuditDB();
@@ -282,6 +309,54 @@ describe("admin unit management", () => {
 
 // ─── Resident: claim lifecycle ───────────────────────────────────────────────
 
+describe("unit + claim-code atomicity", () => {
+  it("ATOMIC: a real audit write failure on unit_created leaves no unit row and no audit row", async () => {
+    const label = `AFU-${Date.now() % 100000}`;
+    const r = await api("POST", "/api/admin/units", staffToken(adminId), { label });
+    expect(r.status).toBe(500);
+    expect(await db.select().from(units).where(eq(units.label, label))).toHaveLength(0);
+    const audits = await db.select().from(auditEvents).where(sql`${auditEvents.payload}->>'label' = ${label}`);
+    expect(audits).toHaveLength(0);
+    expect(getAuditLog().filter((e) => e.type === "unit_created")).toHaveLength(0);
+  });
+
+  it("ATOMIC: a real audit write failure on claim-code issuance stores no code and returns none", async () => {
+    const unit = await createUnit(`AFC-${Date.now() % 100000}`);
+    const r = await api("POST", `/api/admin/units/${unit.id}/claim-codes`, staffToken(adminId), {});
+    expect(r.status).toBe(500);
+    expect(r.body.claimCode).toBeUndefined();
+    expect(await db.select().from(unitClaimCodes).where(eq(unitClaimCodes.unitId, unit.id))).toHaveLength(0);
+    const audits = await db
+      .select()
+      .from(auditEvents)
+      .where(sql`${auditEvents.eventType} = 'unit_claim_code_issued' AND ${auditEvents.payload}->>'unitId' = ${unit.id}`);
+    expect(audits).toHaveLength(0);
+    expect(getAuditLog().filter((e) => e.type === "unit_claim_code_issued")).toHaveLength(0);
+  });
+
+  it("RACE: issuance blocked behind an in-flight deactivation sees the commit and refuses (no code minted)", async () => {
+    const unit = await createUnit(`RP-RACE${Date.now() % 100000}`);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT id FROM units WHERE id = $1 FOR UPDATE", [unit.id]);
+      await client.query(
+        "UPDATE units SET is_active = false, deactivated_at = now(), deactivated_by_guard_id = $2, updated_at = now() WHERE id = $1",
+        [unit.id, adminId],
+      );
+      const pending = api("POST", `/api/admin/units/${unit.id}/claim-codes`, staffToken(adminId), {});
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await client.query("COMMIT");
+      const r = await pending;
+      expect(r.status, JSON.stringify(r.body)).toBe(409);
+      expect(r.body.error?.code).toBe("UNIT_INACTIVE");
+    } finally {
+      client.release();
+    }
+    expect(await db.select().from(unitClaimCodes).where(eq(unitClaimCodes.unitId, unit.id))).toHaveLength(0);
+  });
+});
+
 describe("resident claim", () => {
   it("valid code → resident row bound to exactly that unit, code consumed, resident_claimed audited", async () => {
     const { unit, userId, phone, token, resident } = await claimedResident(`RP-D${Date.now() % 100000}`);
@@ -358,6 +433,42 @@ describe("resident claim", () => {
     expect(other.status).toBe(201);
   });
 
+  it(`${MAX_CLAIM_ATTEMPTS - 1} failures older than the lock window + 1 fresh failure does NOT lock; the count restarts`, async () => {
+    const userId = randomUUID();
+    const token = residentToken(userId, freshPhone().slice(1));
+    const stale = new Date(Date.now() - CLAIM_LOCK_WINDOW_MS - 60_000);
+    await db.insert(residentClaimAttempts).values({
+      supabaseUserId: userId,
+      failedAttempts: MAX_CLAIM_ATTEMPTS - 1,
+      lastFailedAt: stale,
+      lockedUntil: null,
+      updatedAt: stale,
+    });
+
+    const r = await api("POST", "/api/resident/claim", token, { code: "ZZZZ-ZZZ0", displayName: "Guess" });
+    expect(r.status).toBe(403);
+    expect(r.body.error?.code).toBe("CLAIM_CODE_INVALID");
+    const [row] = await db.select().from(residentClaimAttempts).where(eq(residentClaimAttempts.supabaseUserId, userId));
+    expect(row.failedAttempts).toBe(1);
+    expect(row.lockedUntil).toBeNull();
+  });
+
+  it(`${MAX_CLAIM_ATTEMPTS - 1} RECENT failures + 1 more still locks (control for the stale-window reset)`, async () => {
+    const userId = randomUUID();
+    const token = residentToken(userId, freshPhone().slice(1));
+    const recent = new Date(Date.now() - 60_000);
+    await db.insert(residentClaimAttempts).values({
+      supabaseUserId: userId,
+      failedAttempts: MAX_CLAIM_ATTEMPTS - 1,
+      lastFailedAt: recent,
+      lockedUntil: null,
+      updatedAt: recent,
+    });
+    const r = await api("POST", "/api/resident/claim", token, { code: "ZZZZ-ZZZ0", displayName: "Guess" });
+    expect(r.status).toBe(423);
+    expect(r.body.error?.code).toBe("CLAIM_LOCKED");
+  });
+
   it("a token without a verified phone cannot claim (CLAIM_PHONE_REQUIRED)", async () => {
     const unit = await createUnit(`RP-H${Date.now() % 100000}`);
     const { code } = await issueCode(unit.id);
@@ -410,8 +521,8 @@ describe("resident claim", () => {
 // ─── Scoping + lifecycle ─────────────────────────────────────────────────────
 
 describe("resident scoping and deactivation", () => {
-  it("deactivated resident → /me 403 RESIDENT_INACTIVE; a new code re-links the SAME account to a new unit", async () => {
-    const { token, resident } = await claimedResident(`RP-J${Date.now() % 100000}`);
+  it("deactivated resident → /me 403 RESIDENT_INACTIVE; a new code gives the account a NEW membership row, history keeps the old unit", async () => {
+    const { unit: oldUnit, token, resident } = await claimedResident(`RP-J${Date.now() % 100000}`);
 
     const deact = await api("POST", `/api/admin/residents/${resident.id}/deactivate`, staffToken(adminId));
     expect(deact.status).toBe(200);
@@ -428,12 +539,33 @@ describe("resident scoping and deactivation", () => {
     const { code } = await issueCode(newUnit.id);
     const reclaim = await api("POST", "/api/resident/claim", token, { code, displayName: "Moved" });
     expect(reclaim.status, JSON.stringify(reclaim.body)).toBe(201);
-    expect((reclaim.body.resident as { id: string; unitId: string }).id).toBe(resident.id);
-    expect((reclaim.body.resident as { unitId: string }).unitId).toBe(newUnit.id);
+    const moved = reclaim.body.resident as { id: string; unitId: string };
+    expect(moved.id).not.toBe(resident.id);
+    expect(moved.unitId).toBe(newUnit.id);
 
     const me2 = await api("GET", "/api/resident/me", token);
     expect(me2.status).toBe(200);
+    expect((me2.body.resident as { id: string; unitId: string }).id).toBe(moved.id);
     expect((me2.body.resident as { unitId: string }).unitId).toBe(newUnit.id);
+
+    // Historical attribution is untouched by the move.
+    const [oldRow] = await db.select().from(residents).where(eq(residents.id, resident.id));
+    expect(oldRow.unitId).toBe(oldUnit.id);
+    expect(oldRow.isActive).toBe(false);
+
+    const oldCodes = await db
+      .select({ residentUnit: residents.unitId })
+      .from(unitClaimCodes)
+      .innerJoin(residents, eq(residents.id, unitClaimCodes.usedByResidentId))
+      .where(eq(unitClaimCodes.unitId, oldUnit.id));
+    expect(oldCodes).toEqual([{ residentUnit: oldUnit.id }]);
+
+    const oldClaimAudit = await db
+      .select({ residentUnit: residents.unitId, payloadUnit: sql<string>`${auditEvents.payload}->>'unitId'` })
+      .from(auditEvents)
+      .innerJoin(residents, eq(residents.id, auditEvents.residentId))
+      .where(sql`${auditEvents.eventType} = 'resident_claimed' AND ${auditEvents.residentId} = ${resident.id}`);
+    expect(oldClaimAudit).toEqual([{ residentUnit: oldUnit.id, payloadUnit: oldUnit.id }]);
   });
 
   it("unit deactivation → residents deactivated, open passes for that label expired, /me 403", async () => {
@@ -468,10 +600,28 @@ describe("resident scoping and deactivation", () => {
       })
       .returning({ id: authorizationDecisions.id, expiresAt: authorizationDecisions.expiresAt });
 
+    const [rule] = await db
+      .insert(autoApprovalRules)
+      .values({
+        visitorName: "RP Nanny",
+        host: "Amina",
+        unit: unit.label,
+        createdByGuardId: adminId,
+        expiresAt: new Date(now + 30 * 24 * 3600 * 1000),
+      })
+      .returning({ id: autoApprovalRules.id });
+    const ruleInput = { visitorName: "RP Nanny", host: "Amina", unit: unit.label };
+    expect((await evaluate(ruleInput, db)).match).toBe(true);
+
     const r = await api("POST", `/api/admin/units/${unit.id}/deactivate`, staffToken(adminId));
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body.deactivatedResidentCount).toBe(1);
     expect(r.body.expiredPassCount).toBe(1);
+    expect(r.body.disabledRuleCount).toBe(1);
+
+    const [ruleAfter] = await db.select().from(autoApprovalRules).where(eq(autoApprovalRules.id, rule.id));
+    expect(ruleAfter.active).toBe(false);
+    expect((await evaluate(ruleInput, db)).match).toBe(false);
 
     const [open] = await db.select().from(authorizationDecisions).where(eq(authorizationDecisions.id, openPass.id));
     expect(open.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
@@ -495,6 +645,33 @@ describe("resident scoping and deactivation", () => {
     const me = await api("GET", "/api/resident/me", token);
     expect(me.status).toBe(403);
     expect(me.body.error?.code).toBe("UNIT_INACTIVE");
+  });
+});
+
+// ─── Audit API exposes the resident actor ────────────────────────────────────
+
+describe("audit API resident actor", () => {
+  it("/api/audit/events and /reconstruct return residentId (guardId null) for resident events", async () => {
+    const { resident } = await claimedResident(`RP-AU${Date.now() % 100000}`);
+
+    // eventType filter only accepts the original 13 types; page the whole (per-test) log instead.
+    const list = await api("GET", "/api/audit/events?pageSize=100", staffToken(adminId));
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    const events = list.body.events as Array<{ residentId: string | null; guardId: string | null; traceId: string }>;
+    const claimed = events.find((e) => e.residentId === resident.id);
+    expect(claimed).toBeDefined();
+    expect(claimed?.guardId).toBeNull();
+
+    const rec = await api("GET", `/api/audit/reconstruct/${claimed?.traceId}`, staffToken(adminId));
+    expect(rec.status, JSON.stringify(rec.body)).toBe(200);
+    const recEvents = rec.body.events as Array<{ residentId: string | null; guardId: string | null }>;
+    expect(recEvents).toEqual([expect.objectContaining({ residentId: resident.id, guardId: null })]);
+
+    const staffEvents = (events as Array<{ type?: string; residentId: string | null; guardId: string | null }>).filter(
+      (e) => e.type === "unit_created",
+    );
+    expect(staffEvents.length).toBeGreaterThan(0);
+    expect(staffEvents.every((e) => e.guardId === adminId && e.residentId === null)).toBe(true);
   });
 });
 
