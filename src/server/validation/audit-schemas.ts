@@ -33,6 +33,8 @@ const AUDIT_EVENT_TYPES = [
   "resident_registration_created",
   "resident_registration_removed",
   "resident_registration_renewed",
+  "resident_registration_blocked",
+  "resident_registration_block_cleared",
 ] as const;
 
 /**

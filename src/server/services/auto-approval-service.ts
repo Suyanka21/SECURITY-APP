@@ -38,6 +38,8 @@ import {
 } from "@/db/schema";
 import { emitAuditEvent, emitResidentAuditEvent } from "./audit-logger";
 import { ServiceError } from "./errors";
+import type { ResidentDb } from "./resident-service";
+import { blockResidentRule } from "./unit-registration-service";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -575,7 +577,9 @@ export async function listAutoApprovalRules(
 
 /**
  * Admin kill switch. Sets active=false on the rule (idempotent — calling
- * twice is a no-op) and writes an audit event.
+ * twice is a no-op) and writes an audit event. A resident-created rule is
+ * also blocked by staff (blockResidentRule), so the resident cannot remove
+ * and re-register it; `reason` is recorded on that block.
  *
  * @throws ServiceError("NOT_FOUND", 404) if no rule with that id exists.
  */
@@ -584,6 +588,7 @@ export async function deactivateAutoApprovalRule(
   ruleId: string,
   db: DrizzleDB,
   now: () => Date = () => new Date(),
+  reason: string | null = null,
 ): Promise<AutoApprovalRuleView> {
   const existing = (await (db as any)
     .select()
@@ -599,6 +604,16 @@ export async function deactivateAutoApprovalRule(
   }
 
   const row = existing[0];
+  if (row.createdByResidentId) {
+    const blocked = await blockResidentRule(
+      guardId,
+      ruleId,
+      reason,
+      db as unknown as ResidentDb,
+      now,
+    );
+    return toAutoApprovalRuleView(blocked);
+  }
   if (!row.active) {
     // Idempotent — already deactivated. Return the existing view.
     return toAutoApprovalRuleView(row);

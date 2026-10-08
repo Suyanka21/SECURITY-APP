@@ -367,6 +367,27 @@ Cap: 20 registrations per unit (both kinds combined).
 - Resident deactivation disables that resident's active rules (unit
   deactivation already disabled the unit's rules). A rule switched off by
   staff stays off: renew returns `409 REGISTRATION_DISABLED`.
+- **Staff block.** When an admin deactivates a resident-created rule
+  (`POST /api/auto-approval-rules/:id/deactivate`, optional
+  `{ reason }`, 3–500 chars), the linked `unit_registrations` row is marked
+  `blocked_at` / `blocked_by_guard_id` / `block_reason`, in the same
+  transaction as the rule switch-off and its audit rows
+  (`auto_approval_rule_deactivated`, `resident_registration_blocked`). The
+  block outlives the row's soft delete. While it stands, `createRegistration`
+  refuses the same subject for that **unit** (any resident of it) with
+  `409 REGISTRATION_BLOCKED`: same normalized plate for a vehicle
+  (`plate_norm`), same name for a person (`label_norm` = lower-cased,
+  whitespace-collapsed). Blocking also switches off any other live
+  registration of the same subject in the unit. It also applies when the
+  resident had already removed the registration. Re-deactivating is a no-op.
+- **Clearing a block** is admin-only and needs a reason:
+  `POST /api/auto-approval-rules/:id/clear-block` `{ reason }` (3–500 chars)
+  sets `block_cleared_at` / `block_cleared_by_guard_id` /
+  `block_clear_reason` and writes `resident_registration_block_cleared`.
+  `409 REGISTRATION_NOT_BLOCKED` if there is no standing block; `404` if the
+  rule has no resident registration. Clearing does not turn the old rule
+  back on; the resident registers again. The block reason stays on the row
+  only; audit payloads carry `reasonProvided`, not the free text.
 
 ### 3.5 Audit
 

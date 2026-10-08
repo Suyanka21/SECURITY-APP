@@ -41,6 +41,7 @@ import {
   handleSeedAutoApprovalRule,
   handleListAutoApprovalRules,
   handleDeactivateAutoApprovalRule,
+  handleClearAutoApprovalRuleBlock,
 } from "./routes/auto-approval";
 import {
   handleCreateVisitorProfile,
@@ -276,6 +277,13 @@ export function createApp(db: unknown) {
     strictLimiter,
     requireRole("admin"),
     handleDeactivateAutoApprovalRule
+  );
+  app.post(
+    "/api/auto-approval-rules/:id/clear-block",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin"),
+    handleClearAutoApprovalRuleBlock
   );
 
   // Feature 4 — Visitor Profile CRUD (spec §4, §6).

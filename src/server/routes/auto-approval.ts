@@ -12,6 +12,7 @@
  *   POST /api/auto-approval-rules               requireAuth + requireRole(admin)
  *   GET  /api/auto-approval-rules               requireAuth + requireRole(admin, senior-guard)
  *   POST /api/auto-approval-rules/:id/deactivate requireAuth + requireRole(admin)
+ *   POST /api/auto-approval-rules/:id/clear-block requireAuth + requireRole(admin)
  *
  * The evaluator (POST /api/approvals short-circuit) is wired separately in
  * slice 4. These three endpoints exist only so an admin can seed/list/
@@ -25,6 +26,8 @@ import {
   SeedAutoApprovalRuleSchema,
   ListAutoApprovalRulesQuerySchema,
   RuleIdParamSchema,
+  DeactivateRuleBodySchema,
+  ClearRuleBlockBodySchema,
   AutoApprovalErrorCodes,
   type AutoApprovalRuleResponse,
   type ListAutoApprovalRulesResponse,
@@ -34,6 +37,7 @@ import {
   listAutoApprovalRules,
   deactivateAutoApprovalRule,
 } from "../services/auto-approval-service";
+import { clearResidentRuleBlock } from "../services/unit-registration-service";
 import { ServiceError } from "../services/errors";
 import type { AuthenticatedRequest } from "../middleware/auth";
 
@@ -152,6 +156,20 @@ export async function handleDeactivateAutoApprovalRule(
       return;
     }
 
+    const parsedBody = DeactivateRuleBodySchema.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      const issue = parsedBody.error.issues[0];
+      res.status(422).json({
+        error: {
+          code: AutoApprovalErrorCodes.RULE_INVALID_INPUT,
+          message: issue?.message ?? "Invalid body",
+          field: issue?.path.join(".") || undefined,
+          traceId: `trace-${randomUUID()}`,
+        },
+      });
+      return;
+    }
+
     const guardId = (req as AuthenticatedRequest).guardId;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (req as any).db;
@@ -160,6 +178,8 @@ export async function handleDeactivateAutoApprovalRule(
       guardId,
       params.data.id,
       db,
+      () => new Date(),
+      parsedBody.data.reason ?? null,
     );
 
     const traceId = `trace-${randomUUID()}`;
@@ -170,6 +190,40 @@ export async function handleDeactivateAutoApprovalRule(
       next(err);
       return;
     }
+    next(err);
+  }
+}
+
+// ─── POST /api/auto-approval-rules/:id/clear-block ─────────────────────────
+
+export async function handleClearAutoApprovalRuleBlock(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const params = RuleIdParamSchema.safeParse(req.params);
+    const body = ClearRuleBlockBodySchema.safeParse(req.body ?? {});
+    if (!params.success || !body.success) {
+      const issue = !params.success ? params.error.issues[0] : body.error?.issues[0];
+      res.status(422).json({
+        error: {
+          code: AutoApprovalErrorCodes.RULE_INVALID_INPUT,
+          message: issue?.message ?? "Invalid request",
+          field: !params.success ? "id" : issue?.path.join(".") || "reason",
+          traceId: `trace-${randomUUID()}`,
+        },
+      });
+      return;
+    }
+
+    const guardId = (req as AuthenticatedRequest).guardId;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (req as any).db;
+
+    const block = await clearResidentRuleBlock(guardId, params.data.id, body.data.reason, db);
+    res.status(200).json({ block, traceId: `trace-${randomUUID()}` });
+  } catch (err) {
     next(err);
   }
 }

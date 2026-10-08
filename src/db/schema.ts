@@ -1641,10 +1641,26 @@ export const unitRegistrations = pgTable(
       .generatedAlwaysAs(
         sql`upper(regexp_replace(coalesce("plate", ''), '[^0-9A-Za-z]', '', 'g'))`
       ),
+    /** lower(label), whitespace collapsed — GENERATED; the person block key. */
+    labelNorm: text("label_norm")
+      .notNull()
+      .generatedAlwaysAs(sql`lower(regexp_replace(btrim("label"), '\\s+', ' ', 'g'))`),
     visitorProfileId: uuid("visitor_profile_id")
       .notNull()
       .references(() => visitorProfiles.id),
     autoApprovalRuleId: uuid("auto_approval_rule_id").notNull(),
+    /**
+     * Staff block: set when an admin switches off this registration's rule.
+     * While set and not cleared, no resident of the unit can register the
+     * same plate (vehicle) or name (person) again. Cleared only by an admin,
+     * with a reason.
+     */
+    blockedAt: timestamp("blocked_at", { precision: 3, withTimezone: true }),
+    blockedByGuardId: uuid("blocked_by_guard_id").references(() => guards.id),
+    blockReason: text("block_reason"),
+    blockClearedAt: timestamp("block_cleared_at", { precision: 3, withTimezone: true }),
+    blockClearedByGuardId: uuid("block_cleared_by_guard_id").references(() => guards.id),
+    blockClearReason: text("block_clear_reason"),
     createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1667,6 +1683,14 @@ export const unitRegistrations = pgTable(
       "unit_registrations_vehicle_has_plate",
       sql`${table.kind} <> 'vehicle' OR ${table.plate} IS NOT NULL`
     ),
+    check(
+      "unit_registrations_block_consistent",
+      sql`(${table.blockedAt} IS NULL AND ${table.blockedByGuardId} IS NULL AND ${table.blockReason} IS NULL) OR (${table.blockedAt} IS NOT NULL AND ${table.blockedByGuardId} IS NOT NULL AND (${table.blockReason} IS NULL OR length(trim(${table.blockReason})) BETWEEN 1 AND 500))`
+    ),
+    check(
+      "unit_registrations_block_clear_consistent",
+      sql`(${table.blockClearedAt} IS NULL AND ${table.blockClearedByGuardId} IS NULL AND ${table.blockClearReason} IS NULL) OR (${table.blockClearedAt} IS NOT NULL AND ${table.blockedAt} IS NOT NULL AND ${table.blockClearedByGuardId} IS NOT NULL AND length(trim(${table.blockClearReason})) BETWEEN 3 AND 500)`
+    ),
     // Named explicitly: the generated name exceeds Postgres' 63-byte limit.
     foreignKey({
       name: "unit_registrations_rule_fk",
@@ -1675,6 +1699,9 @@ export const unitRegistrations = pgTable(
     }),
     index("unit_registrations_resident_idx").on(table.residentId),
     index("unit_registrations_rule_idx").on(table.autoApprovalRuleId),
+    index("unit_registrations_active_block_idx")
+      .on(table.unitId, table.kind)
+      .where(sql`${table.blockedAt} IS NOT NULL AND ${table.blockClearedAt} IS NULL`),
     uniqueIndex("unit_registrations_active_vehicle_plate_unique")
       .on(table.unitId, table.plateNorm)
       .where(sql`${table.kind} = 'vehicle' AND ${table.deletedAt} IS NULL`),
@@ -1793,6 +1820,8 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "resident_registration_removed",
   // Migration: drizzle/0015_unit_registrations.sql.
   "resident_registration_renewed",
+  "resident_registration_blocked",
+  "resident_registration_block_cleared",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

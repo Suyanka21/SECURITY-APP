@@ -85,6 +85,8 @@ describe("helpers", () => {
       "resident_registration_created",
       "resident_registration_removed",
       "resident_registration_renewed",
+      "resident_registration_blocked",
+      "resident_registration_block_cleared",
     ]) {
       expect(AuditQuerySchema.safeParse({ eventType: t }).success).toBe(true);
     }

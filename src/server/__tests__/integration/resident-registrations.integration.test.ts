@@ -18,6 +18,8 @@
  *     audited under the resident
  *   - another resident's registrations are invisible (404, not 403)
  *   - atomicity: a genuine audit insert failure leaves no partial rows
+ *   - staff block: an admin switch-off of a resident rule cannot be undone
+ *     by remove + re-register; only an admin clear (with reason) lifts it
  *
  * PREREQUISITES: DATABASE_URL set, schema migrated (npx drizzle-kit push).
  */
@@ -95,7 +97,9 @@ beforeAll(async () => {
     CREATE OR REPLACE FUNCTION ${sql.raw(AUDIT_TRIGGER_FN)}() RETURNS trigger AS $$
     BEGIN
       IF (NEW.event_type::text = 'resident_registration_created' AND NEW.payload->>'label' LIKE 'AUDIT-FAIL-CREATE%')
-         OR (NEW.event_type::text = 'resident_registration_removed' AND NEW.payload->>'label' LIKE 'AUDIT-FAIL-REMOVE%') THEN
+         OR (NEW.event_type::text = 'resident_registration_removed' AND NEW.payload->>'label' LIKE 'AUDIT-FAIL-REMOVE%')
+         OR (NEW.event_type::text IN ('resident_registration_blocked', 'resident_registration_block_cleared')
+             AND EXISTS (SELECT 1 FROM units u WHERE u.id::text = NEW.payload->>'unitId' AND u.label LIKE 'RG-BAF%')) THEN
         RAISE EXCEPTION 'injected audit persistence failure';
       END IF;
       RETURN NEW;
@@ -622,5 +626,231 @@ describe("access and atomicity", () => {
     const [rule] = await db.select().from(autoApprovalRules).where(eq(autoApprovalRules.id, row.autoApprovalRuleId));
     expect(rule.active).toBe(true);
     expect((await evaluate({ visitorName: "x", host: "x", unit: unit.label, plate: "KDN 888N" }, db)).match).toBe(true);
+  });
+});
+
+describe("staff block — a staff switch-off survives remove + re-register", () => {
+  async function liveRegistrations(unitId: string) {
+    return db
+      .select()
+      .from(unitRegistrations)
+      .where(and(eq(unitRegistrations.unitId, unitId), sql`${unitRegistrations.deletedAt} IS NULL`));
+  }
+
+  async function activeResidentRules(residentId: string) {
+    return db
+      .select()
+      .from(autoApprovalRules)
+      .where(and(eq(autoApprovalRules.createdByResidentId, residentId), eq(autoApprovalRules.active, true)));
+  }
+
+  it("the exact bypass: deactivate -> delete -> re-register is refused; the rule stays blocked, not live", async () => {
+    const { token, resident, unit } = await claimedResident("RG-BYP");
+    const reg = await register(token, { kind: "vehicle", label: "Blue Demio", plate: "KDB 404B" });
+    const row = await registrationRow(reg.id);
+    expect((await evaluate({ visitorName: "x", host: "x", unit: unit.label, plate: "KDB 404B" }, db)).match).toBe(true);
+
+    const off = await api(
+      "POST",
+      `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`,
+      staffToken(adminId),
+      { reason: "Vehicle linked to a reported incident" },
+    );
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+
+    const del = await api("DELETE", `/api/resident/registrations/${reg.id}`, token);
+    expect(del.status, JSON.stringify(del.body)).toBe(200);
+
+    for (const plate of ["KDB 404B", "kdb-404b", "K.D.B 404b"]) {
+      const again = await api("POST", "/api/resident/registrations", token, {
+        kind: "vehicle",
+        label: "Blue Demio again",
+        plate,
+      });
+      expect(again.status, JSON.stringify(again.body)).toBe(409);
+      expect(again.body.error?.code).toBe("REGISTRATION_BLOCKED");
+    }
+
+    expect(await liveRegistrations(unit.id)).toHaveLength(0);
+    expect(await activeResidentRules(resident.id)).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(visitorProfiles)
+        .where(and(eq(visitorProfiles.createdByResidentId, resident.id), sql`${visitorProfiles.deletedAt} IS NULL`)),
+    ).toHaveLength(0);
+    expect((await evaluate({ visitorName: "x", host: "x", unit: unit.label, plate: "KDB 404B" }, db)).match).toBe(false);
+
+    const blocked = await registrationRow(reg.id);
+    expect(blocked.deletedAt).not.toBeNull();
+    expect(blocked.blockedAt).not.toBeNull();
+    expect(blocked.blockedByGuardId).toBe(adminId);
+    expect(blocked.blockReason).toBe("Vehicle linked to a reported incident");
+    expect(blocked.blockClearedAt).toBeNull();
+
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.eventType, "resident_registration_blocked"), eq(auditEvents.guardId, adminId), sql`${auditEvents.payload}->>'registrationId' = ${reg.id}`));
+    expect(audit.residentId).toBeNull();
+    expect(audit.payload).toMatchObject({ ruleId: row.autoApprovalRuleId, unitId: unit.id, kind: "vehicle", reasonProvided: true });
+    expect(JSON.stringify(audit.payload)).not.toContain("reported incident");
+  });
+
+  it("a household member block matches the name case- and whitespace-insensitively; other names are unaffected", async () => {
+    const { token, unit } = await claimedResident("RG-BPN");
+    const reg = await register(token, { kind: "person", label: "Jane Doe" });
+    const row = await registrationRow(reg.id);
+    expect((await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId))).status).toBe(200);
+    expect((await api("DELETE", `/api/resident/registrations/${reg.id}`, token)).status).toBe(200);
+
+    for (const label of ["Jane Doe", "  jane   DOE "]) {
+      const again = await api("POST", "/api/resident/registrations", token, { kind: "person", label });
+      expect(again.status, JSON.stringify(again.body)).toBe(409);
+      expect(again.body.error?.code).toBe("REGISTRATION_BLOCKED");
+    }
+    await register(token, { kind: "person", label: "Jane Doe Junior" });
+    expect(await liveRegistrations(unit.id)).toHaveLength(1);
+  });
+
+  it("the block is per unit: another unit may register the same plate", async () => {
+    const a = await claimedResident("RG-BUA");
+    const b = await claimedResident("RG-BUB");
+    const reg = await register(a.token, { kind: "vehicle", label: "Car", plate: "KDC 505C" });
+    const row = await registrationRow(reg.id);
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    await register(b.token, { kind: "vehicle", label: "Car", plate: "KDC 505C" });
+  });
+
+  it("switching off a rule the resident already removed still blocks re-registration", async () => {
+    const { token, unit } = await claimedResident("RG-BRM");
+    const reg = await register(token, { kind: "vehicle", label: "Gone", plate: "KDD 606D" });
+    const row = await registrationRow(reg.id);
+    expect((await api("DELETE", `/api/resident/registrations/${reg.id}`, token)).status).toBe(200);
+    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    expect((await registrationRow(reg.id)).blockedByGuardId).toBe(adminId);
+    const again = await api("POST", "/api/resident/registrations", token, { kind: "vehicle", label: "Gone", plate: "KDD 606D" });
+    expect(again.body.error?.code).toBe("REGISTRATION_BLOCKED");
+    expect(await liveRegistrations(unit.id)).toHaveLength(0);
+  });
+
+  it("blocking also switches off a same-subject registration made after the blocked one was removed", async () => {
+    const { token, resident } = await claimedResident("RG-BSB");
+    const first = await register(token, { kind: "vehicle", label: "Old", plate: "KDE 707E" });
+    const firstRow = await registrationRow(first.id);
+    expect((await api("DELETE", `/api/resident/registrations/${first.id}`, token)).status).toBe(200);
+    const second = await register(token, { kind: "vehicle", label: "New", plate: "kde707e" });
+
+    await api("POST", `/api/auto-approval-rules/${firstRow.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    expect(await activeResidentRules(resident.id)).toHaveLength(0);
+    const list = await api("GET", "/api/resident/registrations", token);
+    expect((list.body.registrations as RegistrationView[]).find((r) => r.id === second.id)?.status).toBe("disabled");
+  });
+
+  it("re-deactivating is idempotent: no second block audit, block untouched", async () => {
+    const { token } = await claimedResident("RG-BID");
+    const reg = await register(token, { kind: "person", label: "Twice" });
+    const row = await registrationRow(reg.id);
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    const blockedAt = (await registrationRow(reg.id)).blockedAt;
+    const r2 = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    expect(r2.status).toBe(200);
+    expect((await registrationRow(reg.id)).blockedAt).toEqual(blockedAt);
+    const audits = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.eventType, "resident_registration_blocked"), sql`${auditEvents.payload}->>'registrationId' = ${reg.id}`));
+    expect(audits).toHaveLength(1);
+  });
+
+  it("only an admin can clear: resident, guard and senior-guard are refused and the block stands", async () => {
+    const { token } = await claimedResident("RG-BAZ");
+    const reg = await register(token, { kind: "vehicle", label: "Locked", plate: "KDF 808F" });
+    const row = await registrationRow(reg.id);
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    const path = `/api/auto-approval-rules/${row.autoApprovalRuleId}/clear-block`;
+
+    const asResident = await api("POST", path, token, { reason: "please let me" });
+    expect([401, 403]).toContain(asResident.status);
+    for (const id of [guardId, seniorId]) {
+      const r = await api("POST", path, staffToken(id), { reason: "trying to clear" });
+      expect(r.status, JSON.stringify(r.body)).toBe(403);
+    }
+    expect((await api("POST", path, null, { reason: "anon" })).status).toBe(401);
+    expect((await api("POST", path, staffToken(adminId), {})).status).toBe(422);
+
+    const blocked = await registrationRow(reg.id);
+    expect(blocked.blockedAt).not.toBeNull();
+    expect(blocked.blockClearedAt).toBeNull();
+    expect((await api("DELETE", `/api/resident/registrations/${reg.id}`, token)).status).toBe(200);
+    const again = await api("POST", "/api/resident/registrations", token, { kind: "vehicle", label: "Locked", plate: "KDF 808F" });
+    expect(again.body.error?.code).toBe("REGISTRATION_BLOCKED");
+  });
+
+  it("after an admin clears the block (with reason) the resident may register again; clearing twice is 409", async () => {
+    const { token, unit } = await claimedResident("RG-BCL");
+    const reg = await register(token, { kind: "vehicle", label: "Cleared", plate: "KDG 909G" });
+    const row = await registrationRow(reg.id);
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    await api("DELETE", `/api/resident/registrations/${reg.id}`, token);
+
+    const path = `/api/auto-approval-rules/${row.autoApprovalRuleId}/clear-block`;
+    const clear = await api("POST", path, staffToken(adminId), { reason: "Checked with the owner" });
+    expect(clear.status, JSON.stringify(clear.body)).toBe(200);
+    const cleared = await registrationRow(reg.id);
+    expect(cleared.blockClearedByGuardId).toBe(adminId);
+    expect(cleared.blockClearReason).toBe("Checked with the owner");
+
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.eventType, "resident_registration_block_cleared"), sql`${auditEvents.payload}->>'registrationId' = ${reg.id}`));
+    expect(audit.guardId).toBe(adminId);
+    expect(audit.payload).toMatchObject({ blockedByGuardId: adminId, unitId: unit.id });
+
+    const twice = await api("POST", path, staffToken(adminId), { reason: "again please" });
+    expect(twice.status).toBe(409);
+    expect(twice.body.error?.code).toBe("REGISTRATION_NOT_BLOCKED");
+
+    await register(token, { kind: "vehicle", label: "Cleared", plate: "KDG 909G" });
+    expect((await evaluate({ visitorName: "x", host: "x", unit: unit.label, plate: "KDG 909G" }, db)).match).toBe(true);
+  });
+
+  it("clear-block on a staff rule with no registration is 404", async () => {
+    const [rule] = await db
+      .insert(autoApprovalRules)
+      .values({
+        visitorName: "Staff Only",
+        host: "Someone",
+        unit: "Z9",
+        createdByGuardId: adminId,
+        active: false,
+        expiresAt: new Date(Date.now() + DAY_MS),
+      })
+      .returning({ id: autoApprovalRules.id });
+    staffRuleIds.push(rule.id);
+    const r = await api("POST", `/api/auto-approval-rules/${rule.id}/clear-block`, staffToken(adminId), { reason: "valid reason" });
+    expect(r.status).toBe(404);
+  });
+
+  it("a genuine audit failure while blocking leaves the rule live and no block recorded", async () => {
+    const { token, unit } = await claimedResident("RG-BAF");
+    const reg = await register(token, { kind: "vehicle", label: "Atomic", plate: "KDH 111H" });
+    const row = await registrationRow(reg.id);
+    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    expect(off.status).toBe(500);
+    const after = await registrationRow(reg.id);
+    expect(after.blockedAt).toBeNull();
+    const [rule] = await db.select().from(autoApprovalRules).where(eq(autoApprovalRules.id, row.autoApprovalRuleId));
+    expect(rule.active).toBe(true);
+    expect(
+      await db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.eventType, "auto_approval_rule_deactivated"), sql`${auditEvents.payload}->>'ruleId' = ${row.autoApprovalRuleId}`)),
+    ).toHaveLength(0);
+    expect(getAuditLog().filter((e) => e.payload.ruleId === row.autoApprovalRuleId)).toHaveLength(0);
+    expect((await evaluate({ visitorName: "x", host: "x", unit: unit.label, plate: "KDH 111H" }, db)).match).toBe(true);
   });
 });

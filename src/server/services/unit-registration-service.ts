@@ -20,11 +20,11 @@
  */
 
 import { randomUUID } from "crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, sql, type SQL } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
 import type { ResidentIdentity } from "../middleware/resident-auth";
-import { emitResidentAuditEvent, publishAuditEvent } from "./audit-logger";
+import { emitAuditEvent, emitResidentAuditEvent, publishAuditEvent, type AuditEvent } from "./audit-logger";
 import { ServiceError } from "./errors";
 import { ResidentPassErrorCodes } from "./resident-pass-service";
 import { normalizeUnitLabel, uniqueViolationConstraint, type ResidentDb } from "./resident-service";
@@ -44,6 +44,8 @@ export const RegistrationErrorCodes = {
   REGISTRATION_DUPLICATE: "REGISTRATION_DUPLICATE",
   REGISTRATION_LIMIT_REACHED: "REGISTRATION_LIMIT_REACHED",
   REGISTRATION_DISABLED: "REGISTRATION_DISABLED",
+  REGISTRATION_BLOCKED: "REGISTRATION_BLOCKED",
+  REGISTRATION_NOT_BLOCKED: "REGISTRATION_NOT_BLOCKED",
 } as const;
 
 export type RegistrationKind = "person" | "vehicle";
@@ -102,6 +104,19 @@ function toView(row: RegistrationJoinRow, now: Date): RegistrationView {
 export function registrationVisitorName(input: CreateRegistrationInput): string {
   return input.kind === "vehicle" ? `${input.label} (${input.plate})` : input.label;
 }
+
+/**
+ * Matches registrations of the same subject: same normalized plate for a
+ * vehicle, same normalized name for a person. This is the key a staff block
+ * is enforced on, so it survives the blocked row being removed.
+ */
+function sameSubject(kind: RegistrationKind, label: string, plate: string | null): SQL {
+  return kind === "vehicle"
+    ? sql`${unitRegistrations.plateNorm} = upper(regexp_replace(coalesce(${plate}, ''), '[^0-9A-Za-z]', '', 'g'))`
+    : sql`${unitRegistrations.labelNorm} = lower(regexp_replace(btrim(${label}), '\\s+', ' ', 'g'))`;
+}
+
+const activeBlock = and(isNotNull(unitRegistrations.blockedAt), isNull(unitRegistrations.blockClearedAt));
 
 function duplicate(message: string, traceId: string): ServiceError {
   return new ServiceError(
@@ -182,6 +197,30 @@ export async function createRegistration(
   try {
     const { view, event } = await db.transaction(async (tx) => {
       const { unitLabel, displayName } = await lockUnitAndResident(tx, resident, traceId, "update");
+
+      const blocked = await tx
+        .select({ id: unitRegistrations.id })
+        .from(unitRegistrations)
+        .where(
+          and(
+            eq(unitRegistrations.unitId, resident.unitId),
+            eq(unitRegistrations.kind, input.kind),
+            activeBlock,
+            sameSubject(input.kind, input.label, plate),
+          ),
+        )
+        .limit(1);
+      if (blocked.length > 0) {
+        throw new ServiceError(
+          RegistrationErrorCodes.REGISTRATION_BLOCKED,
+          input.kind === "vehicle"
+            ? "Estate management has blocked this vehicle for your unit. Contact them to have it unblocked."
+            : "Estate management has blocked this person for your unit. Contact them to have it unblocked.",
+          409,
+          undefined,
+          traceId,
+        );
+      }
 
       const [{ count }] = await tx
         .select({ count: sql<number>`count(*)::int` })
@@ -484,6 +523,197 @@ export async function renewRegistration(
       { tx },
     );
     return { view: toView({ ...registration, expiresAt, active: true }, nowDate), event: audit };
+  });
+
+  publishAuditEvent(event);
+  return view;
+}
+
+// ─── Staff block ─────────────────────────────────────────────────────────────
+
+type AutoApprovalRuleRow = typeof autoApprovalRules.$inferSelect;
+
+/**
+ * Admin switch-off of a resident-created rule. In one transaction: the rule
+ * goes inactive, its registration is marked blocked by staff, and any other
+ * live registration of the same subject in the unit has its rule switched
+ * off too. While the block stands, createRegistration() refuses the same
+ * plate/name for that unit. Idempotent: no audit when nothing changes.
+ */
+export async function blockResidentRule(
+  guardId: string,
+  ruleId: string,
+  reason: string | null,
+  db: ResidentDb,
+  now: () => Date = () => new Date(),
+): Promise<AutoApprovalRuleRow> {
+  const traceId = `auto-approval-${ruleId}`;
+
+  const { rule, events } = await db.transaction(async (tx) => {
+    const [link] = await tx
+      .select({ unitId: unitRegistrations.unitId })
+      .from(unitRegistrations)
+      .where(eq(unitRegistrations.autoApprovalRuleId, ruleId));
+    if (link) {
+      await tx.select({ id: units.id }).from(units).where(eq(units.id, link.unitId)).for("update");
+    }
+
+    const [current] = await tx
+      .select()
+      .from(autoApprovalRules)
+      .where(eq(autoApprovalRules.id, ruleId))
+      .for("update");
+    if (!current) {
+      throw new ServiceError("NOT_FOUND", "Auto-approval rule not found", 404, undefined, traceId);
+    }
+
+    const nowDate = now();
+    const emitted: AuditEvent[] = [];
+    let next = current;
+    if (current.active) {
+      [next] = await tx
+        .update(autoApprovalRules)
+        .set({ active: false, updatedAt: nowDate })
+        .where(eq(autoApprovalRules.id, ruleId))
+        .returning();
+      emitted.push(
+        await emitAuditEvent(
+          "auto_approval_rule_deactivated",
+          guardId,
+          traceId,
+          { ruleId, visitorName: current.visitorName, host: current.host, unit: current.unit },
+          { tx },
+        ),
+      );
+    }
+
+    const [registration] = await tx
+      .select()
+      .from(unitRegistrations)
+      .where(eq(unitRegistrations.autoApprovalRuleId, ruleId))
+      .for("update");
+    if (registration && !(registration.blockedAt && !registration.blockClearedAt)) {
+      await tx
+        .update(unitRegistrations)
+        .set({
+          blockedAt: nowDate,
+          blockedByGuardId: guardId,
+          blockReason: reason,
+          blockClearedAt: null,
+          blockClearedByGuardId: null,
+          blockClearReason: null,
+          updatedAt: nowDate,
+        })
+        .where(eq(unitRegistrations.id, registration.id));
+
+      const siblings = await tx
+        .select({ ruleId: unitRegistrations.autoApprovalRuleId })
+        .from(unitRegistrations)
+        .where(
+          and(
+            eq(unitRegistrations.unitId, registration.unitId),
+            eq(unitRegistrations.kind, registration.kind),
+            ne(unitRegistrations.id, registration.id),
+            isNull(unitRegistrations.deletedAt),
+            sameSubject(registration.kind === "vehicle" ? "vehicle" : "person", registration.label, registration.plate),
+          ),
+        );
+      for (const sibling of siblings) {
+        await tx
+          .update(autoApprovalRules)
+          .set({ active: false, updatedAt: nowDate })
+          .where(and(eq(autoApprovalRules.id, sibling.ruleId), eq(autoApprovalRules.active, true)));
+      }
+
+      emitted.push(
+        await emitAuditEvent(
+          "resident_registration_blocked",
+          guardId,
+          traceId,
+          {
+            registrationId: registration.id,
+            ruleId,
+            unitId: registration.unitId,
+            kind: registration.kind,
+            reasonProvided: reason !== null,
+            siblingRulesDisabled: siblings.map((x) => x.ruleId),
+          },
+          { tx },
+        ),
+      );
+    }
+
+    return { rule: next, events: emitted };
+  });
+
+  events.forEach(publishAuditEvent);
+  return rule;
+}
+
+export interface RegistrationBlockClearedView {
+  ruleId: string;
+  registrationId: string;
+  blockClearedAt: string;
+}
+
+/**
+ * Admin lifts a staff block so the unit may register that subject again.
+ * The switched-off rule stays off; the resident registers afresh.
+ */
+export async function clearResidentRuleBlock(
+  guardId: string,
+  ruleId: string,
+  reason: string,
+  db: ResidentDb,
+  now: () => Date = () => new Date(),
+): Promise<RegistrationBlockClearedView> {
+  const traceId = `auto-approval-${ruleId}`;
+
+  const { view, event } = await db.transaction(async (tx) => {
+    const [registration] = await tx
+      .select()
+      .from(unitRegistrations)
+      .where(eq(unitRegistrations.autoApprovalRuleId, ruleId))
+      .for("update");
+    if (!registration) throw notFound(traceId);
+    if (!registration.blockedAt || registration.blockClearedAt) {
+      throw new ServiceError(
+        RegistrationErrorCodes.REGISTRATION_NOT_BLOCKED,
+        "This registration is not blocked.",
+        409,
+        undefined,
+        traceId,
+      );
+    }
+
+    const nowDate = now();
+    await tx
+      .update(unitRegistrations)
+      .set({
+        blockClearedAt: nowDate,
+        blockClearedByGuardId: guardId,
+        blockClearReason: reason,
+        updatedAt: nowDate,
+      })
+      .where(eq(unitRegistrations.id, registration.id));
+
+    const audit = await emitAuditEvent(
+      "resident_registration_block_cleared",
+      guardId,
+      traceId,
+      {
+        registrationId: registration.id,
+        ruleId,
+        unitId: registration.unitId,
+        kind: registration.kind,
+        blockedByGuardId: registration.blockedByGuardId,
+      },
+      { tx },
+    );
+    return {
+      view: { ruleId, registrationId: registration.id, blockClearedAt: nowDate.toISOString() },
+      event: audit,
+    };
   });
 
   publishAuditEvent(event);

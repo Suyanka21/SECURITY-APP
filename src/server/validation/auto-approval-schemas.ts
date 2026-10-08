@@ -91,6 +91,24 @@ export const RuleIdParamSchema = z
   })
   .strict();
 
+// ─── Staff block on resident-created rules ──────────────────────────────────
+
+export const DeactivateRuleBodySchema = z
+  .object({
+    reason: z.string().trim().min(3, "reason must be at least 3 characters").max(500).optional(),
+  })
+  .strict();
+
+export const ClearRuleBlockBodySchema = z
+  .object({
+    reason: z
+      .string({ required_error: "reason is required" })
+      .trim()
+      .min(3, "reason must be at least 3 characters")
+      .max(500),
+  })
+  .strict();
+
 // ─── Response shapes (wire format) ──────────────────────────────────────────
 
 export interface AutoApprovalRuleResponse {
