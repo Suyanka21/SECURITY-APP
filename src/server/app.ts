@@ -41,6 +41,7 @@ import {
   handleSeedAutoApprovalRule,
   handleListAutoApprovalRules,
   handleDeactivateAutoApprovalRule,
+  handleClearAutoApprovalRuleBlock,
 } from "./routes/auto-approval";
 import {
   handleCreateVisitorProfile,
@@ -74,7 +75,11 @@ import {
   adminResidentsRouter,
   adminUnitsRouter,
   handleClaimUnit,
+  handleCreateRegistration,
   handleIssueResidentPass,
+  handleListRegistrations,
+  handleRemoveRegistration,
+  handleRenewRegistration,
   handleResidentMe,
 } from "./routes/residents";
 import { errorHandler } from "./middleware/error-handler";
@@ -126,6 +131,20 @@ const RESIDENT_PASS_RATE_LIMIT = {
     error: {
       code: "RATE_LIMIT_EXCEEDED",
       message: "Too many passes issued. Please wait before trying again.",
+      traceId: "rate-limited",
+    },
+  },
+};
+
+const RESIDENT_REGISTRATION_RATE_LIMIT = {
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: "RATE_LIMIT_EXCEEDED",
+      message: "Too many changes. Please wait before trying again.",
       traceId: "rate-limited",
     },
   },
@@ -259,6 +278,13 @@ export function createApp(db: unknown) {
     requireRole("admin"),
     handleDeactivateAutoApprovalRule
   );
+  app.post(
+    "/api/auto-approval-rules/:id/clear-block",
+    requireAuth,
+    strictLimiter,
+    requireRole("admin"),
+    handleClearAutoApprovalRuleBlock
+  );
 
   // Feature 4 — Visitor Profile CRUD (spec §4, §6).
   // Reads: any authenticated role (guard / senior-guard / admin).
@@ -350,6 +376,31 @@ export function createApp(db: unknown) {
     requireResidentAuth,
     residentPassLimiter,
     handleIssueResidentPass
+  );
+  // R3 capabilities 2 + 3. Writes share one per-resident limiter; the
+  // per-unit registration cap bounds the rest.
+  const residentRegistrationLimiter = rateLimit({
+    ...RESIDENT_REGISTRATION_RATE_LIMIT,
+    keyGenerator: (req) => (req as ResidentRequest).resident.residentId,
+  });
+  app.get("/api/resident/registrations", requireResidentAuth, handleListRegistrations);
+  app.post(
+    "/api/resident/registrations",
+    requireResidentAuth,
+    residentRegistrationLimiter,
+    handleCreateRegistration
+  );
+  app.delete(
+    "/api/resident/registrations/:id",
+    requireResidentAuth,
+    residentRegistrationLimiter,
+    handleRemoveRegistration
+  );
+  app.post(
+    "/api/resident/registrations/:id/renew",
+    requireResidentAuth,
+    residentRegistrationLimiter,
+    handleRenewRegistration
   );
 
   // Feature 5 — Shift Log Aggregation (spec §4, §9).

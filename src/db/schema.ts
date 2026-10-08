@@ -20,6 +20,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -1388,8 +1389,14 @@ export const visitorProfiles = pgTable(
       withTimezone: true,
     }),
 
-    /** Guard who soft-deleted this profile. NULL iff deletedAt is NULL. */
+    /**
+     * Who soft-deleted this profile: a guard, or (R3) the resident who
+     * registered it. Both NULL iff deletedAt is NULL; exactly one otherwise.
+     */
     deletedByGuardId: uuid("deleted_by_guard_id").references(() => guards.id),
+    deletedByResidentId: uuid("deleted_by_resident_id").references(
+      () => residents.id
+    ),
   },
   (table) => [
     check(
@@ -1418,7 +1425,7 @@ export const visitorProfiles = pgTable(
     ),
     check(
       "visitor_profile_soft_delete_consistent",
-      sql`((${table.deletedAt} IS NULL) AND (${table.deletedByGuardId} IS NULL)) OR ((${table.deletedAt} IS NOT NULL) AND (${table.deletedByGuardId} IS NOT NULL))`
+      sql`((${table.deletedAt} IS NULL) AND (${table.deletedByGuardId} IS NULL) AND (${table.deletedByResidentId} IS NULL)) OR ((${table.deletedAt} IS NOT NULL) AND (num_nonnulls(${table.deletedByGuardId}, ${table.deletedByResidentId}) = 1))`
     ),
     // Resident-scoped listings + creator attribution. The functional
     // partial UNIQUE index on (lower(name), lower(host), lower(unit))
@@ -1607,6 +1614,100 @@ export const residentClaimAttempts = pgTable("resident_claim_attempts", {
     .defaultNow(),
 });
 
+/**
+ * Resident-owned household members / workers ("person") and vehicles
+ * ("vehicle") — Resident Portal R3. Each active row owns exactly one
+ * visitor_profiles row and one auto_approval_rules row it created; the
+ * resident lists and removes only their own rows through this table.
+ * Source: src/docs/specs/resident-portal.md §3.4. Migration 0015.
+ */
+export const unitRegistrations = pgTable(
+  "unit_registrations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    unitId: uuid("unit_id")
+      .notNull()
+      .references(() => units.id),
+    residentId: uuid("resident_id")
+      .notNull()
+      .references(() => residents.id),
+    kind: text("kind").notNull(),
+    /** Person's name, or the vehicle description the resident typed. */
+    label: text("label").notNull(),
+    plate: text("plate"),
+    /** upper(plate) with separators removed — GENERATED in the migration. */
+    plateNorm: text("plate_norm")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`upper(regexp_replace(coalesce("plate", ''), '[^0-9A-Za-z]', '', 'g'))`
+      ),
+    /** lower(label), whitespace collapsed — GENERATED; the person block key. */
+    labelNorm: text("label_norm")
+      .notNull()
+      .generatedAlwaysAs(sql`lower(regexp_replace(btrim("label"), '\\s+', ' ', 'g'))`),
+    visitorProfileId: uuid("visitor_profile_id")
+      .notNull()
+      .references(() => visitorProfiles.id),
+    autoApprovalRuleId: uuid("auto_approval_rule_id").notNull(),
+    /**
+     * Staff block: set when an admin switches off this registration's rule.
+     * While set and not cleared, no resident of the unit can register the
+     * same plate (vehicle) or name (person) again. Cleared only by an admin,
+     * with a reason.
+     */
+    blockedAt: timestamp("blocked_at", { precision: 3, withTimezone: true }),
+    blockedByGuardId: uuid("blocked_by_guard_id").references(() => guards.id),
+    blockReason: text("block_reason"),
+    blockClearedAt: timestamp("block_cleared_at", { precision: 3, withTimezone: true }),
+    blockClearedByGuardId: uuid("block_cleared_by_guard_id").references(() => guards.id),
+    blockClearReason: text("block_clear_reason"),
+    createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deletedAt: timestamp("deleted_at", { precision: 3, withTimezone: true }),
+  },
+  (table) => [
+    check("unit_registrations_kind", sql`${table.kind} IN ('person', 'vehicle')`),
+    check(
+      "unit_registrations_label_bounded",
+      sql`length(trim(${table.label})) BETWEEN 1 AND 60`
+    ),
+    check(
+      "unit_registrations_plate_bounded",
+      sql`${table.plate} IS NULL OR length(trim(${table.plate})) BETWEEN 1 AND 12`
+    ),
+    check(
+      "unit_registrations_vehicle_has_plate",
+      sql`${table.kind} <> 'vehicle' OR ${table.plate} IS NOT NULL`
+    ),
+    check(
+      "unit_registrations_block_consistent",
+      sql`(${table.blockedAt} IS NULL AND ${table.blockedByGuardId} IS NULL AND ${table.blockReason} IS NULL) OR (${table.blockedAt} IS NOT NULL AND ${table.blockedByGuardId} IS NOT NULL AND (${table.blockReason} IS NULL OR length(trim(${table.blockReason})) BETWEEN 1 AND 500))`
+    ),
+    check(
+      "unit_registrations_block_clear_consistent",
+      sql`(${table.blockClearedAt} IS NULL AND ${table.blockClearedByGuardId} IS NULL AND ${table.blockClearReason} IS NULL) OR (${table.blockClearedAt} IS NOT NULL AND ${table.blockedAt} IS NOT NULL AND ${table.blockClearedByGuardId} IS NOT NULL AND length(trim(${table.blockClearReason})) BETWEEN 3 AND 500)`
+    ),
+    // Named explicitly: the generated name exceeds Postgres' 63-byte limit.
+    foreignKey({
+      name: "unit_registrations_rule_fk",
+      columns: [table.autoApprovalRuleId],
+      foreignColumns: [autoApprovalRules.id],
+    }),
+    index("unit_registrations_resident_idx").on(table.residentId),
+    index("unit_registrations_rule_idx").on(table.autoApprovalRuleId),
+    index("unit_registrations_active_block_idx")
+      .on(table.unitId, table.kind)
+      .where(sql`${table.blockedAt} IS NOT NULL AND ${table.blockClearedAt} IS NULL`),
+    uniqueIndex("unit_registrations_active_vehicle_plate_unique")
+      .on(table.unitId, table.plateNorm)
+      .where(sql`${table.kind} = 'vehicle' AND ${table.deletedAt} IS NULL`),
+  ]
+);
+
 export const residentsRelations = relations(residents, ({ one }) => ({
   unit: one(units, { fields: [residents.unitId], references: [units.id] }),
 }));
@@ -1717,6 +1818,10 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "resident_deactivated",
   "resident_registration_created",
   "resident_registration_removed",
+  // Migration: drizzle/0015_unit_registrations.sql.
+  "resident_registration_renewed",
+  "resident_registration_blocked",
+  "resident_registration_block_cleared",
 ]);
 
 // ─── Table 7: Audit Events ──────────────────────────────────────────────────

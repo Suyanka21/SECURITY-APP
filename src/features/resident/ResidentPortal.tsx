@@ -2,8 +2,8 @@
  * GatePass — resident portal shell.
  *
  * Source: src/docs/specs/resident-portal.md §1, §4. Capabilities in priority
- * order; R2 ships capability 1 (send a pass). Household members/workers and
- * vehicles arrive in R3. No dashboard, inbox or notification centre.
+ * order: send a pass, household members / workers, vehicles. No dashboard,
+ * inbox or notification centre.
  */
 
 import { LogOut } from "lucide-react";
@@ -11,6 +11,7 @@ import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PublicFooter } from "@/features/public-info/PublicFooter";
 import type { ResidentMe } from "@/lib/api/resident";
+import { RegistrationCards } from "./RegistrationCards";
 import { SendPassCard } from "./SendPassCard";
 
 export function ResidentPortal({
@@ -40,6 +41,7 @@ export function ResidentPortal({
       </header>
       <main className="mx-auto max-w-md space-y-4 p-4">
         <SendPassCard />
+        <RegistrationCards resident={resident} />
       </main>
       <div className="mx-auto max-w-md px-4 pb-6">
         <PublicFooter />

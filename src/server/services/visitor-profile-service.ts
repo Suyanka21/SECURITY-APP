@@ -656,6 +656,7 @@ export async function restoreVisitorProfile(
     .set({
       deletedAt: null,
       deletedByGuardId: null,
+      deletedByResidentId: null,
       updatedAt: nowDate,
     })
     .where(eq(visitorProfiles.id, profileId))

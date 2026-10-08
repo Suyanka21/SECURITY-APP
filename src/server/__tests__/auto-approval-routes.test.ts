@@ -19,8 +19,10 @@ import {
   handleSeedAutoApprovalRule,
   handleListAutoApprovalRules,
   handleDeactivateAutoApprovalRule,
+  handleClearAutoApprovalRuleBlock,
 } from "../routes/auto-approval";
 import * as service from "../services/auto-approval-service";
+import * as registrationService from "../services/unit-registration-service";
 import { ServiceError } from "../services/errors";
 
 // ─── Mock helpers ────────────────────────────────────────────────────────────
@@ -274,6 +276,72 @@ describe("Route: POST /api/auto-approval-rules/:id/deactivate", () => {
       guardId: GUARD_ID,
     });
     await handleDeactivateAutoApprovalRule(ctx.req, ctx.res, ctx.next);
+    expect(ctx.getNextErr()).toBe(err);
+  });
+
+  it("passes an optional block reason through to the service", async () => {
+    const spy = vi
+      .spyOn(service, "deactivateAutoApprovalRule")
+      .mockResolvedValue(makeView({ active: false }));
+    const ctx = makeCtx({
+      params: { id: RULE_ID },
+      body: { reason: "  Reported by resident committee  " },
+      guardId: GUARD_ID,
+    });
+    await handleDeactivateAutoApprovalRule(ctx.req, ctx.res, ctx.next);
+    expect(ctx.getStatus()).toBe(200);
+    expect(spy.mock.calls[0][4]).toBe("Reported by resident committee");
+  });
+
+  it("returns 422 for a too-short reason or unknown body fields", async () => {
+    for (const body of [{ reason: "x" }, { reason: "valid reason", extra: 1 }]) {
+      const spy = vi.spyOn(service, "deactivateAutoApprovalRule");
+      const ctx = makeCtx({ params: { id: RULE_ID }, body, guardId: GUARD_ID });
+      await handleDeactivateAutoApprovalRule(ctx.req, ctx.res, ctx.next);
+      expect(ctx.getStatus()).toBe(422);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("Route: POST /api/auto-approval-rules/:id/clear-block", () => {
+  it("requires a reason of at least 3 characters", async () => {
+    for (const body of [undefined, {}, { reason: "  " }, { reason: "ok" }]) {
+      const spy = vi.spyOn(registrationService, "clearResidentRuleBlock");
+      const ctx = makeCtx({ params: { id: RULE_ID }, body, guardId: GUARD_ID });
+      await handleClearAutoApprovalRuleBlock(ctx.req, ctx.res, ctx.next);
+      expect(ctx.getStatus()).toBe(422);
+      expect(ctx.getJson()).toMatchObject({ error: { code: "RULE_INVALID_INPUT", field: "reason" } });
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    }
+  });
+
+  it("returns 422 when :id is not a UUID", async () => {
+    const ctx = makeCtx({ params: { id: "nope" }, body: { reason: "valid reason" }, guardId: GUARD_ID });
+    await handleClearAutoApprovalRuleBlock(ctx.req, ctx.res, ctx.next);
+    expect(ctx.getStatus()).toBe(422);
+    expect(ctx.getJson()).toMatchObject({ error: { field: "id" } });
+  });
+
+  it("calls the service with the acting admin and trimmed reason", async () => {
+    const spy = vi.spyOn(registrationService, "clearResidentRuleBlock").mockResolvedValue({
+      ruleId: RULE_ID,
+      registrationId: "reg-1",
+      blockClearedAt: new Date().toISOString(),
+    });
+    const ctx = makeCtx({ params: { id: RULE_ID }, body: { reason: " Verified with owner " }, guardId: GUARD_ID });
+    await handleClearAutoApprovalRuleBlock(ctx.req, ctx.res, ctx.next);
+    expect(ctx.getStatus()).toBe(200);
+    expect(spy.mock.calls[0].slice(0, 3)).toEqual([GUARD_ID, RULE_ID, "Verified with owner"]);
+  });
+
+  it("propagates ServiceError (REGISTRATION_NOT_BLOCKED) to next()", async () => {
+    const err = new ServiceError("REGISTRATION_NOT_BLOCKED", "not blocked", 409);
+    vi.spyOn(registrationService, "clearResidentRuleBlock").mockRejectedValue(err);
+    const ctx = makeCtx({ params: { id: RULE_ID }, body: { reason: "valid reason" }, guardId: GUARD_ID });
+    await handleClearAutoApprovalRuleBlock(ctx.req, ctx.res, ctx.next);
     expect(ctx.getNextErr()).toBe(err);
   });
 });

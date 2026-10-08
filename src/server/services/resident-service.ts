@@ -788,11 +788,24 @@ export async function deactivateResident(
       );
     }
 
+    // Rules this resident registered (household members, vehicles) stop
+    // firing with their access; the vehicle path also checks is_active.
+    const disabledRules = await tx
+      .update(autoApprovalRules)
+      .set({ active: false, updatedAt: now })
+      .where(
+        and(
+          eq(autoApprovalRules.createdByResidentId, residentId),
+          eq(autoApprovalRules.active, true),
+        ),
+      )
+      .returning({ id: autoApprovalRules.id });
+
     return emitAuditEvent(
       "resident_deactivated",
       adminGuardId,
       traceId,
-      { residentId, unitId: updated[0].unitId },
+      { residentId, unitId: updated[0].unitId, disabledRuleCount: disabledRules.length },
       { tx },
     );
   });

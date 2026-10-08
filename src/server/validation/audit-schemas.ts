@@ -30,6 +30,11 @@ const AUDIT_EVENT_TYPES = [
   "unit_claim_code_issued",
   "resident_claimed",
   "resident_deactivated",
+  "resident_registration_created",
+  "resident_registration_removed",
+  "resident_registration_renewed",
+  "resident_registration_blocked",
+  "resident_registration_block_cleared",
 ] as const;
 
 /**
