@@ -1551,7 +1551,7 @@ export const residents = pgTable(
       "residents_name_bounded",
       sql`length(trim(${table.displayName})) BETWEEN 1 AND 120`
     ),
-    check("residents_phone_e164_format", sql`${table.phoneE164} ~ '^\+[1-9][0-9]{7,14}$'`),
+    check("residents_phone_e164_format", sql`${table.phoneE164} ~ '^\\+[1-9][0-9]{7,14}$'`),
     check(
       "residents_deactivation_consistent",
       sql`(${table.isActive} = true AND ${table.deactivatedAt} IS NULL AND ${table.deactivatedByGuardId} IS NULL) OR (${table.isActive} = false AND ${table.deactivatedAt} IS NOT NULL AND ${table.deactivatedByGuardId} IS NOT NULL)`
