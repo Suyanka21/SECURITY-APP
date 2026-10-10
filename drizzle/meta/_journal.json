@@ -10,6 +10,13 @@
       "breakpoints": true
     },
     {
+      "idx": 1,
+      "version": "7",
+      "when": 1778690000000,
+      "tag": "0001_audit_payload_text_to_jsonb",
+      "breakpoints": true
+    },
+    {
       "idx": 2,
       "version": "7",
       "when": 1778712055762,
