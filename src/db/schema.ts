@@ -170,7 +170,9 @@ export const guards = pgTable("guards", {
   updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  check("guards_role_check", sql`${table.role} IN ('guard', 'senior-guard', 'admin')`),
+]);
 
 // ─── Table 2: Authorization Decisions ────────────────────────────────────────
 // Source: contract §3.1 QR validation — preApprovalId links to approval record
@@ -270,6 +272,7 @@ export const authorizationDecisions = pgTable(
       "authorization_unit_not_empty",
       sql`length(trim(${table.unit})) > 0`
     ),
+    index("authorization_decisions_pass_ref_idx").on(table.passRef),
   ]
 );
 
@@ -393,6 +396,9 @@ export const entryRecords = pgTable(
       "entry_delivery_category_coherence",
       sql`(${table.entryKind} = 'visitor' AND ${table.deliveryCategory} IS NULL) OR (${table.entryKind} = 'delivery' AND ${table.deliveryCategory} IS NOT NULL)`
     ),
+    index("idx_entry_records_delivery")
+      .on(table.entryKind, table.deliveryCategory)
+      .where(sql`${table.entryKind} = 'delivery'`),
   ]
 );
 
@@ -427,7 +433,9 @@ export const exitRecords = pgTable("exit_records", {
   createdAt: timestamp("created_at", { precision: 3, withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  index("exit_records_guard_id_idx").on(table.guardId),
+]);
 
 // ─── Table 3c: Guard Notes ──────────────────────────────────────────────────
 // Source: src/docs/specs/guard-notes.md §§3–5 (Feature 9).
@@ -481,6 +489,9 @@ export const guardNotes = pgTable(
       "guard_note_text_coherence",
       sql`(${table.tag} = 'other' AND ${table.noteText} IS NOT NULL AND length(trim(${table.noteText})) BETWEEN 1 AND 280) OR (${table.tag} != 'other' AND ${table.noteText} IS NULL)`
     ),
+    index("guard_notes_entry_id_idx").on(table.entryId),
+    index("guard_notes_exit_id_idx").on(table.exitId),
+    index("guard_notes_guard_id_idx").on(table.guardId),
   ]
 );
 
@@ -1265,9 +1276,7 @@ export const autoApprovalRules = pgTable(
       "auto_approval_positive_ttl",
       sql`${table.expiresAt} > ${table.createdAt}`
     ),
-    // Lookup index for the evaluator. The functional partial UNIQUE index
-    // (on lower(name), lower(host), lower(unit) WHERE active=true) is
-    // created in the migration SQL.
+    // Lookup index for the evaluator.
     index("auto_approval_rules_triple_idx").on(
       table.visitorName,
       table.host,
@@ -1279,6 +1288,9 @@ export const autoApprovalRules = pgTable(
       "auto_approval_exactly_one_creator",
       sql`num_nonnulls(${table.createdByGuardId}, ${table.createdByResidentId}) = 1`
     ),
+    uniqueIndex("auto_approval_rules_active_triple_uniq")
+      .on(sql`lower(${table.visitorName})`, sql`lower(${table.host})`, sql`lower(${table.unit})`)
+      .where(sql`${table.active} = true`),
   ]
 );
 
@@ -1427,15 +1439,21 @@ export const visitorProfiles = pgTable(
       "visitor_profile_soft_delete_consistent",
       sql`((${table.deletedAt} IS NULL) AND (${table.deletedByGuardId} IS NULL) AND (${table.deletedByResidentId} IS NULL)) OR ((${table.deletedAt} IS NOT NULL) AND (num_nonnulls(${table.deletedByGuardId}, ${table.deletedByResidentId}) = 1))`
     ),
-    // Resident-scoped listings + creator attribution. The functional
-    // partial UNIQUE index on (lower(name), lower(host), lower(unit))
-    // WHERE deleted_at IS NULL lives in the migration SQL.
-    index("visitor_profiles_host_unit_idx").on(table.host, table.unit),
+    // Resident-scoped listings + creator attribution.
+    index("visitor_profiles_host_unit_idx")
+      .on(table.host, table.unit)
+      .where(sql`${table.deletedAt} IS NULL`),
     index("visitor_profiles_creator_idx").on(table.createdByGuardId),
     check(
       "visitor_profile_exactly_one_creator",
       sql`num_nonnulls(${table.createdByGuardId}, ${table.createdByResidentId}) = 1`
     ),
+    index("visitor_profiles_watch_idx")
+      .on(table.watchFlag)
+      .where(sql`${table.watchFlag} = true AND ${table.deletedAt} IS NULL`),
+    uniqueIndex("visitor_profiles_active_triple_uniq")
+      .on(sql`lower(${table.visitorName})`, sql`lower(${table.host})`, sql`lower(${table.unit})`)
+      .where(sql`${table.deletedAt} IS NULL`),
   ]
 );
 
@@ -1876,6 +1894,7 @@ export const auditEvents = pgTable(
       "audit_events_exactly_one_actor",
       sql`num_nonnulls(${table.guardId}, ${table.residentId}) = 1`
     ),
+    index("idx_audit_events_payload_gin").using("gin", table.payload),
   ]
 );
 
