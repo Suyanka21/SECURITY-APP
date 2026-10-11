@@ -177,4 +177,12 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
 DO $$ BEGIN
  ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_exactly_one_actor" CHECK (num_nonnulls("guard_id", "resident_id") = 1);
-EXCEPTION WHEN duplicate_object THEN null; END $$;
+EXCEPTION WHEN duplicate_object THEN null; END $$;--> statement-breakpoint
+
+-- Step 8: Row-Level Security on the new tables (checklist A3: every public
+-- table). No policies: only the server's direct connection (table owner)
+-- reads these tables; the Supabase REST anon/authenticated roles get nothing.
+ALTER TABLE "units" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "residents" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "unit_claim_codes" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "resident_claim_attempts" ENABLE ROW LEVEL SECURITY;

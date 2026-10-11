@@ -97,4 +97,8 @@ END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "unit_registrations_resident_idx" ON "unit_registrations" USING btree ("resident_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "unit_registrations_rule_idx" ON "unit_registrations" USING btree ("auto_approval_rule_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "unit_registrations_active_block_idx" ON "unit_registrations" USING btree ("unit_id", "kind") WHERE "unit_registrations"."blocked_at" IS NOT NULL AND "unit_registrations"."block_cleared_at" IS NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "unit_registrations_active_vehicle_plate_unique" ON "unit_registrations" USING btree ("unit_id", "plate_norm") WHERE "unit_registrations"."kind" = 'vehicle' AND "unit_registrations"."deleted_at" IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "unit_registrations_active_vehicle_plate_unique" ON "unit_registrations" USING btree ("unit_id", "plate_norm") WHERE "unit_registrations"."kind" = 'vehicle' AND "unit_registrations"."deleted_at" IS NULL;--> statement-breakpoint
+
+-- Row-Level Security on the new table (checklist A3: every public table).
+-- No policies: only the server's direct connection (table owner) reads it.
+ALTER TABLE "unit_registrations" ENABLE ROW LEVEL SECURITY;

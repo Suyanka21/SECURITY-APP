@@ -53,7 +53,7 @@ controls are excluded from the bundle. Verify: `grep -c "Simulate offline" dist/
 
 - `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `PIN_PEPPER`, any `JWT_SECRET`.
 - `.env`, `.env.local`, `.env.production` files (only `.env.example` is tracked).
-- Any credential from the compromised project `uawkuimxaxbhrccfhoag`.
+- Any credential from the compromised Supabase project (see [pilot checklist A1](./pilot-launch-checklist.md)). Its keys are revoked; never look them up, copy them or reuse them.
 
 Check before every deploy: `git status` shows no `.env*` staged; `grep -rl service_role dist/` returns nothing.
 
