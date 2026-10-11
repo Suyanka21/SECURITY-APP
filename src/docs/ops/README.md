@@ -27,6 +27,7 @@ Start here if you are preparing, running or reviewing the GatePass pilot.
 | Document | For whom | Purpose |
 |---|---|---|
 | [Pilot launch checklist](./pilot-launch-checklist.md) | Everyone signing off | Every check, owner and verification before go-live; accepted gaps; sign-off table. |
+| [Live migration runbook](./live-migration-runbook.md) | Technical owner | Exact commands, backup check, per-file checks and failure handling for applying 0014–0016 and the reconcile file to live. |
 | [Environment & configuration checklist](./environment-configuration-checklist.md) | Technical contact | Every variable, what happens if it is missing, what must never be exposed, rotation. |
 | [Operations runbook](./operations-runbook.md) | Guards, supervisors, technical contact | Day-to-day: accounts, offline, sync, audit, locked passes, handover, lost devices. |
 | [Admin & supervisor SOPs](./admin-sops.md) | Senior guards, admins | Step-by-step procedures with records to keep. |
