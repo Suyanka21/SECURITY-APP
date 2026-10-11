@@ -4,15 +4,18 @@ Applies `drizzle/0014_units_residents.sql`, `drizzle/0015_unit_registrations.sql
 `drizzle/0016_rls_pre_r1_tables.sql` and `scripts/sql/live-reconcile-pre-r1.sql`
 to the live Supabase project `kljrjofhzfbidddxtlkc` (checklist rows A2a, A3).
 Do the steps in order and stop at the first one that doesn't give the expected
-result. Paste every command's full output into the go-ahead thread.
+result. Paste every command's full output into the go-ahead thread, after checking it contains no
+password or key (the commands below keep the password out of the URL; redact anything that slips through).
 
 ## 0. Preconditions (all required)
 
 - A **written go-ahead** from the estate's technical owner, naming this runbook.
   The reconcile file needs its own go-ahead line.
-- `main` contains the reconcile file with all 11 indexes, and the CI job
-  "Test (integration, Postgres)" is green on `main`. Record the commit:
-  `git rev-parse HEAD`.
+- `main` contains the reconcile file with all 11 indexes (PR #41).
+- The integration CI job from PR #40's YAML has been added to
+  `.github/workflows/ci.yml` by the owner and is green on `main`. Until that job
+  exists this precondition is **not** met; don't substitute a local run without
+  the owner's written agreement. Record the commit: `git rev-parse HEAD`.
 - The R1–R3 server is **not** deployed yet. Every change is additive:
   - new tables, new nullable columns and new enum values;
   - `DROP NOT NULL` on three attribution columns;
@@ -31,7 +34,9 @@ transaction pooler (port `6543`) that the app's `DATABASE_URL` uses. Copy the
 session string from Dashboard → Connect.
 
 ```bash
-export LIVE_DDL_URL='postgresql://postgres.kljrjofhzfbidddxtlkc:<password>@aws-0-eu-north-1.pooler.supabase.com:5432/postgres'
+# password goes in PGPASSWORD (or ~/.pgpass), never in the URL, so it can't appear in output
+read -rs PGPASSWORD && export PGPASSWORD
+export LIVE_DDL_URL='postgresql://postgres.kljrjofhzfbidddxtlkc@aws-0-eu-north-1.pooler.supabase.com:5432/postgres'
 psql "$LIVE_DDL_URL" -X -Atc "select current_user, inet_server_port(), version()"
 # expect: postgres.kljrjofhzfbidddxtlkc-style login resolving to user postgres, PostgreSQL 17.x
 ```
@@ -212,9 +217,14 @@ Only then deploy the R1–R3 server.
   down migrations. Stop, keep the old server running, and decide with the
   technical owner between:
   - a reviewed reverse script for that file, or
-  - restoring from the step 1 backup (dashboard restore or point-in-time
-    recovery, or `pg_restore --clean --if-exists --schema=public` from the
-    logical dump).
+  - restoring from the step 1 backup with the dashboard restore or point-in-time
+    recovery. Stop the app server first: writes made after the backup are lost.
+
+  Don't run `pg_restore --clean` from the logical dump against live: the dump
+  doesn't contain the new tables, which reference `guards`, so dropping the old
+  tables fails and pg_restore carries on into a mix of old and new objects. Use
+  the logical dump only to restore into a new, empty project or a scratch
+  database (and copy data back from there under a reviewed script).
 
   Don't improvise DDL on live.
 
@@ -229,5 +239,10 @@ The database was set up like live:
 - seed rows with mixed-case names.
 
 Every file exited 0, all 18 tables have RLS, and every new constraint and index
-was validated against the seeded rows. Repeat it with
-`scripts/schema-equivalence.sh` (`COMPARE_DB=`) after any change to these files.
+was validated against the seeded rows. After any change to these files, repeat
+the rehearsal and compare the result with a SQL-built database:
+`COMPARE_DB=<rehearsal db> scripts/schema-equivalence.sh` (the `COMPARE_DB`
+option comes from PR #41). It diffs that database against a freshly built
+`gp_eq_sql` and writes `schema-equivalence.diff`; only column order, the 4 known
+name differences and rehearsal-only stub objects (`auth` schema, event trigger,
+auth FKs) should appear.
