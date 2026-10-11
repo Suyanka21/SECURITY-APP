@@ -7,6 +7,10 @@
 --   exit_records_guard_id_idx (0007), idx_entry_records_delivery (0008),
 --   idx_audit_events_payload_gin (0001); visitor_profiles_host_unit_idx is a
 --   full index there instead of partial (0005).
+-- Present on live but not declared in schema.ts before PR #40, so missing from
+-- any other push-built database: authorization_decisions_pass_ref_idx (0012),
+-- guard_notes_entry_id_idx, guard_notes_exit_id_idx, guard_notes_guard_id_idx
+-- (0011). Definitions copied from live's pg_indexes.indexdef; no-op on live.
 --
 -- Not a numbered migration: fresh databases get all of this from drizzle/*.sql.
 -- Idempotent: running it twice, or on a SQL-built database, changes nothing.
@@ -46,6 +50,14 @@ CREATE INDEX IF NOT EXISTS idx_entry_records_delivery
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_payload_gin
   ON public.audit_events USING gin (payload);
+
+CREATE INDEX IF NOT EXISTS authorization_decisions_pass_ref_idx ON public.authorization_decisions USING btree (pass_ref);
+
+CREATE INDEX IF NOT EXISTS guard_notes_entry_id_idx ON public.guard_notes USING btree (entry_id);
+
+CREATE INDEX IF NOT EXISTS guard_notes_exit_id_idx ON public.guard_notes USING btree (exit_id);
+
+CREATE INDEX IF NOT EXISTS guard_notes_guard_id_idx ON public.guard_notes USING btree (guard_id);
 
 -- visitor_profiles_host_unit_idx: replace the full index with the partial one,
 -- only if the existing index has no WHERE clause.
