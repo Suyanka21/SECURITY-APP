@@ -11,6 +11,8 @@
 #   PSQL_URL  the same server as seen by $PSQL/$PG_DUMP (default $PG_URL)
 #   PSQL, PG_DUMP  clients (default psql, pg_dump), e.g. "docker exec -i gp-pg psql"
 #   OUT       diff output path (default ./schema-equivalence.diff)
+#   COMPARE_DB  existing database to diff against instead of building
+#             gp_eq_push; it is only dumped, never dropped or modified
 # The databases gp_eq_sql and gp_eq_push are dropped and recreated.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -21,8 +23,10 @@ PG_DUMP="${PG_DUMP:-pg_dump}"
 OUT="${OUT:-schema-equivalence.diff}"
 SQL_DB=gp_eq_sql
 PUSH_DB=gp_eq_push
+OTHER_DB="${COMPARE_DB:-$PUSH_DB}"
 
-for db in "$SQL_DB" "$PUSH_DB"; do
+dbs=("$SQL_DB"); [ -n "${COMPARE_DB:-}" ] || dbs+=("$PUSH_DB")
+for db in "${dbs[@]}"; do
   $PSQL "$PSQL_URL/postgres" -X -q -v ON_ERROR_STOP=1 \
     -c "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db"
 done
@@ -30,13 +34,15 @@ done
 echo "### SQL files"
 PSQL="$PSQL" scripts/build-db-from-sql.sh "$PSQL_URL/$SQL_DB"
 
-echo "### drizzle-kit push"
-DATABASE_URL="$PG_URL/$PUSH_DB" npx drizzle-kit push --force | tail -1
+if [ -z "${COMPARE_DB:-}" ]; then
+  echo "### drizzle-kit push"
+  DATABASE_URL="$PG_URL/$PUSH_DB" npx drizzle-kit push --force | tail -1
+fi
 
 dump() {
   $PG_DUMP "$PSQL_URL/$1" --schema-only --no-owner --no-privileges \
     | grep -v -e '^\\restrict' -e '^\\unrestrict'
 }
-diff -u --label "push ($PUSH_DB)" --label "sql files ($SQL_DB)" \
-  <(dump "$PUSH_DB") <(dump "$SQL_DB") > "$OUT" || true
+diff -u --label "$OTHER_DB" --label "sql files ($SQL_DB)" \
+  <(dump "$OTHER_DB") <(dump "$SQL_DB") > "$OUT" || true
 echo "### diff: $(grep -c '^[-+][^-+]' "$OUT" || true) changed lines -> $OUT"
