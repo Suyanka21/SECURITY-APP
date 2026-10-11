@@ -1,6 +1,7 @@
 import { defineConfig } from "vitest/config";
 import path from "path";
 import dotenv from "dotenv";
+import { assertLocalDatabaseUrl } from "./src/server/__tests__/integration/hosted-db-guard";
 
 // Load .env.local for database credentials
 dotenv.config({ path: ".env.local" });
@@ -15,6 +16,8 @@ if (!process.env.DATABASE_URL && process.env.SUPABASE_DATABASE_URL) {
     process.env.DATABASE_URL = match[1];
   }
 }
+assertLocalDatabaseUrl(process.env.DATABASE_URL);
+
 /**
  * Vitest configuration for integration tests (real PostgreSQL).
  *
