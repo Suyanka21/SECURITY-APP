@@ -24,6 +24,7 @@ OUT="${OUT:-schema-equivalence.diff}"
 SQL_DB=gp_eq_sql
 PUSH_DB=gp_eq_push
 OTHER_DB="${COMPARE_DB:-$PUSH_DB}"
+[ "${COMPARE_DB:-}" != "$SQL_DB" ] || { echo "COMPARE_DB must not be $SQL_DB (it is rebuilt)" >&2; exit 2; }
 
 dbs=("$SQL_DB"); [ -n "${COMPARE_DB:-}" ] || dbs+=("$PUSH_DB")
 for db in "${dbs[@]}"; do
