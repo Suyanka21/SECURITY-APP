@@ -7,6 +7,8 @@ describe("assertLocalDatabaseUrl", () => {
     "postgresql://postgres.abcdefghijklmnopqrst:s3cret@aws-0-eu-north-1.pooler.supabase.com:5432/postgres",
     "postgresql://postgres:s3cret@db.abcdefghijklmnopqrst.supabase.co:5432/postgres",
     "postgres://postgres:s3cret@DB.ABCDEFGHIJKLMNOPQRST.SUPABASE.CO/postgres",
+    "postgresql://postgres:s3cret@db.abcdefghijklmnopqrst.supabase.co.:5432/postgres",
+    "postgresql://postgres.ref:s3cret@aws-0-eu-north-1.pooler.supabase.com../postgres",
   ])("refuses a hosted Supabase URL: %s", (url) => {
     expect(() => assertLocalDatabaseUrl(url)).toThrow(/Refusing to run integration tests/);
   });

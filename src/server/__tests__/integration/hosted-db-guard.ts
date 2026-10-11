@@ -1,7 +1,7 @@
 const HOSTED_DOMAINS = ["supabase.co", "supabase.com"];
 
 function isHostedHost(host: string): boolean {
-  const h = host.toLowerCase();
+  const h = host.toLowerCase().replace(/\.+$/, "");
   return HOSTED_DOMAINS.some((d) => h === d || h.endsWith(`.${d}`));
 }
 
