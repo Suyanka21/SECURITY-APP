@@ -9,6 +9,15 @@ password or key (the commands below keep the password out of the URL; redact any
 
 ## 0. Preconditions (all required)
 
+**Order:**
+1. merge #41;
+2. merge #42;
+3. paste the CI YAML via the GitHub web UI;
+4. see the integration job green on `main`;
+5. take the backups (section 1);
+6. give the written go-ahead.
+
+
 - A **written go-ahead** from the estate's technical owner, naming this runbook.
   The reconcile file needs its own go-ahead line.
 - `main` contains the reconcile file with all 11 indexes (PR #41).
@@ -22,26 +31,49 @@ password or key (the commands below keep the password out of the URL; redact any
   - new CHECKs that existing rows satisfy (section 2, query `r`).
 
   So the server that is running now keeps working during and after the run.
-- psql and pg_dump 17 (`psql --version`), because live runs Postgres 17.6.
 - Run it in a quiet period. It takes seconds, but the `ALTER TABLE`s take short
   exclusive locks on `audit_events`, `visitor_profiles`, `auto_approval_rules`,
   `authorization_decisions` and `guards`.
+
+### What you need on your machine
+
+- `psql` and `pg_dump` version 17, because live runs Postgres 17.6.
+- A checkout of this repo at the commit recorded above.
+- An encrypted place (disk or volume) for the backup dump. Only the technical
+  owner should be able to read it.
+
+```bash
+psql --version          # psql (PostgreSQL) 17.x
+pg_dump --version       # pg_dump (PostgreSQL) 17.x
+pg_restore --version    # pg_restore (PostgreSQL) 17.x
+git rev-parse HEAD      # the commit recorded in the preconditions
+git status --short      # empty: no local edits to the files being applied
+```
+
+If any of these is missing or prints something else, stop. Don't improvise:
+don't use another client version, another checkout, or an unencrypted
+location.
 
 ### Connection
 
 Use the **session** pooler (port `5432`) or the direct connection, not the
 transaction pooler (port `6543`) that the app's `DATABASE_URL` uses. Copy the
-session string from Dashboard → Connect.
+session-pooler string from Dashboard → Connect; don't type the host by hand.
 
 ```bash
 # password goes in PGPASSWORD (or ~/.pgpass), never in the URL, so it can't appear in output
 read -rs PGPASSWORD && export PGPASSWORD
-export LIVE_DDL_URL='postgresql://postgres.kljrjofhzfbidddxtlkc@aws-0-eu-north-1.pooler.supabase.com:5432/postgres'
+# paste the session-pooler string from Dashboard -> Connect, with the [YOUR-PASSWORD] part removed
+read -r LIVE_DDL_URL && export LIVE_DDL_URL
+printf '%s\n' "$LIVE_DDL_URL" | sed -E 's#^[a-z]+://([^:@]+).*#user=\1#'   # expect: user=postgres.kljrjofhzfbidddxtlkc
 psql "$LIVE_DDL_URL" -X -Atc "select current_user, inet_server_port(), version()"
-# expect: postgres.kljrjofhzfbidddxtlkc-style login resolving to user postgres, PostgreSQL 17.x
+# expect: postgres|5432|PostgreSQL 17.x
 ```
 
-Before going on, check that the host and user contain `kljrjofhzfbidddxtlkc`.
+Before going on, check that the **user** part of the connection string is
+exactly `postgres.kljrjofhzfbidddxtlkc`. With the Supabase pooler, the user
+carries the project ref, and that's what selects the project. If it shows any
+other ref, stop.
 Never use `uawkuimxaxbhrccfhoag` (see the A1 compromise note).
 
 ## 1. Confirm a backup exists
