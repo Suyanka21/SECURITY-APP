@@ -104,7 +104,13 @@ export function collectProductionConfigProblems(
     problems.push({ name: "SUPABASE_URL", reason: "must be an https:// URL" });
   }
 
-  requirePresent(env, "SUPABASE_SERVICE_ROLE_KEY", problems);
+  const secretKey = requirePresent(env, "SUPABASE_SECRET_KEY", problems);
+  if (secretKey && !secretKey.startsWith("sb_secret_")) {
+    problems.push({
+      name: "SUPABASE_SECRET_KEY",
+      reason: "must be a Supabase secret key (sb_secret_…), not a publishable or legacy key",
+    });
+  }
 
   const origins = requirePresent(env, "ALLOWED_ORIGINS", problems);
   if (origins) {

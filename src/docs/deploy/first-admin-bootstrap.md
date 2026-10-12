@@ -22,7 +22,7 @@ them are echoed by the script.
 | Variable | Purpose |
 |---|---|
 | `SUPABASE_URL` | Project base URL (no `/rest/v1`). |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Admin Auth key. **Never** `VITE_`-prefixed, never sent to the browser, never logged. |
+| `SUPABASE_SECRET_KEY` | Server-only Admin Auth key (`sb_secret_…`; the legacy `service_role` JWT is refused). **Never** `VITE_`-prefixed, never sent to the browser, never logged. |
 | `DATABASE_URL` | Postgres URI. Use the **session pooler `:5432`** (the script auto-rewrites `:6543`→`:5432`). Paste the URI only — no `DATABASE_URL=` prefix, no quotes. |
 | `BOOTSTRAP_ADMIN_EMAIL` | Email for the first admin's Supabase Auth login. |
 | `BOOTSTRAP_ADMIN_NAME` | Display name stored on the `guards` row. |
@@ -64,9 +64,9 @@ The script is safe to run more than once:
 So the intended lifecycle is: run once to create the first admin; any later run
 is a harmless no-op.
 
-## 5. Handling the service-role key safely
+## 5. Handling the secret key safely
 
-- Keep `SUPABASE_SERVICE_ROLE_KEY` only in the server/bootstrap environment.
+- Keep `SUPABASE_SECRET_KEY` only in the server/bootstrap environment.
 - It is never `VITE_`-prefixed (Vite would otherwise bundle it into the browser).
 - The script and the API never print, log, or return it.
 - Rotate it if it is ever exposed, and re-run nothing — the admin already exists.

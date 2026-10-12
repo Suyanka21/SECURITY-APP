@@ -12,11 +12,11 @@
  *     it is a standalone script (`node scripts/bootstrap-first-admin.mjs`).
  *   - IDEMPOTENT. If ANY admin already exists in `guards`, it refuses and
  *     no-ops with a clear message — it can never mint a second "first" admin.
- *   - The SUPABASE_SERVICE_ROLE_KEY is read from the environment inside THIS
+ *   - The SUPABASE_SECRET_KEY (sb_secret_…) is read from the environment inside THIS
  *     process only. It is never printed, logged, or written anywhere.
  *
  * REQUIRED ENV (see .env.local / deploy docs):
- *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, DATABASE_URL
+ *   SUPABASE_URL, SUPABASE_SECRET_KEY, DATABASE_URL
  *   BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_BADGE
  *   BOOTSTRAP_ADMIN_PASSWORD (optional — a strong one is generated if absent)
  *
@@ -33,7 +33,7 @@ const { Client } = pg;
 // ─── Config (no secrets echoed) ──────────────────────────────────────────────
 
 const base = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
-const svc = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const svc = process.env.SUPABASE_SECRET_KEY;
 // Session pooler (5432) is required for reliable DDL/session statements.
 const dbUrl = (process.env.DATABASE_URL || "").replace(":6543", ":5432");
 
@@ -54,7 +54,8 @@ function fail(msg) {
 }
 
 if (!base) fail("SUPABASE_URL is not set");
-if (!svc) fail("SUPABASE_SERVICE_ROLE_KEY is not set");
+if (!svc) fail("SUPABASE_SECRET_KEY is not set");
+if (!svc.startsWith("sb_secret_")) fail("SUPABASE_SECRET_KEY must be a Supabase secret key (sb_secret_…)");
 if (!dbUrl) fail("DATABASE_URL is not set");
 if (!email) fail("BOOTSTRAP_ADMIN_EMAIL is not set");
 if (!name) fail("BOOTSTRAP_ADMIN_NAME is not set");
@@ -62,7 +63,6 @@ if (!badge) fail("BOOTSTRAP_ADMIN_BADGE is not set");
 
 const H = {
   apikey: svc,
-  Authorization: `Bearer ${svc}`,
   "Content-Type": "application/json",
 };
 

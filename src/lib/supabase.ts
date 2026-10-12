@@ -29,9 +29,9 @@ export function getSupabaseClient(): SupabaseClient | null {
   if (cached !== undefined) return cached;
 
   const rawUrl = readEnv("VITE_SUPABASE_URL");
-  const anonKey = readEnv("VITE_SUPABASE_ANON_KEY");
+  const publishableKey = readEnv("VITE_SUPABASE_PUBLISHABLE_KEY");
 
-  if (!rawUrl || !anonKey) {
+  if (!rawUrl || !publishableKey) {
     cached = null;
     return cached;
   }
@@ -39,7 +39,7 @@ export function getSupabaseClient(): SupabaseClient | null {
   // Tolerate a trailing slash or an accidental /rest/v1 suffix in the env var.
   const url = rawUrl.replace(/\/+$/, "").replace(/\/rest\/v1$/, "");
 
-  cached = createClient(url, anonKey, {
+  cached = createClient(url, publishableKey, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
