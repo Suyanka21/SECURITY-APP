@@ -7,7 +7,8 @@
  * Mirrors src/db/index.ts: a hosted database is verified by default.
  *   DATABASE_SSL_ROOT_CERT            path to the project's CA certificate
  *                                     (Dashboard → Database → SSL → Download)
- *   DATABASE_SSL_REJECT_UNAUTHORIZED  "false" is an explicit, logged opt-out
+ *   DATABASE_SSL_REJECT_UNAUTHORIZED  "false" is an explicit, logged opt-out,
+ *                                     refused when NODE_ENV=production
  * A localhost database uses no TLS.
  */
 
@@ -26,6 +27,12 @@ export function scriptPgSsl(databaseUrl, log = console.warn) {
   if (caPath) return { ca: readFileSync(caPath, "utf8"), rejectUnauthorized: true };
 
   if (process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === "false") {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "DATABASE_SSL_REJECT_UNAUTHORIZED=false is refused when NODE_ENV=production; " +
+          "set DATABASE_SSL_ROOT_CERT to the project's CA certificate instead",
+      );
+    }
     log("[pg-ssl] WARNING: DATABASE_SSL_REJECT_UNAUTHORIZED=false — TLS is on but the server certificate is NOT verified.");
     return { rejectUnauthorized: false };
   }
