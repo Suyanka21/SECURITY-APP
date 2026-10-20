@@ -29,6 +29,7 @@
 import dotenv from "dotenv";
 import pg from "pg";
 import { isLocalHost, scriptPgSsl } from "./lib/pg-ssl.mjs";
+import { redactDbUrl } from "./lib/redact.mjs";
 
 dotenv.config({ path: ".env.local", quiet: true });
 dotenv.config({ quiet: true });
@@ -44,7 +45,7 @@ const USERS = [
 const MIN_PASSWORD_LENGTH = 12;
 
 function fail(msg) {
-  console.error(`[seed-dev-users] ERROR: ${msg}`);
+  console.error(`[seed-dev-users] ERROR: ${redactDbUrl(msg, process.env.DATABASE_URL)}`);
   process.exit(1);
 }
 
@@ -147,14 +148,21 @@ async function main() {
     for (const u of USERS) {
       const { id, action } = await upsertAuthUser(u.email, process.env[u.passwordVar]);
       if (u.role) {
-        await client.query(
+        // Only (re)claims the badge when it is unlinked or already this login's.
+        const upserted = await client.query(
           `INSERT INTO guards (badge_number, name, role, supabase_user_id, is_active)
            VALUES ($1, $2, $3, $4, true)
            ON CONFLICT (badge_number) DO UPDATE
              SET name = EXCLUDED.name, role = EXCLUDED.role,
-                 supabase_user_id = EXCLUDED.supabase_user_id, is_active = true`,
+                 supabase_user_id = EXCLUDED.supabase_user_id, is_active = true
+             WHERE guards.supabase_user_id IS NULL
+                OR guards.supabase_user_id = EXCLUDED.supabase_user_id
+           RETURNING id`,
           [u.badge, u.name, u.role, id],
         );
+        if (upserted.rows.length === 0) {
+          fail(`badge ${u.badge} already belongs to another login; refusing to take it over`);
+        }
         console.log(`[seed-dev-users] ${u.email}: auth ${action}, guards ${u.badge} role=${u.role}`);
       } else {
         const linked = await client.query("SELECT badge_number FROM guards WHERE supabase_user_id = $1", [id]);

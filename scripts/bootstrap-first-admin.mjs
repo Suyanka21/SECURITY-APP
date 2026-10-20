@@ -28,6 +28,7 @@ import "dotenv/config";
 import { randomBytes } from "crypto";
 import pg from "pg";
 import { scriptPgSsl } from "./lib/pg-ssl.mjs";
+import { redactDbUrl } from "./lib/redact.mjs";
 
 const { Client } = pg;
 
@@ -166,5 +167,5 @@ async function main() {
 
 main().catch((err) => {
   // Surface a safe message; never dump env or secrets.
-  fail(err instanceof Error ? err.message : String(err));
+  fail(redactDbUrl(err instanceof Error ? err.message : String(err), process.env.DATABASE_URL));
 });
