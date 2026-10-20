@@ -218,8 +218,9 @@ WHERE c.relname IN ('auto_approval_rules_active_triple_uniq','visitor_profiles_a
 ```bash
 psql "$LIVE_DDL_URL" -X -c "SELECT tablename FROM pg_tables WHERE schemaname='public' AND NOT rowsecurity"   # 0 rows
 curl -s -o /dev/stdout -w '\nHTTP %{http_code}\n' "$SUPABASE_URL/rest/v1/residents?select=*" \
-  -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY"
-# expect `[]` with HTTP 200 (RLS, no policies), or HTTP 401/403/404. Any row returned: stop, raise as a security incident.
+  -H "apikey: $VITE_SUPABASE_PUBLISHABLE_KEY"
+# expect exactly `[]` with HTTP 200 (RLS on, no policies). A 401 means the key was rejected,
+# so RLS was NOT checked: fix the key and re-run. Any row returned: stop, raise as a security incident.
 ```
 
 Only then deploy the R1–R3 server.
