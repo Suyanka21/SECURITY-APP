@@ -28,7 +28,7 @@
 
 import dotenv from "dotenv";
 import pg from "pg";
-import { isLocalHost, scriptPgSsl } from "./lib/pg-ssl.mjs";
+import { isLocalHost, scriptPgSsl, stripTlsParams } from "./lib/pg-ssl.mjs";
 import { redactDbUrl } from "./lib/redact.mjs";
 
 dotenv.config({ path: ".env.local", quiet: true });
@@ -140,7 +140,7 @@ async function upsertAuthUser(email, password) {
 
 async function main() {
   const client = new pg.Client({
-    connectionString: rawDbUrl,
+    connectionString: stripTlsParams(rawDbUrl),
     ssl: scriptPgSsl(rawDbUrl),
   });
   await client.connect();

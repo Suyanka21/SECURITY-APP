@@ -27,7 +27,7 @@
 import "dotenv/config";
 import { randomBytes } from "crypto";
 import pg from "pg";
-import { scriptPgSsl } from "./lib/pg-ssl.mjs";
+import { scriptPgSsl, stripTlsParams } from "./lib/pg-ssl.mjs";
 import { redactDbUrl } from "./lib/redact.mjs";
 
 const { Client } = pg;
@@ -101,7 +101,7 @@ async function createAuthUser() {
 
 async function main() {
   const client = new Client({
-    connectionString: dbUrl,
+    connectionString: stripTlsParams(dbUrl),
     ssl: scriptPgSsl(dbUrl),
   });
   await client.connect();

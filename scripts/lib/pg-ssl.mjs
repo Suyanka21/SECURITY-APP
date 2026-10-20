@@ -21,6 +21,16 @@ export function isLocalHost(hostname) {
   return LOCAL_HOSTS.has(hostname);
 }
 
+// node-postgres lets TLS query params in the connection string override the
+// `ssl` object, so they are removed and TLS comes only from scriptPgSsl().
+const TLS_PARAMS = ["ssl", "sslmode", "sslrootcert", "sslcert", "sslkey", "sslpassword", "uselibpqcompat"];
+
+export function stripTlsParams(databaseUrl) {
+  const url = new URL(databaseUrl);
+  for (const p of TLS_PARAMS) url.searchParams.delete(p);
+  return url.toString();
+}
+
 export function scriptPgSsl(databaseUrl, log = console.warn) {
   if (isLocalHost(new URL(databaseUrl).hostname)) return false;
 
