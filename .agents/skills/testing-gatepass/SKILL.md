@@ -18,7 +18,7 @@ description: How to bring up and end-to-end test the GatePass visitor-management
 - `APP_PUBLIC_ORIGIN` — origin baked into resident approval links and pass URLs. If it points at
   a port nothing is serving (e.g. `:8080` while dev runs on `:5173`), the on-screen magic link
   dead-ends with ERR_CONNECTION_REFUSED. Override it to the running frontend origin for demos.
-- `VITE_SUPABASE_ANON_KEY` — if login 401s "Invalid API key", `.env` and `.env.local` disagree;
+- `VITE_SUPABASE_PUBLISHABLE_KEY` — if login 401s "Invalid API key", `.env` and `.env.local` disagree;
   use the working key.
 
 ## Roles (password `GatePass!2026`, all server-resolved from `guards.role`)
@@ -90,7 +90,7 @@ control can undo it. Onboarding keys: `gatepass_welcomed`, `gatepass_role`,
 
 ## Suites
 ```
-env -u SUPABASE_URL -u SUPABASE_SERVICE_ROLE_KEY -u SUPABASE_ANON_KEY npx vitest run --config vitest.server.config.ts
+env -u SUPABASE_URL -u SUPABASE_SECRET_KEY -u SUPABASE_ANON_KEY npx vitest run --config vitest.server.config.ts
 npm test && npx tsc --noEmit && npm run lint && npm run build
 ```
 

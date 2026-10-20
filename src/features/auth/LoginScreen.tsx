@@ -64,7 +64,7 @@ export function LoginScreen() {
             className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
           >
             Login is not configured in this build. Set VITE_SUPABASE_URL and
-            VITE_SUPABASE_ANON_KEY to enable sign-in.
+            VITE_SUPABASE_PUBLISHABLE_KEY to enable sign-in.
           </div>
         )}
 

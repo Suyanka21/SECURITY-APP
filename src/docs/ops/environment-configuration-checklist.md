@@ -19,7 +19,7 @@ and exits 1 before listening.
 | `DATABASE_URL` | Postgres connection string for the **new** Supabase project. | Use the session pooler (`:5432`). Rotate if it ever appears in a log or chat. |
 | `PIN_PEPPER` | Server-side secret mixed into one-time PIN hashes. | ≥16 random characters. **Changing it invalidates every PIN already issued.** Back it up with the database. |
 | `SUPABASE_URL` | Project base URL (`https://<ref>.supabase.co`). | Turns on JWKS token verification. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Admin Auth key used only by account provisioning. | Server-only. Never `VITE_`. Never logged. Rotate on any suspicion. |
+| `SUPABASE_SECRET_KEY` | Secret key (`sb_secret_…`) used only by account provisioning. Startup refuses any other key format. | Server-only. Never `VITE_`. Never logged. Rotate on any suspicion. |
 | `ALLOWED_ORIGINS` | Comma-separated browser origins allowed by CORS. | Bare `https://host` origins only — no path, no trailing slash. No localhost in production. |
 | `APP_PUBLIC_ORIGIN` | Origin used to build resident approval links and visitor pass links. | Same rules; this is what appears in SMS/WhatsApp messages. |
 
@@ -41,7 +41,7 @@ that for a real deploy).
 | Variable | What it is | Rules |
 |---|---|---|
 | `VITE_SUPABASE_URL` | Same project URL as the server. | Public. |
-| `VITE_SUPABASE_ANON_KEY` | Anon/public key for the login UI. | Public by design, but must belong to the **new** project. |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Publishable key (`sb_publishable_…`) for the login UI. The build refuses any other format, and refuses any `VITE_` value holding an `sb_secret_` key. | Public by design, but must belong to the **new** project. |
 | `VITE_API_BASE_URL` | Where the browser reaches the API. | `https://` API origin. |
 | `VITE_SUPPORT_EMAIL`, `VITE_SUPPORT_PHONE` | Estate support desk shown on `/support`, `/support/incident`, `/legal/*`. | Optional; when both empty the pages say the contact is not yet published. Set before the pilot. |
 | `VITE_DEV_JWT` | Dev-only pre-minted token. | **Must be empty** in any real build. |
@@ -51,11 +51,11 @@ controls are excluded from the bundle. Verify: `grep -c "Simulate offline" dist/
 
 ## 3. Things that must never be in the browser bundle or the repo
 
-- `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `PIN_PEPPER`, any `JWT_SECRET`.
+- `SUPABASE_SECRET_KEY`, `DATABASE_URL`, `PIN_PEPPER`, any `JWT_SECRET`.
 - `.env`, `.env.local`, `.env.production` files (only `.env.example` is tracked).
 - Any credential from the compromised Supabase project (see [pilot checklist A1](./pilot-launch-checklist.md)). Its keys are revoked; never look them up, copy them or reuse them.
 
-Check before every deploy: `git status` shows no `.env*` staged; `grep -rl service_role dist/` returns nothing.
+Check before every deploy: `git status` shows no `.env*` staged; `grep -rl sb_secret_ dist/` returns nothing.
 
 ## 4. Database
 

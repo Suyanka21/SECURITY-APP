@@ -1,17 +1,20 @@
 /**
  * GatePass — Supabase Admin Auth (server-side ONLY).
  *
- * Source: Supabase — Admin API: create/delete users via the service-role key.
+ * Source: Supabase — Admin API: create/delete users via the secret key.
  *   https://supabase.com/docs/reference/api/admin-create-user
  *   POST   {SUPABASE_URL}/auth/v1/admin/users
  *   DELETE {SUPABASE_URL}/auth/v1/admin/users/{id}
  *   GET    {SUPABASE_URL}/auth/v1/admin/users?...   (list; used to find dupes)
  * Source: src/docs/adr/0001-...md — accounts are provisioned server-side; the
- *   service-role key never reaches the browser and is never logged.
+ *   secret key never reaches the browser and is never logged.
+ * Source: Supabase — API keys https://supabase.com/docs/guides/api/api-keys
+ *   `sb_secret_…` keys are not JWTs: send them on the `apikey` header, not on
+ *   `Authorization: Bearer`.
  * Source: Security-and-Hardening — secrets are sacred; never log tokens/keys.
  *
  * SECURITY INVARIANTS (enforced here, verified by review):
- *   - Reads SUPABASE_SERVICE_ROLE_KEY from the server env ONLY. This module is
+ *   - Reads SUPABASE_SECRET_KEY from the server env ONLY. This module is
  *     imported exclusively by server code; it must NEVER be bundled into the
  *     browser (no VITE_ prefix, no import from src/lib or src/features).
  *   - Never console.logs the key, the Authorization header, or any password.
@@ -25,15 +28,15 @@ export interface SupabaseAdminUser {
 
 /**
  * Whether server-side account provisioning is configured. Requires BOTH the
- * Supabase project URL and the service-role key. When false, the provisioning
+ * Supabase project URL and the secret key. When false, the provisioning
  * endpoint returns 503 rather than attempting a doomed call.
  */
 export function isSupabaseAdminConfigured(): boolean {
   return Boolean(
     process.env.SUPABASE_URL &&
       process.env.SUPABASE_URL.length > 0 &&
-      process.env.SUPABASE_SERVICE_ROLE_KEY &&
-      process.env.SUPABASE_SERVICE_ROLE_KEY.length > 0,
+      process.env.SUPABASE_SECRET_KEY &&
+      process.env.SUPABASE_SECRET_KEY.length > 0,
   );
 }
 
@@ -46,19 +49,17 @@ function baseUrl(): string {
   return raw.replace(/\/+$/, "").replace(/\/rest\/v1$/, "");
 }
 
-function serviceRoleKey(): string {
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function secretKey(): string {
+  const key = process.env.SUPABASE_SECRET_KEY;
   if (!key) {
-    throw new Error("SUPABASE_SERVICE_ROLE_KEY is not configured");
+    throw new Error("SUPABASE_SECRET_KEY is not configured");
   }
   return key;
 }
 
-function adminHeaders(): Record<string, string> {
-  const key = serviceRoleKey();
+export function adminHeaders(): Record<string, string> {
   return {
-    apikey: key,
-    Authorization: `Bearer ${key}`,
+    apikey: secretKey(),
     "Content-Type": "application/json",
   };
 }

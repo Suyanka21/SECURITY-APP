@@ -18,7 +18,7 @@ const deployable = (): ProductionEnv => ({
   DATABASE_URL: "postgresql://postgres.ref:pw@aws-0-eu-west-1.pooler.supabase.com:6543/postgres",
   PIN_PEPPER: "a-strong-random-server-secret-32chars!!",
   SUPABASE_URL: "https://kljrjofhzfbidddxtlkc.supabase.co",
-  SUPABASE_SERVICE_ROLE_KEY: "sb_secret_real_key_value",
+  SUPABASE_SECRET_KEY: "sb_secret_real_key_value",
   ALLOWED_ORIGINS: "https://gatepass.estate.co.ke",
   APP_PUBLIC_ORIGIN: "https://gatepass.estate.co.ke",
 });
@@ -38,7 +38,7 @@ describe("production config fail-fast", () => {
     "DATABASE_URL",
     "PIN_PEPPER",
     "SUPABASE_URL",
-    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_SECRET_KEY",
     "ALLOWED_ORIGINS",
     "APP_PUBLIC_ORIGIN",
   ])("refuses to start when %s is missing", (name) => {
@@ -58,7 +58,7 @@ describe("production config fail-fast", () => {
       "DATABASE_URL",
       "PIN_PEPPER",
       "SUPABASE_URL",
-      "SUPABASE_SERVICE_ROLE_KEY",
+      "SUPABASE_SECRET_KEY",
       "ALLOWED_ORIGINS",
       "APP_PUBLIC_ORIGIN",
     ]);
@@ -67,9 +67,23 @@ describe("production config fail-fast", () => {
   it("rejects .env.example placeholder values as if they were unset", () => {
     const env = deployable();
     env.PIN_PEPPER = "change-me-to-a-strong-random-server-secret";
-    env.SUPABASE_SERVICE_ROLE_KEY = "<supabase-service-role-secret-key>";
+    env.SUPABASE_SECRET_KEY = "<supabase-secret-key>";
 
-    expect(names(env)).toEqual(["PIN_PEPPER", "SUPABASE_SERVICE_ROLE_KEY"]);
+    expect(names(env)).toEqual(["PIN_PEPPER", "SUPABASE_SECRET_KEY"]);
+  });
+
+  it.each([
+    ["a legacy service_role JWT", "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.sig"],
+    ["a publishable key", "sb_publishable_real_key_value"],
+  ])("refuses SUPABASE_SECRET_KEY holding %s", (_label, value) => {
+    const env = deployable();
+    env.SUPABASE_SECRET_KEY = value;
+    expect(collectProductionConfigProblems(env)).toEqual([
+      {
+        name: "SUPABASE_SECRET_KEY",
+        reason: "must be a Supabase secret key (sb_secret_…), not a publishable or legacy key",
+      },
+    ]);
   });
 
   it("rejects a PIN_PEPPER shorter than 16 characters", () => {
