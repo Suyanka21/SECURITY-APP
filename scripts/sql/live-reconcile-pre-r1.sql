@@ -1,7 +1,7 @@
 -- GatePass: bring a database built with `drizzle-kit push` before PR #40 in
 -- line with drizzle/*.sql (constraints and indexes schema.ts did not declare).
 --
--- Found missing on the live project (kljrjofhzfbidddxtlkc) by read-only checks:
+-- Found missing on the pre-pilot project (since deleted) by read-only checks:
 --   guards_role_check (0004), auto_approval_rules_active_triple_uniq (0004),
 --   visitor_profiles_active_triple_uniq (0005), visitor_profiles_watch_idx (0005),
 --   exit_records_guard_id_idx (0007), idx_entry_records_delivery (0008),

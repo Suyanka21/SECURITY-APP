@@ -19,14 +19,21 @@ description: How to bring up and end-to-end test the GatePass visitor-management
   a port nothing is serving (e.g. `:8080` while dev runs on `:5173`), the on-screen magic link
   dead-ends with ERR_CONNECTION_REFUSED. Override it to the running frontend origin for demos.
 - `VITE_SUPABASE_PUBLISHABLE_KEY` — if login 401s "Invalid API key", `.env` and `.env.local` disagree;
-  use the working key.
+  use the dev project's key.
 
-## Roles (password `GatePass!2026`, all server-resolved from `guards.role`)
-- `guard@gatepass.test` — gate station console only; 403 on `/api/entries/on-premise`,
+## Where to test
+Only ever the throwaway **dev** Supabase project, or a local Postgres. Never the production
+project: its keys live only on the host. Nothing real goes into dev.
+
+## Roles (all server-resolved from `guards.role`)
+Seed them with `npm run seed:dev-users` (`scripts/seed-dev-users.mjs`). Passwords come only
+from `SEED_GUARD_PASSWORD`, `SEED_SENIOR_GUARD_PASSWORD`, `SEED_ADMIN_PASSWORD` and
+`SEED_RESIDENT_PASSWORD` in the gitignored `.env.local` or the session env; never write them here.
+- `guard@gatepass.test` (DEV-G1) — gate station console only; 403 on `/api/entries/on-premise`,
   `/api/watchlist`, invitations.
-- `sguard-setup@gatepass.test` (badge S-900, senior-guard) — needed for pass issuance,
+- `senior@gatepass.test` (DEV-S1, senior-guard) — needed for pass issuance,
   on-premise list, notes, exits.
-- `admin@gatepass.test` — admin dashboard (account provisioning, watchlist, on-premise).
+- `admin@gatepass.test` (DEV-A1) — admin dashboard (account provisioning, watchlist, on-premise).
 - `resident@gatepass.test` — deliberately has no `guards` row → "Residents don't sign in here" /
   "Account not linked". Residents have no dashboard by design.
 
@@ -95,6 +102,8 @@ npm test && npx tsc --noEmit && npm run lint && npm run build
 ```
 
 ## Devin Secrets Needed
-- Live Supabase project URL + anon key + service role key (or a populated `.env.local`).
-- `DATABASE_URL` for the live Supabase pooler.
+- Dev project only: `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `VITE_SUPABASE_URL`,
+  `VITE_SUPABASE_PUBLISHABLE_KEY`, `DATABASE_URL`, `SEED_DEV_PROJECT_REF` and the four
+  `SEED_*_PASSWORD`s, in a gitignored `.env.local` or the session env.
+- Never print any of them; mask connection strings (`user=… host=… port=…`) and use `PGPASSWORD`.
 - `PIN_PEPPER` (any stable secret string; must match across restarts or previously issued PINs stop verifying).

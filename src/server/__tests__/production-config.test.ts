@@ -17,7 +17,7 @@ const deployable = (): ProductionEnv => ({
   NODE_ENV: "production",
   DATABASE_URL: "postgresql://postgres.ref:pw@aws-0-eu-west-1.pooler.supabase.com:6543/postgres",
   PIN_PEPPER: "a-strong-random-server-secret-32chars!!",
-  SUPABASE_URL: "https://kljrjofhzfbidddxtlkc.supabase.co",
+  SUPABASE_URL: "https://abcdefghijklmnopqrst.supabase.co",
   SUPABASE_SECRET_KEY: "sb_secret_real_key_value",
   ALLOWED_ORIGINS: "https://gatepass.estate.co.ke",
   APP_PUBLIC_ORIGIN: "https://gatepass.estate.co.ke",

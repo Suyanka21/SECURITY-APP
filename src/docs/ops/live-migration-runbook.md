@@ -1,8 +1,13 @@
 # Live migration runbook: 0014, 0015, 0016 and the pre-R1 reconcile
 
+> **SUPERSEDED. Do not use.** The project this runbook targeted has been deleted.
+> Production is a fresh project built from empty with `scripts/build-db-from-sql.sh`
+> (see [pilot checklist A1–A2a](./pilot-launch-checklist.md)), so no live migration or
+> reconcile is needed. Kept only as a record.
+
 Applies `drizzle/0014_units_residents.sql`, `drizzle/0015_unit_registrations.sql`,
 `drizzle/0016_rls_pre_r1_tables.sql` and `scripts/sql/live-reconcile-pre-r1.sql`
-to the live Supabase project `kljrjofhzfbidddxtlkc` (checklist rows A2a, A3).
+to the live Supabase project `<old-project-ref>` (checklist rows A2a, A3).
 Do the steps in order and stop at the first one that doesn't give the expected
 result. Paste every command's full output into the go-ahead thread, after checking it contains no
 password or key (the commands below keep the password out of the URL; redact anything that slips through).
@@ -65,16 +70,15 @@ session-pooler string from Dashboard → Connect; don't type the host by hand.
 read -rs PGPASSWORD && export PGPASSWORD
 # paste the session-pooler string from Dashboard -> Connect, with the [YOUR-PASSWORD] part removed
 read -r LIVE_DDL_URL && export LIVE_DDL_URL
-printf '%s\n' "$LIVE_DDL_URL" | sed -E 's#^[a-z]+://([^:@]+).*#user=\1#'   # expect: user=postgres.kljrjofhzfbidddxtlkc
+printf '%s\n' "$LIVE_DDL_URL" | sed -E 's#^[a-z]+://([^:@]+).*#user=\1#'   # expect: user=postgres.<old-project-ref>
 psql "$LIVE_DDL_URL" -X -Atc "select current_user, inet_server_port(), version()"
 # expect: postgres|5432|PostgreSQL 17.x
 ```
 
 Before going on, check that the **user** part of the connection string is
-exactly `postgres.kljrjofhzfbidddxtlkc`. With the Supabase pooler, the user
+exactly `postgres.<old-project-ref>`. With the Supabase pooler, the user
 carries the project ref, and that's what selects the project. If it shows any
 other ref, stop.
-Never use `uawkuimxaxbhrccfhoag` (see the A1 compromise note).
 
 ## 1. Confirm a backup exists
 
@@ -214,8 +218,9 @@ WHERE c.relname IN ('auto_approval_rules_active_triple_uniq','visitor_profiles_a
 ```bash
 psql "$LIVE_DDL_URL" -X -c "SELECT tablename FROM pg_tables WHERE schemaname='public' AND NOT rowsecurity"   # 0 rows
 curl -s -o /dev/stdout -w '\nHTTP %{http_code}\n' "$SUPABASE_URL/rest/v1/residents?select=*" \
-  -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY"
-# expect `[]` with HTTP 200 (RLS, no policies), or HTTP 401/403/404. Any row returned: stop, raise as a security incident.
+  -H "apikey: $VITE_SUPABASE_PUBLISHABLE_KEY"
+# expect exactly `[]` with HTTP 200 (RLS on, no policies). A 401 means the key was rejected,
+# so RLS was NOT checked: fix the key and re-run. Any row returned: stop, raise as a security incident.
 ```
 
 Only then deploy the R1–R3 server.
