@@ -152,13 +152,13 @@ can find in the audit.
 ## 7. Suspected personal-data breach
 
 Examples: a pass or approval page shows someone else's details; a database
-credential or the service-role key appears in a chat/log/screenshot; a
+credential or the secret key (`SUPABASE_SECRET_KEY`) appears in a chat/log/screenshot; a
 laptop with `.env.local` is lost; Supabase reports unusual access; a public
 page shows internal error text.
 
 **First 15 min (Severity 1)**
-- Technical contact: rotate in this order — service-role key, database
-  password, then anon key; `PIN_PEPPER` only if it was exposed (this
+- Technical contact: rotate in this order — secret key, database
+  password, then publishable key; `PIN_PEPPER` only if it was exposed (this
   invalidates all live PINs — tell the gate). Redeploy.
 - If a specific account or device is involved, §1 / §2 in parallel.
 - Screenshot the page/log that revealed the problem, then remove access to it.

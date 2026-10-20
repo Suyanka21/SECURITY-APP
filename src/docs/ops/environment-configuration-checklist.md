@@ -3,6 +3,11 @@
 What must be set, where, and what the software does if it is missing. Values
 are **never** written into this document, the repo, chat, or tickets.
 
+Production and dev are separate Supabase projects (see the
+[pilot checklist](./pilot-launch-checklist.md#two-supabase-projects-dev-and-production)).
+Everything below is for **production**: values are set only on the host. The dev
+project is temporary, holds only made-up data, and is deleted at go-live.
+
 Related: [`deploy/first-admin-bootstrap.md`](../deploy/first-admin-bootstrap.md) ·
 [`deploy/dependency-audit.md`](../deploy/dependency-audit.md) ·
 [Pilot launch checklist](./pilot-launch-checklist.md)
@@ -16,7 +21,7 @@ and exits 1 before listening.
 
 | Variable | What it is | Rules |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection string for the **new** Supabase project. | Use the session pooler (`:5432`). Rotate if it ever appears in a log or chat. |
+| `DATABASE_URL` | Postgres connection string for the **production** Supabase project. | Use the session pooler (`:5432`). Rotate if it ever appears in a log or chat. |
 | `PIN_PEPPER` | Server-side secret mixed into one-time PIN hashes. | ≥16 random characters. **Changing it invalidates every PIN already issued.** Back it up with the database. |
 | `SUPABASE_URL` | Project base URL (`https://<ref>.supabase.co`). | Turns on JWKS token verification. |
 | `SUPABASE_SECRET_KEY` | Secret key (`sb_secret_…`) used only by account provisioning. Startup refuses any other key format. | Server-only. Never `VITE_`. Never logged. Rotate on any suspicion. |
@@ -59,18 +64,23 @@ Check before every deploy: `git status` shows no `.env*` staged; `grep -rl sb_se
 
 ## 4. Database
 
-- Schema: applied with `drizzle-kit push` for the pilot (the SQL files in
-  `drizzle/` do not apply in file order on an empty database — known gap).
-- RLS: enable on every `public` table; verify with
+- Schema: a fresh, empty project built with `scripts/build-db-from-sql.sh` (applies every
+  `drizzle/*.sql` in order, one transaction per file, stops at the first error). Use the
+  **session pooler**: user `postgres.<project-ref>`, port `5432`. Keep the password out of the
+  URL and in `PGPASSWORD`. To verify the server's TLS certificate, download the project's CA
+  (Dashboard → Database → SSL) and add `?sslmode=verify-full&sslrootcert=<path>` to the URL; the
+  bootstrap and seed scripts take the same file as `DATABASE_SSL_ROOT_CERT`.
+- RLS: the migrations enable it on every `public` table, and the build script fails if any
+  table lacks it. Re-check with
   `select tablename from pg_tables where schemaname='public' and not rowsecurity;` → empty.
 - Backups: Supabase automatic daily backups on; one restore drill completed.
-- Integration proof against a copy of the real schema:
-  `DATABASE_URL=<copy> npx vitest run --config vitest.integration.config.ts` → 25 tests pass.
+- Integration tests run only against a local Postgres; they refuse any hosted Supabase URL.
 
 ## 5. Rotation triggers
 
 Rotate **immediately** (and treat as an incident) if any of the following
 happens: a secret appears in a log, ticket, screenshot or chat; a laptop with
 `.env.local` is lost; a staff member with production access leaves; Supabase
-reports unusual activity. Order: service-role key → database password →
-`PIN_PEPPER` only if compromised (it invalidates live PINs) → anon key last.
+reports unusual activity. Order: secret key (`SUPABASE_SECRET_KEY`) → database
+password → `PIN_PEPPER` only if compromised (it invalidates live PINs) → publishable
+key last.

@@ -7,6 +7,16 @@ before go-live, not something to skip past.
 
 Sign-off table is at the bottom. Nothing goes live until every signature is in.
 
+## Two Supabase projects: dev and production
+
+| | Dev project | Production project |
+|---|---|---|
+| Purpose | Building, testing, public demo | The real estate |
+| Lifetime | **Temporary, burned by design.** Never promoted to production; deleted at go-live. | Permanent |
+| Data | Made-up only. Nothing real ever goes in. | Real |
+| Who holds keys | Developers / Devin, in a gitignored `.env.local` or session env | **Only the host.** Never a laptop, chat, ticket or Devin. |
+| How it is built | `scripts/build-db-from-sql.sh`, then `npm run seed:dev-users` | Fresh project, built from empty with `scripts/build-db-from-sql.sh`, then `npm run bootstrap:admin`. Nothing copied from dev. |
+
 Related: [Operations runbook](./operations-runbook.md) ·
 [Environment & configuration checklist](./environment-configuration-checklist.md) ·
 [Technical pre-ship report (Task 6)](../GatePass-Antigravity-Handoff.md)
@@ -15,9 +25,9 @@ Related: [Operations runbook](./operations-runbook.md) ·
 
 | # | Check | Owner | How to verify |
 |---|---|---|---|
-| A1 | Fresh Supabase project created; the compromised project (`uawkuimxaxbhrccfhoag`) is deleted or paused and all its keys revoked. | Technical | Supabase dashboard shows only the new project; old anon/service keys rejected. |
-| A2 | Postgres schema applied by **applying the SQL files in `drizzle/` in order**: `scripts/build-db-from-sql.sh "$DATABASE_URL"`. It applies every `drizzle/*.sql` file in byte order (`LC_ALL=C` sort, independent of the shell's locale), prints that order, runs each file in its own transaction (`psql -X -v ON_ERROR_STOP=1 -1`), stops with a non-zero exit at the first failing file (later files are not applied), and finally fails if any public table has RLS disabled. **New database:** every file, `0000_elite_microchip.sql` through the last one (`0000a_audit_events_baseline.sql` runs second). **Live database:** only the files listed in row A2a, never the whole loop. Do **not** use `drizzle-kit push`: it cannot see CHECK-constraint text and cannot be reviewed before it runs. `scripts/schema-equivalence.sh` compares the two (informational, not a CI gate). | Technical | The script exits 0 and prints `OK: RLS enabled on every public table`; `npx vitest run --config vitest.integration.config.ts` passes against a database built the same way (CI does this on every PR once the integration job is added). |
-| A2a | **Live project:** Supabase Reference ID `kljrjofhzfbidddxtlkc` (confirmed by the estate's technical owner in the Supabase dashboard). It has the schema up to `0013`, built with `drizzle-kit push`. **Only after a written go-ahead**, and **before** deploying the R1–R3 server, apply these files in this order, each in its own transaction: `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f drizzle/0014_units_residents.sql`, then the same for `drizzle/0015_unit_registrations.sql`, then `drizzle/0016_rls_pre_r1_tables.sql` (a no-op on live, which already has RLS on those 13 tables). Separately, under its own written go-ahead: `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f scripts/sql/live-reconcile-pre-r1.sql` adds the CHECK and the seven indexes that `push` never created on live (`guards_role_check`, the two active-triple unique indexes, and others) and makes `visitor_profiles_host_unit_idx` partial. Name-only differences from a SQL-built database (`exit_records_entry_id_unique`, `notifications_idempotency_key_unique`, `notifications_approval_id_approval_requests_id_fk`, and the `guards_supabase_user_id_unique` constraint instead of an index) are harmless and are **not** renamed. | Technical | Every run exits 0; `select relname, relrowsecurity from pg_class where relnamespace='public'::regnamespace and relkind='r' order by 1` shows `t` on every row, including `units`, `residents`, `unit_claim_codes`, `resident_claim_attempts`, `unit_registrations`; an anon-key request to `/rest/v1/residents` returns no rows or is denied. |
+| A1 | **Fresh production project** created at go-live and built from empty (A2). Every earlier project — the compromised one, the pre-pilot one, and the dev project — is deleted and its keys revoked. Production keys are set only on the host. | Technical | Supabase dashboard shows only the production project; requests with any earlier key are rejected. |
+| A2 | Postgres schema applied by **applying the SQL files in `drizzle/` in order**: `scripts/build-db-from-sql.sh "$DATABASE_URL"`. It applies every `drizzle/*.sql` file in byte order (`LC_ALL=C` sort, independent of the shell's locale), prints that order, runs each file in its own transaction (`psql -X -v ON_ERROR_STOP=1 -1`), stops with a non-zero exit at the first failing file (later files are not applied), and finally fails if any public table has RLS disabled. Every database, dev or production, is new and empty, so it gets every file, `0000_elite_microchip.sql` through the last one (`0000a_audit_events_baseline.sql` runs second). There is no partial or live migration path. Do **not** use `drizzle-kit push`: it cannot see CHECK-constraint text and cannot be reviewed before it runs. `scripts/schema-equivalence.sh` compares the two (informational, not a CI gate). | Technical | The script exits 0 and prints `OK: RLS enabled on every public table`; `npx vitest run --config vitest.integration.config.ts` passes against a database built the same way (CI does this on every PR once the integration job is added). |
+| A2a | Production starts with **zero rows**: nothing is copied from dev; the only accounts are the bootstrap admin (B1) and staff created from the dashboard (B2). `scripts/seed-dev-users.mjs` is never run against production (it refuses `NODE_ENV=production`). | Technical | `select count(*) from guards` equals the staff you created; no `@gatepass.test` users in Authentication → Users. |
 | A3 | Row-Level Security enabled on **every** public table, by the migrations themselves: `0014` and `0015` on the five tables they create, `0016` on the 13 tables from before `0014`. No external RLS script is needed. | Technical | `select tablename from pg_tables where schemaname='public' and not rowsecurity` returns zero rows; `scripts/build-db-from-sql.sh` fails if it does not. |
 | A4 | Database backups on and tested: daily automatic backup **plus one manual restore drill** into a scratch project. | Technical | Restore drill notes: date, duration, row counts matched. |
 | A5 | Production environment variables set exactly per the [environment checklist](./environment-configuration-checklist.md). Server refuses to start if any is missing — confirm it did so once on purpose. | Technical | Start with one variable unset → `[FATAL] Production configuration is incomplete`, exit 1. |
@@ -76,7 +86,6 @@ Tick only if the sign-off group accepts each in writing.
 - [ ] No offline page reload (no service worker); queue survives, page does not.
 - [ ] No automatic data deletion / retention enforcement.
 - [ ] Legal/privacy text is DRAFT until professionally reviewed.
-- [ ] Migration files do not apply in order on a fresh DB; `drizzle-kit push` used instead.
 
 ## F. Sign-off
 
