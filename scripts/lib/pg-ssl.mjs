@@ -13,7 +13,8 @@
 
 import { readFileSync } from "fs";
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+// URL.hostname keeps the brackets on IPv6 literals.
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 export function isLocalHost(hostname) {
   return LOCAL_HOSTS.has(hostname);
