@@ -13,6 +13,7 @@
  *   - every SEED_*_PASSWORD below is set (12+ characters).
  *
  * Passwords are read only from the environment and are never printed.
+ * TLS to a hosted database is verified (see scripts/lib/pg-ssl.mjs).
  * Reads `.env.local`, then `.env` (gitignored), then the process env.
  *
  * ENV:
@@ -27,6 +28,7 @@
 
 import dotenv from "dotenv";
 import pg from "pg";
+import { isLocalHost, scriptPgSsl } from "./lib/pg-ssl.mjs";
 
 dotenv.config({ path: ".env.local", quiet: true });
 dotenv.config({ quiet: true });
@@ -40,7 +42,6 @@ const USERS = [
 ];
 
 const MIN_PASSWORD_LENGTH = 12;
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function fail(msg) {
   console.error(`[seed-dev-users] ERROR: ${msg}`);
@@ -74,14 +75,18 @@ const supabaseUrl = parseUrl("SUPABASE_URL", rawBase);
 const dbUrl = parseUrl("DATABASE_URL", rawDbUrl);
 
 if (ref === "local") {
-  if (!LOCAL_HOSTS.has(supabaseUrl.hostname)) fail("SEED_DEV_PROJECT_REF=local but SUPABASE_URL is not localhost");
-  if (!LOCAL_HOSTS.has(dbUrl.hostname)) fail("SEED_DEV_PROJECT_REF=local but DATABASE_URL is not localhost");
+  if (!isLocalHost(supabaseUrl.hostname)) fail("SEED_DEV_PROJECT_REF=local but SUPABASE_URL is not localhost");
+  if (!isLocalHost(dbUrl.hostname)) fail("SEED_DEV_PROJECT_REF=local but DATABASE_URL is not localhost");
 } else {
   if (supabaseUrl.hostname !== `${ref}.supabase.co`) {
     fail("SUPABASE_URL does not belong to SEED_DEV_PROJECT_REF");
   }
+  // Supabase routes the pooler by the user (postgres.<ref>); a direct
+  // connection is routed by the host (db.<ref>.supabase.co).
   const dbUser = decodeURIComponent(dbUrl.username);
-  if (dbUser !== `postgres.${ref}` && dbUrl.hostname !== `db.${ref}.supabase.co`) {
+  const viaPooler = dbUser === `postgres.${ref}` && dbUrl.hostname.endsWith(".pooler.supabase.com");
+  const direct = dbUrl.hostname === `db.${ref}.supabase.co`;
+  if (!viaPooler && !direct) {
     fail("DATABASE_URL does not belong to SEED_DEV_PROJECT_REF");
   }
 }
@@ -135,7 +140,7 @@ async function upsertAuthUser(email, password) {
 async function main() {
   const client = new pg.Client({
     connectionString: rawDbUrl,
-    ssl: LOCAL_HOSTS.has(dbUrl.hostname) ? false : { rejectUnauthorized: false },
+    ssl: scriptPgSsl(rawDbUrl),
   });
   await client.connect();
   try {
