@@ -46,9 +46,15 @@ function readCa(env) {
 }
 
 export function scriptPgSsl(databaseUrl, { allowUnverified = false, log = console.warn, env = process.env } = {}) {
+  const optOut = env.DATABASE_SSL_REJECT_UNAUTHORIZED?.trim() === "false";
+  if (optOut && !allowUnverified) {
+    throw new Error(
+      "DATABASE_SSL_REJECT_UNAUTHORIZED=false is refused by this script; " +
+        "set DATABASE_SSL_CA or DATABASE_SSL_ROOT_CERT to the project's CA certificate instead",
+    );
+  }
   if (isLocalHost(new URL(databaseUrl).hostname)) return false;
 
-  const optOut = env.DATABASE_SSL_REJECT_UNAUTHORIZED?.trim() === "false";
   const ca = readCa(env);
   if (ca) {
     if (optOut) {
@@ -58,12 +64,6 @@ export function scriptPgSsl(databaseUrl, { allowUnverified = false, log = consol
   }
 
   if (optOut) {
-    if (!allowUnverified) {
-      throw new Error(
-        "DATABASE_SSL_REJECT_UNAUTHORIZED=false is refused by this script; " +
-          "set DATABASE_SSL_CA or DATABASE_SSL_ROOT_CERT to the project's CA certificate instead",
-      );
-    }
     if (env.NODE_ENV === "production") {
       throw new Error(
         "DATABASE_SSL_REJECT_UNAUTHORIZED=false is refused when NODE_ENV=production; " +
