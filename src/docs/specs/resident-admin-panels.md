@@ -120,8 +120,14 @@ any change to the guard console's admin tab, and the R4b docs.
   with `{ reason }`.
 - **Block details shown:** who blocked it, when, the reason, and for a
   cleared block who cleared it and why.
-- **Clearing does not turn the old rule back on.** The panel says so:
-  "The resident can now register this again."
+- **Clearing does not turn the old rule back on.** The panel's message
+  depends on the row, because the server's duplicate check
+  (`createRegistration`) still counts an entry the resident has not removed:
+  - **removed row:** "The resident can now register this again."
+  - **row not removed** (still listed, switched off): "The resident must
+    first remove the switched-off entry in their portal, then register it
+    again." The resident can remove it today (`removeRegistration` only
+    checks that it is their own), so this needs no server change.
 
 All errors render as `CODE — message`, the same as `PanelBody`. Every write
 button is disabled while its request is in flight, so a double click sends
@@ -222,7 +228,10 @@ interface AdminRegistrationView {
     found;
   - S3: switch-off without a reason → 422 with **no** block, the rule still
     live and no audit row; with a reason → blocked;
-  - clear-block without a reason → 422 and the block still standing.
+  - clear-block without a reason → 422 and the block still standing;
+  - after a clear on a not-removed row, re-registering the same subject is
+    refused as a duplicate until the resident removes the old entry, then
+    succeeds (this pins the behaviour the panel message describes).
 - **Component tests (RTL, mocked API):**
   - create unit (label input limited to 32); deactivate needs the
     confirmation step;
@@ -231,7 +240,8 @@ interface AdminRegistrationView {
   - residents render the server's `phoneMasked` as given;
   - Switch off and Clear disabled until the reason is 3 or more characters;
     `REASON_REQUIRED` shown on the reason field;
-  - Clear only offered on a standing block;
+  - Clear only offered on a standing block; the message after clearing
+    differs for a removed and a not-removed row;
   - error codes rendered.
 - **Gates:** the full set (lint, tsc, both Vitest configs, integration, prod
   build). No browser testing unless you ask.
