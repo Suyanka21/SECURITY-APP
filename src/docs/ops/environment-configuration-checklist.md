@@ -69,8 +69,13 @@ Check before every deploy: `git status` shows no `.env*` staged; `grep -rl sb_se
   **session pooler**: user `postgres.<project-ref>`, port `5432`. Keep the password out of the
   URL and in `PGPASSWORD`. To verify the server's TLS certificate, download the project's CA
   (Dashboard → Database → SSL) and add `?sslmode=verify-full&sslrootcert=<path>` to the URL; the
-  bootstrap and seed scripts take the same file as `DATABASE_SSL_ROOT_CERT`. Their unverified opt-out
-  (`DATABASE_SSL_REJECT_UNAUTHORIZED=false`) is refused when `NODE_ENV=production`; dev only.
+  bootstrap and seed scripts take the same file as `DATABASE_SSL_ROOT_CERT`.
+- API server TLS: set **one** of `DATABASE_SSL_ROOT_CERT` (path to that CA file on the host) or
+  `DATABASE_SSL_CA` (the certificate text itself, for hosts without files). The server refuses to
+  start in production with neither, with both, or with a value that is not a PEM certificate.
+  `DATABASE_SSL_REJECT_UNAUTHORIZED=false` is refused in production by the server and both
+  scripts; it is a dev-only fallback. TLS query params (`sslmode=…`) in `DATABASE_URL` are stripped
+  so they cannot weaken verification.
 - RLS: the migrations enable it on every `public` table, and the build script fails if any
   table lacks it. Re-check with
   `select tablename from pg_tables where schemaname='public' and not rowsecurity;` → empty.

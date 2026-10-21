@@ -34,7 +34,7 @@ Related: [Operations runbook](./operations-runbook.md) ·
 | A6 | `ALLOWED_ORIGINS` and `APP_PUBLIC_ORIGIN` are the real `https://` domain(s), nothing else. | Technical | A request from another origin gets no CORS headers; pass links in SMS point at the real domain. |
 | A7 | `NODE_ENV=production` on the server host; browser bundle built with `--mode production` (dev-only controls absent). | Technical | `grep -c "Simulate offline" dist/assets/*.js` → 0. |
 | A8 | Frontend and API are served over HTTPS only. | Technical | `curl -I http://…` redirects or fails; browser padlock present. |
-| A8a | **GO-LIVE GATE — verified database certificate.** The production database connection must use a verified certificate; `DATABASE_SSL_REJECT_UNAUTHORIZED` must not be `false` on the production host. Decide, after the dev CA-file test, whether the server should refuse it. | Technical | Production host env shows `DATABASE_SSL_REJECT_UNAUTHORIZED` unset (or not `false`) and the API connects; written decision on server-side refusal on file. |
+| A8a | **GO-LIVE GATE — verified database certificate.** The production host must set exactly one of `DATABASE_SSL_ROOT_CERT` (path to the project CA file) or `DATABASE_SSL_CA` (the CA certificate text), and `DATABASE_SSL_REJECT_UNAUTHORIZED` must stay unset (never `false`). The server refuses to start in production otherwise. | Technical | Production host env shows one CA setting and no `DATABASE_SSL_REJECT_UNAUTHORIZED=false`; the API starts with no `[FATAL]` and `/health` answers; one verified connection logged. |
 | A9 | `VITE_SUPPORT_EMAIL` / `VITE_SUPPORT_PHONE` set to the estate's real support desk. | Estate manager + Technical | Open `/support` — contact shown, no "not yet published" notice. |
 
 ## B. Accounts
