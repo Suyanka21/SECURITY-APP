@@ -19,6 +19,8 @@
  *   SUPABASE_URL, SUPABASE_SECRET_KEY, DATABASE_URL
  *   BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_BADGE
  *   BOOTSTRAP_ADMIN_PASSWORD (optional — a strong one is generated if absent)
+ *   DATABASE_SSL_CA (PEM text) or DATABASE_SSL_ROOT_CERT (path): the project CA.
+ *   DATABASE_SSL_REJECT_UNAUTHORIZED=false is refused whatever NODE_ENV is.
  *
  * USAGE:
  *   node scripts/bootstrap-first-admin.mjs

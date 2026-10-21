@@ -141,7 +141,7 @@ async function upsertAuthUser(email, password) {
 async function main() {
   const client = new pg.Client({
     connectionString: stripTlsParams(rawDbUrl),
-    ssl: scriptPgSsl(rawDbUrl),
+    ssl: scriptPgSsl(rawDbUrl, { allowUnverified: true }),
   });
   await client.connect();
   try {
