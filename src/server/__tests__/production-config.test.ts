@@ -16,6 +16,7 @@ import {
 const deployable = (): ProductionEnv => ({
   NODE_ENV: "production",
   DATABASE_URL: "postgresql://postgres.ref:pw@aws-0-eu-west-1.pooler.supabase.com:6543/postgres",
+  DATABASE_SSL_ROOT_CERT: "/etc/gatepass/supabase-ca.crt",
   PIN_PEPPER: "a-strong-random-server-secret-32chars!!",
   SUPABASE_URL: "https://abcdefghijklmnopqrst.supabase.co",
   SUPABASE_SECRET_KEY: "sb_secret_real_key_value",
@@ -56,12 +57,32 @@ describe("production config fail-fast", () => {
     const env: ProductionEnv = { NODE_ENV: "production" };
     expect(names(env)).toEqual([
       "DATABASE_URL",
+      "DATABASE_SSL_CA",
       "PIN_PEPPER",
       "SUPABASE_URL",
       "SUPABASE_SECRET_KEY",
       "ALLOWED_ORIGINS",
       "APP_PUBLIC_ORIGIN",
     ]);
+  });
+
+  it("refuses to start without a database CA certificate", () => {
+    const env = deployable();
+    delete env.DATABASE_SSL_ROOT_CERT;
+    expect(names(env)).toEqual(["DATABASE_SSL_CA"]);
+  });
+
+  it("accepts the CA as inline PEM contents instead of a path", () => {
+    const env = deployable();
+    delete env.DATABASE_SSL_ROOT_CERT;
+    env.DATABASE_SSL_CA = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    expect(names(env)).toEqual([]);
+  });
+
+  it("refuses the unverified TLS opt-out in production", () => {
+    const env = deployable();
+    env.DATABASE_SSL_REJECT_UNAUTHORIZED = "false";
+    expect(names(env)).toEqual(["DATABASE_SSL_REJECT_UNAUTHORIZED"]);
   });
 
   it("rejects .env.example placeholder values as if they were unset", () => {

@@ -91,6 +91,22 @@ export function collectProductionConfigProblems(
 
   requirePresent(env, "DATABASE_URL", problems);
 
+  const caInline = env.DATABASE_SSL_CA?.trim();
+  const caPath = env.DATABASE_SSL_ROOT_CERT?.trim();
+  if (!caInline && !caPath) {
+    problems.push({
+      name: "DATABASE_SSL_CA",
+      reason:
+        "is not set (nor DATABASE_SSL_ROOT_CERT) — the database certificate cannot be verified without the project's CA",
+    });
+  }
+  if (env.DATABASE_SSL_REJECT_UNAUTHORIZED?.trim() === "false") {
+    problems.push({
+      name: "DATABASE_SSL_REJECT_UNAUTHORIZED",
+      reason: "must not be false in production — the database certificate must be verified",
+    });
+  }
+
   const pepper = requirePresent(env, "PIN_PEPPER", problems);
   if (pepper && pepper.length < MIN_PIN_PEPPER_LENGTH) {
     problems.push({
