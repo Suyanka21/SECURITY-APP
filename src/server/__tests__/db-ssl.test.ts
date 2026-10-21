@@ -88,8 +88,13 @@ describe("stripTlsParams", () => {
     expect(out).toBe("postgresql://u:p@db.example.com:5432/postgres?application_name=gp");
   });
 
-  it("passes through unset and unparseable values", () => {
+  it("passes through an unset value", () => {
     expect(stripTlsParams(undefined)).toBeUndefined();
-    expect(stripTlsParams("not a url")).toBe("not a url");
+  });
+
+  it("refuses a value it cannot parse instead of passing TLS overrides through", () => {
+    expect(() => stripTlsParams("not a url sslmode=no-verify")).toThrow(
+      /DATABASE_URL is not a valid postgresql:\/\/ URL/,
+    );
   });
 });

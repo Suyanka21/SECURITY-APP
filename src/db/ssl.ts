@@ -29,7 +29,8 @@ export function stripTlsParams(databaseUrl: string | undefined): string | undefi
   try {
     url = new URL(databaseUrl);
   } catch {
-    return databaseUrl;
+    // Fail closed: an unparsed string could still carry TLS overrides.
+    throw new Error("DATABASE_URL is not a valid postgresql:// URL");
   }
   for (const p of TLS_PARAMS) url.searchParams.delete(p);
   return url.toString();
