@@ -38,7 +38,7 @@ describe("scriptPgSsl", () => {
   it("verifies against the certificate text in DATABASE_SSL_CA, including \\n escapes", () => {
     const verified = { ca: PEM.trim(), rejectUnauthorized: true };
     expect(scriptPgSsl(HOSTED, { env: { DATABASE_SSL_CA: PEM } })).toEqual(verified);
-    const oneLine = PEM.replace(/\n/g, "\\n");
+    const oneLine = PEM.trim().replace(/\n/g, "\\n");
     expect(scriptPgSsl(HOSTED, { env: { DATABASE_SSL_CA: oneLine } })).toEqual(verified);
   });
 
