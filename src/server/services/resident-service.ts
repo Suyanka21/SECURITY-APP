@@ -33,7 +33,10 @@ import {
 import { emitAuditEvent, emitResidentAuditEvent, publishAuditEvent } from "./audit-logger";
 import type { AuditEvent } from "./audit-logger";
 import { ServiceError } from "./errors";
+import { maskPhoneE164 } from "./phone-mask";
 import { resolvePinPepper } from "./pin-service";
+
+export { maskPhoneE164 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -128,18 +131,6 @@ export function hashClaimCode(normalized: string): string {
 export function clampClaimCodeTtlHours(requested: number | undefined): number {
   const hours = requested ?? DEFAULT_CLAIM_CODE_TTL_HOURS;
   return Math.min(Math.max(hours, 1), MAX_CLAIM_CODE_TTL_HOURS);
-}
-
-/**
- * Masks an E.164 number so at least half its digits are hidden:
- * 12+ digits keep the first 3 and last 3, shorter numbers the first 1 and
- * last 2 (`+254712345678` -> `+254••••••678`).
- */
-export function maskPhoneE164(phone: string): string {
-  const digits = phone.replace(/\D/g, "");
-  const [head, tail] = digits.length >= 12 ? [3, 3] : digits.length >= 6 ? [1, 2] : [0, 0];
-  const hidden = digits.length - head - tail;
-  return `+${digits.slice(0, head)}${"•".repeat(hidden)}${tail > 0 ? digits.slice(-tail) : ""}`;
 }
 
 export function toAdminResidentView(view: ResidentView): AdminResidentView {

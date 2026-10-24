@@ -37,6 +37,7 @@ import {
 } from "@/db/schema";
 import { emitAuditEvent } from "../audit-logger";
 import { ServiceError } from "../errors";
+import { maskPhoneE164 } from "../phone-mask";
 import { NotificationErrorCodes } from "../../validation/notification-schemas";
 import {
   NotificationError,
@@ -158,6 +159,8 @@ function toView(row: NotificationRow) {
     id: row.id,
     approvalId: row.approvalId,
     channel: row.channel,
+    // Staff see only the masked target; the full number stays on the server.
+    targetPhoneMasked: maskPhoneE164(row.targetPhone),
     status: row.status,
     attempts: row.attempts,
     lastErrorCode: row.lastErrorCode,

@@ -250,7 +250,8 @@ export interface NotificationView {
   channel: NotificationChannel;
   status: NotificationStatus;
   attempts: number;
-  targetPhone: string;
+  /** Masked by the server (`+254••••••678`); the full number is never sent. */
+  targetPhoneMasked: string;
   templateKey: string;
   lastErrorCode: string | null;
   lastProviderResponseCode: number | null;
