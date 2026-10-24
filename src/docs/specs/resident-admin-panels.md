@@ -1,6 +1,9 @@
 # R4a — Admin screens for the resident portal
 
-Status: **DRAFT — awaiting owner approval. No code until approved.**
+Status: **APPROVED** (spec merged in #51). Implemented in the R4a PR. §7
+open questions settled with the proposed answers: server-default 72 h
+claim codes, only blocked removed rows shown, clear-block keeps
+`RULE_INVALID_INPUT`, the notifications phone gets its own PR after R4a.
 
 Related: [Resident portal spec](./resident-portal.md) (R1–R3, §11 binding decisions).
 
@@ -26,7 +29,7 @@ Nothing outside S1–S3 changes on the server. Details in §5.
 
 | # | What | Files |
 |---|---|---|
-| S1 | New read route `GET /api/admin/units/:id/registrations` and the service function behind it | `src/server/routes/residents.ts` (`adminUnitsRouter`), `src/server/services/unit-registration-service.ts`, `src/server/validation/resident-schemas.ts` (param schema) |
+| S1 | New read route `GET /api/admin/units/:id/registrations` and the service function behind it | `src/server/routes/residents.ts` (`adminUnitsRouter`), `src/server/services/unit-registration-service.ts`; reuses the existing `UnitParamsSchema` (no new schema) |
 | S2 | Resident phone numbers masked on the server in every admin response; the full number is never sent to an admin | `src/server/services/resident-service.ts` (new `AdminResidentView`, `maskPhoneE164`), `src/server/routes/residents.ts` (both admin resident handlers) |
 | S3 | Switching off a resident-created rule without a reason returns `422 REASON_REQUIRED`, before any write | `src/server/services/auto-approval-service.ts` (`deactivateAutoApprovalRule`), `src/server/routes/auto-approval.ts` (error code constant) |
 

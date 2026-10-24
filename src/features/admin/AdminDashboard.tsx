@@ -11,6 +11,8 @@
  *   - GET /api/entries/on-premise      → admin, senior-guard
  *   - GET /api/entries/deliveries      → admin, senior-guard
  *   - GET /api/auto-approval-rules     → admin, senior-guard
+ * ResidentUnitsPanel (R4a) calls admin-only routes: /api/admin/units/*,
+ * /api/admin/residents/*, and auto-approval deactivate / clear-block.
  */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -25,6 +27,7 @@ import { autoApprovalApi } from "@/lib/api/auto-approval";
 import { useAuth } from "@/features/auth/AuthContext";
 import { AccountProvisioningPanel } from "./AccountProvisioningPanel";
 import { WatchlistPanel } from "./WatchlistPanel";
+import { ResidentUnitsPanel } from "./ResidentUnitsPanel";
 
 type PanelState<T> =
   | { status: "loading" }
@@ -171,6 +174,8 @@ export function AdminDashboard() {
         <AccountProvisioningPanel />
 
         <WatchlistPanel />
+
+        <ResidentUnitsPanel />
 
         <Panel
           title="Currently on premise"

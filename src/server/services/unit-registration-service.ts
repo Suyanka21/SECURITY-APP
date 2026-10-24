@@ -20,7 +20,8 @@
  */
 
 import { randomUUID } from "crypto";
-import { and, eq, isNotNull, isNull, ne, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import * as schema from "@/db/schema";
 import type { ResidentIdentity } from "../middleware/resident-auth";
@@ -98,6 +99,35 @@ function toView(row: RegistrationJoinRow, now: Date): RegistrationView {
     expiresAt: row.expiresAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+export type AdminRegistrationStatus = RegistrationStatus | "removed";
+
+export interface AdminRegistrationBlockView {
+  blockedAt: string;
+  /** Display name of the staff member who switched the rule off */
+  blockedBy: string;
+  reason: string | null;
+  clearedAt: string | null;
+  clearedBy: string | null;
+  clearReason: string | null;
+}
+
+/** An admin's view of a unit's registration. Carries no phone number. */
+export interface AdminRegistrationView {
+  id: string;
+  kind: RegistrationKind;
+  label: string;
+  plate: string | null;
+  residentId: string;
+  residentDisplayName: string;
+  status: AdminRegistrationStatus;
+  ruleId: string;
+  ruleActive: boolean;
+  expiresAt: string;
+  createdAt: string;
+  removedAt: string | null;
+  block: AdminRegistrationBlockView | null;
 }
 
 /** Name written into visitor_profiles / auto_approval_rules for the registration. */
@@ -390,6 +420,80 @@ export async function listRegistrations(
     .orderBy(unitRegistrations.kind, unitRegistrations.createdAt);
   const nowDate = now();
   return rows.map((row) => toView(row, nowDate));
+}
+
+/**
+ * Admin read of one unit's registrations: every live row, plus removed rows
+ * that carry a staff block (standing or cleared). Read-only, not audited.
+ */
+export async function listUnitRegistrationsForAdmin(
+  unitId: string,
+  db: ResidentDb,
+  now: () => Date = () => new Date(),
+): Promise<AdminRegistrationView[]> {
+  const [unit] = await db.select({ id: units.id }).from(units).where(eq(units.id, unitId));
+  if (!unit) throw new ServiceError("UNIT_NOT_FOUND", "Unit not found", 404);
+
+  const blocker = alias(schema.guards, "blocker");
+  const clearer = alias(schema.guards, "clearer");
+  const rows = await db
+    .select({
+      id: unitRegistrations.id,
+      kind: unitRegistrations.kind,
+      label: unitRegistrations.label,
+      plate: unitRegistrations.plate,
+      residentId: unitRegistrations.residentId,
+      residentDisplayName: residents.displayName,
+      ruleId: autoApprovalRules.id,
+      ruleActive: autoApprovalRules.active,
+      expiresAt: autoApprovalRules.expiresAt,
+      createdAt: unitRegistrations.createdAt,
+      removedAt: unitRegistrations.deletedAt,
+      blockedAt: unitRegistrations.blockedAt,
+      blockedBy: blocker.name,
+      blockReason: unitRegistrations.blockReason,
+      blockClearedAt: unitRegistrations.blockClearedAt,
+      clearedBy: clearer.name,
+      blockClearReason: unitRegistrations.blockClearReason,
+    })
+    .from(unitRegistrations)
+    .innerJoin(autoApprovalRules, eq(autoApprovalRules.id, unitRegistrations.autoApprovalRuleId))
+    .innerJoin(residents, eq(residents.id, unitRegistrations.residentId))
+    .leftJoin(blocker, eq(blocker.id, unitRegistrations.blockedByGuardId))
+    .leftJoin(clearer, eq(clearer.id, unitRegistrations.blockClearedByGuardId))
+    .where(
+      and(
+        eq(unitRegistrations.unitId, unitId),
+        or(isNull(unitRegistrations.deletedAt), isNotNull(unitRegistrations.blockedAt)),
+      ),
+    )
+    .orderBy(unitRegistrations.kind, unitRegistrations.createdAt);
+
+  const nowDate = now();
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind === "vehicle" ? "vehicle" : "person",
+    label: row.label,
+    plate: row.plate,
+    residentId: row.residentId,
+    residentDisplayName: row.residentDisplayName,
+    status: row.removedAt ? "removed" : registrationStatus(row.ruleActive, row.expiresAt, nowDate),
+    ruleId: row.ruleId,
+    ruleActive: row.ruleActive,
+    expiresAt: row.expiresAt.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+    removedAt: row.removedAt ? row.removedAt.toISOString() : null,
+    block: row.blockedAt
+      ? {
+          blockedAt: row.blockedAt.toISOString(),
+          blockedBy: row.blockedBy ?? "Unknown staff member",
+          reason: row.blockReason,
+          clearedAt: row.blockClearedAt ? row.blockClearedAt.toISOString() : null,
+          clearedBy: row.blockClearedAt ? (row.clearedBy ?? "Unknown staff member") : null,
+          clearReason: row.blockClearReason,
+        }
+      : null,
+  }));
 }
 
 /**
