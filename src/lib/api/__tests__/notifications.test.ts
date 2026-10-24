@@ -36,7 +36,7 @@ function makeRow(over: Partial<NotificationView> = {}): NotificationView {
     channel: "whatsapp",
     status: "queued",
     attempts: 0,
-    targetPhone: "+15551230001",
+    targetPhoneMasked: "+1••••••••01",
     templateKey: "approval.magic_link",
     lastErrorCode: null,
     lastProviderResponseCode: null,

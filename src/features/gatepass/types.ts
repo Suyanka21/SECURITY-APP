@@ -139,7 +139,7 @@ export type NotificationDeliveryView = {
     | "failed"
     | "permanently_failed";
   attempts: number;
-  targetPhone: string;
+  targetPhoneMasked: string;
   templateKey: string;
   lastErrorCode: string | null;
   lastProviderResponseCode: number | null;

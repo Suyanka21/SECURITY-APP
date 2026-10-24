@@ -854,15 +854,6 @@ function statusBadgeClass(status: NotificationDeliveryView["status"]) {
   }
 }
 
-function maskPhone(phone: string) {
-  // Show country + last 4 only. spec notifications.md §5 bans full PII in
-  // the audit/log surface; the same discipline applies on screen since
-  // a guard shoulder-surfing scenario is realistic.
-  if (phone.length < 6) return phone;
-  const tail = phone.slice(-4);
-  return `${phone.slice(0, 3)}••••${tail}`;
-}
-
 /**
  * Renders the delivery rows for a single approval. Each row shows the
  * channel, masked target, status badge, attempt count, and (when
@@ -951,7 +942,7 @@ function DeliveryStatusBlock({
                 <span className="text-sm font-semibold capitalize">
                   {row.channel}
                   <span className="ml-2 font-normal text-muted-foreground">
-                    → {maskPhone(row.targetPhone)}
+                    → {row.targetPhoneMasked}
                   </span>
                 </span>
                 <span className="text-xs text-muted-foreground">

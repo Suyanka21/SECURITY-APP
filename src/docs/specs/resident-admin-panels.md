@@ -258,10 +258,11 @@ interface AdminRegistrationView {
 3. **Clear-block error code:** keep today's `422 RULE_INVALID_INPUT` for a
    missing reason (proposed: no server change), or also return
    `REASON_REQUIRED` there for consistency (one more small server change)?
-4. **Found while checking, outside R4a:** `GET /api/notifications`
-   (`requireAuth`, any guard role) returns the full `targetPhone` of each
-   notification. That is the host phone a guard typed when sending an
-   approval request, which is usually a resident's number. The guard console
-   masks it on screen, but the response does not. It is not an admin
-   resident screen, so R4a leaves it alone. Proposed: a separate small PR
-   after R4a that masks it on the server the same way. Or fold it into R4a.
+4. **Notifications phone (settled after R4a).** The original note here was
+   wrong: `GET /api/notifications` never sent `targetPhone`; the server's
+   `toView` already dropped it. The guard console's delivery row still read
+   `row.targetPhone` and masked it in the browser, so with real server data
+   it had no number to show. The follow-up PR has the server send
+   `targetPhoneMasked` instead, and an integration test
+   (`phone-exposure.integration.test.ts`) checks every staff response for
+   the full number.
