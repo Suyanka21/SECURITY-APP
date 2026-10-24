@@ -106,11 +106,15 @@ afterEach(async () => {
     ).map((r) => r.id);
     await db.delete(unitRegistrations).where(inArray(unitRegistrations.unitId, createdUnitIds));
     if (residentIds.length > 0) {
+      await db.delete(authorizationDecisions).where(inArray(authorizationDecisions.issuedByResidentId, residentIds));
       await db.delete(visitorProfiles).where(inArray(visitorProfiles.createdByResidentId, residentIds));
       await db.delete(autoApprovalRules).where(inArray(autoApprovalRules.createdByResidentId, residentIds));
       await db.delete(auditEvents).where(inArray(auditEvents.residentId, residentIds));
     }
     if (labels.length > 0) {
+      await db
+        .delete(notifications)
+        .where(inArray(notifications.approvalId, db.select({ id: approvalRequests.id }).from(approvalRequests).where(inArray(approvalRequests.unit, labels))));
       await db.delete(approvalRequests).where(inArray(approvalRequests.unit, labels));
       await db.delete(entryRecords).where(inArray(entryRecords.unit, labels));
     }
@@ -232,23 +236,8 @@ function expectNoPhone(label: string, r: Raw, phone: string): void {
   }
 }
 
-const approvalIds: string[] = [];
-
-afterEach(async () => {
+afterEach(() => {
   resetNotificationProviders();
-  if (createdUnitIds.length > 0) {
-    const residentIds = (
-      await db.select({ id: residents.id }).from(residents).where(inArray(residents.unitId, createdUnitIds))
-    ).map((r) => r.id);
-    if (residentIds.length > 0) {
-      await db.delete(authorizationDecisions).where(inArray(authorizationDecisions.issuedByResidentId, residentIds));
-    }
-  }
-  if (approvalIds.length > 0) {
-    await db.delete(notifications).where(inArray(notifications.approvalId, approvalIds));
-    await db.delete(approvalRequests).where(inArray(approvalRequests.id, approvalIds));
-    approvalIds.length = 0;
-  }
 });
 
 async function waitForDelivered(approvalId: string, token: string) {
@@ -281,7 +270,6 @@ describe("a resident's full number never reaches a staff response", () => {
     });
     expect(create.status, create.text).toBe(201);
     const created = JSON.parse(create.text) as { approvalId: string; traceId: string };
-    approvalIds.push(created.approvalId);
 
     const [stored] = await db.select().from(notifications).where(eq(notifications.approvalId, created.approvalId));
     expect(stored.targetPhone).toBe(phone);
@@ -293,10 +281,26 @@ describe("a resident's full number never reaches a staff response", () => {
     expect(rows[0]).not.toHaveProperty("targetPhone");
     expect(rows[0].targetPhoneMasked).toBe(maskPhoneE164(phone));
 
+    // A delivered row is not retryable; make it a failed row outside the
+    // retry cooldown so the retry response itself is checked.
+    await db
+      .update(notifications)
+      .set({
+        status: "failed",
+        deliveredAt: null,
+        failedAt: new Date(Date.now() - 120_000),
+        lastErrorCode: "PROVIDER_TIMEOUT",
+        updatedAt: new Date(Date.now() - 120_000),
+      })
+      .where(eq(notifications.id, rows[0].id));
+    const retry = await raw("POST", `/api/notifications/${rows[0].id}/retry`, guard, {});
+    expect(retry.status, retry.text).toBe(202);
+    expect(JSON.parse(retry.text).notification.targetPhoneMasked).toBe(maskPhoneE164(phone));
+
     const responses: [string, Raw][] = [
+      ["POST /api/notifications/:id/retry", retry],
       ["POST /api/approvals", create],
       ["GET /api/notifications", list],
-      ["POST /api/notifications/:id/retry", await raw("POST", `/api/notifications/${rows[0].id}/retry`, guard, {})],
       ["GET /api/approvals/:id/status", await raw("GET", `/api/approvals/${created.approvalId}/status`, guard)],
       ["GET /api/audit/events", await raw("GET", "/api/audit/events", admin)],
       ["GET /api/audit/events (senior-guard)", await raw("GET", "/api/audit/events", staffToken(seniorId))],
@@ -314,11 +318,9 @@ describe("a resident's full number never reaches a staff response", () => {
       ["GET /api/auth/me (guard)", await raw("GET", "/api/auth/me", guard)],
     ];
     for (const [label, r] of responses) {
-      expect(r.status, `${label}: ${r.text.slice(0, 200)}`).toBeLessThan(500);
+      expect([200, 201, 202], `${label}: ${r.text.slice(0, 200)}`).toContain(r.status);
       expectNoPhone(label, r, phone);
     }
-    const okCount = responses.filter(([, r]) => r.status === 200 || r.status === 201).length;
-    expect(okCount, responses.map(([l, r]) => `${l}=${r.status}`).join(", ")).toBeGreaterThanOrEqual(responses.length - 1);
   });
 
   it("control: the resident's own /api/resident/me still returns the full number", async () => {
