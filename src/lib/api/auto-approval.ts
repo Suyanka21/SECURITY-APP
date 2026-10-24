@@ -2,8 +2,10 @@
  * GatePass — auto-approval rules API client (admin dashboard, read-only use).
  *
  * Source: src/server/routes/auto-approval.ts — GET /api/auto-approval-rules is
- *         gated to requireRole(admin, senior-guard). The admin dashboard only
- *         READS rules; create/deactivate stay out of scope here.
+ *         gated to requireRole(admin, senior-guard); deactivate and
+ *         clear-block are admin only. Both take a reason: the server refuses
+ *         to switch off a resident's rule (REASON_REQUIRED) or clear a block
+ *         without one.
  */
 
 import { apiClient } from "./client";
@@ -37,5 +39,19 @@ export const autoApprovalApi = {
       "/api/auto-approval-rules",
       { signal },
     );
+  },
+  /** POST /api/auto-approval-rules/:id/deactivate (admin only). */
+  deactivateRule(
+    ruleId: string,
+    reason: string,
+  ): Promise<ApiResult<{ rule: AutoApprovalRuleView; traceId: string }>> {
+    return apiClient.post(`/api/auto-approval-rules/${encodeURIComponent(ruleId)}/deactivate`, { reason });
+  },
+  /** POST /api/auto-approval-rules/:id/clear-block (admin only). */
+  clearBlock(
+    ruleId: string,
+    reason: string,
+  ): Promise<ApiResult<{ block: { ruleId: string; registrationId: string; blockClearedAt: string }; traceId: string }>> {
+    return apiClient.post(`/api/auto-approval-rules/${encodeURIComponent(ruleId)}/clear-block`, { reason });
   },
 };

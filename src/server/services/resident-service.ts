@@ -61,6 +61,12 @@ export interface ResidentView {
   deactivatedAt: string | null;
 }
 
+/**
+ * What an admin sees of a resident: the full phone number never leaves the
+ * server in an admin response, only `phoneMasked`.
+ */
+export type AdminResidentView = Omit<ResidentView, "phoneE164"> & { phoneMasked: string };
+
 export interface ClaimCodeIssued {
   claimCodeId: string;
   unitId: string;
@@ -122,6 +128,23 @@ export function hashClaimCode(normalized: string): string {
 export function clampClaimCodeTtlHours(requested: number | undefined): number {
   const hours = requested ?? DEFAULT_CLAIM_CODE_TTL_HOURS;
   return Math.min(Math.max(hours, 1), MAX_CLAIM_CODE_TTL_HOURS);
+}
+
+/**
+ * Masks an E.164 number so at least half its digits are hidden:
+ * 12+ digits keep the first 3 and last 3, shorter numbers the first 1 and
+ * last 2 (`+254712345678` -> `+254••••••678`).
+ */
+export function maskPhoneE164(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  const [head, tail] = digits.length >= 12 ? [3, 3] : digits.length >= 6 ? [1, 2] : [0, 0];
+  const hidden = digits.length - head - tail;
+  return `+${digits.slice(0, head)}${"•".repeat(hidden)}${tail > 0 ? digits.slice(-tail) : ""}`;
+}
+
+export function toAdminResidentView(view: ResidentView): AdminResidentView {
+  const { phoneE164, ...rest } = view;
+  return { ...rest, phoneMasked: maskPhoneE164(phoneE164) };
 }
 
 function iso(value: Date): string {
@@ -719,7 +742,7 @@ export async function getResidentView(residentId: string, db: ResidentDb): Promi
 export async function listResidents(
   db: ResidentDb,
   opts: { unitId?: string; includeInactive?: boolean } = {},
-): Promise<ResidentView[]> {
+): Promise<AdminResidentView[]> {
   const conditions = [];
   if (opts.unitId) conditions.push(eq(residents.unitId, opts.unitId));
   if (!opts.includeInactive) conditions.push(eq(residents.isActive, true));
@@ -742,7 +765,7 @@ export async function listResidents(
   return rows.map((row) => ({
     id: row.id,
     displayName: row.displayName,
-    phoneE164: row.phoneE164,
+    phoneMasked: maskPhoneE164(row.phoneE164),
     isActive: row.isActive,
     unitId: row.unitId,
     unitLabel: row.unitLabel,
@@ -755,7 +778,7 @@ export async function deactivateResident(
   residentId: string,
   adminGuardId: string,
   db: ResidentDb,
-): Promise<ResidentView> {
+): Promise<AdminResidentView> {
   const traceId = `trace-${randomUUID()}`;
   const now = new Date();
 
@@ -811,5 +834,5 @@ export async function deactivateResident(
   });
 
   publishAuditEvent(event);
-  return getResidentView(residentId, db);
+  return toAdminResidentView(await getResidentView(residentId, db));
 }

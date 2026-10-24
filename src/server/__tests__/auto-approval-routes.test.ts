@@ -293,6 +293,15 @@ describe("Route: POST /api/auto-approval-rules/:id/deactivate", () => {
     expect(spy.mock.calls[0][4]).toBe("Reported by resident committee");
   });
 
+  it("passes null when no reason is sent, and propagates REASON_REQUIRED (422, field reason)", async () => {
+    const err = new ServiceError("REASON_REQUIRED", "A reason is required to switch off a resident's rule", 422, "reason");
+    const spy = vi.spyOn(service, "deactivateAutoApprovalRule").mockRejectedValue(err);
+    const ctx = makeCtx({ params: { id: RULE_ID }, guardId: GUARD_ID });
+    await handleDeactivateAutoApprovalRule(ctx.req, ctx.res, ctx.next);
+    expect(spy.mock.calls[0][4]).toBeNull();
+    expect(ctx.getNextErr()).toMatchObject({ code: "REASON_REQUIRED", statusCode: 422, field: "reason" });
+  });
+
   it("returns 422 for a too-short reason or unknown body fields", async () => {
     for (const body of [{ reason: "x" }, { reason: "valid reason", extra: 1 }]) {
       const spy = vi.spyOn(service, "deactivateAutoApprovalRule");

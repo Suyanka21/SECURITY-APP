@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import * as registrationService from "../services/unit-registration-service";
 import {
   evaluate,
   seedAutoApprovalRule,
@@ -496,6 +497,37 @@ describe("deactivateAutoApprovalRule()", () => {
     expect(view.active).toBe(false);
     // Idempotent — no new audit row written
     expect(getAuditEventsByType("auto_approval_rule_deactivated")).toHaveLength(0);
+  });
+});
+
+describe("deactivateAutoApprovalRule() — resident-created rules need a reason (R4a S3)", () => {
+  beforeEach(() => {
+    clearAuditLog();
+    vi.restoreAllMocks();
+  });
+
+  for (const active of [true, false]) {
+    it(`no reason on a resident rule (active=${active}) → 422 REASON_REQUIRED, field reason, nothing written`, async () => {
+      const rule = ruleRow({ active, createdByGuardId: null, createdByResidentId: "resident-1" });
+      const { db, rules } = makeMockDB({ rules: [rule] });
+      const block = vi.spyOn(registrationService, "blockResidentRule");
+      await expect(deactivateAutoApprovalRule("guard-1", rule.id, db)).rejects.toMatchObject({
+        code: "REASON_REQUIRED",
+        statusCode: 422,
+        field: "reason",
+      });
+      expect(block).not.toHaveBeenCalled();
+      expect(rules[0].active).toBe(active);
+      expect(getAuditEventsByType("auto_approval_rule_deactivated")).toHaveLength(0);
+    });
+  }
+
+  it("a staff rule with no reason is switched off as before", async () => {
+    const rule = ruleRow();
+    const { db, rules } = makeMockDB({ rules: [rule] });
+    const view = await deactivateAutoApprovalRule("guard-1", rule.id, db);
+    expect(view.active).toBe(false);
+    expect(rules[0].active).toBe(false);
   });
 });
 

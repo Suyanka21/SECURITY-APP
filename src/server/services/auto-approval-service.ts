@@ -605,6 +605,14 @@ export async function deactivateAutoApprovalRule(
 
   const row = existing[0];
   if (row.createdByResidentId) {
+    if (reason === null) {
+      throw new ServiceError(
+        "REASON_REQUIRED",
+        "A reason is required to switch off a resident's rule",
+        422,
+        "reason",
+      );
+    }
     const blocked = await blockResidentRule(
       guardId,
       ruleId,

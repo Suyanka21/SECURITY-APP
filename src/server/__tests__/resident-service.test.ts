@@ -23,6 +23,8 @@ import {
   normalizeClaimCode,
   MAX_CLAIM_ATTEMPTS,
   MAX_CLAIM_CODE_TTL_HOURS,
+  maskPhoneE164,
+  toAdminResidentView,
 } from "../services/resident-service";
 import {
   ClaimUnitSchema,
@@ -101,5 +103,45 @@ describe("resident input contracts — clients cannot name identity, unit, host 
     expect(IssueClaimCodeSchema.safeParse({ ttlHours: 169 }).success).toBe(false);
     expect(IssueClaimCodeSchema.safeParse({ ttlHours: 0 }).success).toBe(false);
     expect(IssueClaimCodeSchema.safeParse({ ttlHours: 1.5 }).success).toBe(false);
+  });
+});
+
+describe("maskPhoneE164 — admin responses never carry a full resident number (R4a S2)", () => {
+  const cases: [string, string][] = [
+    ["+25471234", "+2•••••34"],
+    ["+14155552671", "+1••••••••71"],
+    ["+254712345678", "+254••••••678"],
+    ["+254712345678901", "+254•••••••••901"],
+  ];
+
+  it.each(cases)("%s -> %s", (phone, masked) => {
+    expect(maskPhoneE164(phone)).toBe(masked);
+  });
+
+  it("hides at least half the digits of every 8–15 digit number", () => {
+    for (let n = 8; n <= 15; n += 1) {
+      const digits = "9".repeat(n);
+      const masked = maskPhoneE164(`+${digits}`);
+      const hidden = (masked.match(/•/g) ?? []).length;
+      expect(hidden, `n=${n}`).toBeGreaterThanOrEqual(n / 2);
+      expect(masked).not.toContain(digits);
+      expect(masked.replace(/•/g, "").length - 1 + hidden).toBe(n);
+    }
+  });
+
+  it("toAdminResidentView drops phoneE164 and adds phoneMasked", () => {
+    const view = toAdminResidentView({
+      id: "r1",
+      displayName: "Amina",
+      phoneE164: "+254712345678",
+      isActive: true,
+      unitId: "u1",
+      unitLabel: "A1",
+      claimedAt: "2026-01-01T00:00:00.000Z",
+      deactivatedAt: null,
+    });
+    expect(view).not.toHaveProperty("phoneE164");
+    expect(view.phoneMasked).toBe("+254••••••678");
+    expect(JSON.stringify(view)).not.toContain("712345678");
   });
 });

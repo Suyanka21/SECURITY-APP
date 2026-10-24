@@ -8,8 +8,12 @@
  *   GET    /api/admin/units                    list units (?includeInactive=true)
  *   POST   /api/admin/units/:id/deactivate     deactivate unit (+ residents, + open passes)
  *   POST   /api/admin/units/:id/claim-codes    issue one-shot claim code (raw code shown once)
+ *   GET    /api/admin/units/:id/registrations  a unit's registrations + block state (R4a)
  *   GET    /api/admin/residents                list residents (?unitId=, ?includeInactive=true)
  *   POST   /api/admin/residents/:id/deactivate deactivate resident
+ *
+ * Admin responses never carry a resident's full phone number: residents
+ * come back as AdminResidentView (`phoneMasked`), registrations carry none.
  *
  * Resident:
  *   POST   /api/resident/claim   requireSupabaseUser — redeem a claim code
@@ -43,6 +47,7 @@ import { issueResidentPass } from "../services/resident-pass-service";
 import {
   createRegistration,
   listRegistrations,
+  listUnitRegistrationsForAdmin,
   removeRegistration,
   renewRegistration,
   RESIDENT_RENEW_PROMPT_DAYS,
@@ -152,6 +157,25 @@ export async function handleIssueClaimCode(req: Request, res: Response, next: Ne
       getDb(req),
     );
     res.status(201).json({ claimCode: issued });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function handleListUnitRegistrations(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const params = UnitParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      const { message, field } = firstIssue(params.error);
+      invalidInput(res, message, field);
+      return;
+    }
+    const registrations = await listUnitRegistrationsForAdmin(params.data.id, getDb(req));
+    res.status(200).json({ registrations, count: registrations.length });
   } catch (err) {
     next(err);
   }
@@ -339,6 +363,7 @@ adminUnitsRouter.post("/", handleCreateUnit);
 adminUnitsRouter.get("/", handleListUnits);
 adminUnitsRouter.post("/:id/deactivate", handleDeactivateUnit);
 adminUnitsRouter.post("/:id/claim-codes", handleIssueClaimCode);
+adminUnitsRouter.get("/:id/registrations", handleListUnitRegistrations);
 
 export const adminResidentsRouter = Router();
 adminResidentsRouter.get("/", handleListResidents);

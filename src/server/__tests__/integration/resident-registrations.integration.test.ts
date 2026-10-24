@@ -508,7 +508,7 @@ describe("removal, deactivation and renewal", () => {
     const a = await claimedResident("RG-DR");
     await register(a.token, { kind: "person", label: "Nanny Rose" });
     await register(a.token, { kind: "vehicle", label: "Red Fit", plate: "KDJ 444J" });
-    const d = await api("POST", `/api/admin/residents/${a.resident.id}/deactivate`, staffToken(adminId));
+    const d = await api("POST", `/api/admin/residents/${a.resident.id}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     expect(d.status, JSON.stringify(d.body)).toBe(200);
     expect((await evaluate({ visitorName: "Nanny Rose", host: "Amina Wanjiru", unit: a.unit.label }, db)).match).toBe(false);
     expect((await evaluate({ visitorName: "x", host: "x", unit: a.unit.label, plate: "KDJ 444J" }, db)).match).toBe(false);
@@ -522,7 +522,7 @@ describe("removal, deactivation and renewal", () => {
     const b = await claimedResident("RG-DU");
     await register(b.token, { kind: "vehicle", label: "Black Note", plate: "KDK 555K" });
     expect((await evaluate({ visitorName: "x", host: "x", unit: b.unit.label, plate: "KDK 555K" }, db)).match).toBe(true);
-    await api("POST", `/api/admin/units/${b.unit.id}/deactivate`, staffToken(adminId));
+    await api("POST", `/api/admin/units/${b.unit.id}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     expect((await evaluate({ visitorName: "x", host: "x", unit: b.unit.label, plate: "KDK 555K" }, db)).match).toBe(false);
     expect((await api("POST", "/api/resident/registrations", b.token, { kind: "person", label: "Late" })).status).toBe(403);
   });
@@ -559,7 +559,7 @@ describe("removal, deactivation and renewal", () => {
     const { token } = await claimedResident("RG-OFF");
     const reg = await register(token, { kind: "person", label: "Switched Off" });
     const row = await registrationRow(reg.id);
-    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     expect(off.status, JSON.stringify(off.body)).toBe(200);
     const list = await api("GET", "/api/resident/registrations", token);
     expect((list.body.registrations as RegistrationView[])[0].status).toBe("disabled");
@@ -701,7 +701,7 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     const { token, unit } = await claimedResident("RG-BPN");
     const reg = await register(token, { kind: "person", label: "Jane Doe" });
     const row = await registrationRow(reg.id);
-    expect((await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId))).status).toBe(200);
+    expect((await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" })).status).toBe(200);
     expect((await api("DELETE", `/api/resident/registrations/${reg.id}`, token)).status).toBe(200);
 
     for (const label of ["Jane Doe", "  jane   DOE "]) {
@@ -718,7 +718,7 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     const b = await claimedResident("RG-BUB");
     const reg = await register(a.token, { kind: "vehicle", label: "Car", plate: "KDC 505C" });
     const row = await registrationRow(reg.id);
-    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     await register(b.token, { kind: "vehicle", label: "Car", plate: "KDC 505C" });
   });
 
@@ -727,7 +727,7 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     const reg = await register(token, { kind: "vehicle", label: "Gone", plate: "KDD 606D" });
     const row = await registrationRow(reg.id);
     expect((await api("DELETE", `/api/resident/registrations/${reg.id}`, token)).status).toBe(200);
-    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     expect(off.status, JSON.stringify(off.body)).toBe(200);
     expect((await registrationRow(reg.id)).blockedByGuardId).toBe(adminId);
     const again = await api("POST", "/api/resident/registrations", token, { kind: "vehicle", label: "Gone", plate: "KDD 606D" });
@@ -742,7 +742,7 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     expect((await api("DELETE", `/api/resident/registrations/${first.id}`, token)).status).toBe(200);
     const second = await register(token, { kind: "vehicle", label: "New", plate: "kde707e" });
 
-    await api("POST", `/api/auto-approval-rules/${firstRow.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    await api("POST", `/api/auto-approval-rules/${firstRow.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     expect(await activeResidentRules(resident.id)).toHaveLength(0);
     const list = await api("GET", "/api/resident/registrations", token);
     expect((list.body.registrations as RegistrationView[]).find((r) => r.id === second.id)?.status).toBe("disabled");
@@ -752,9 +752,9 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     const { token } = await claimedResident("RG-BID");
     const reg = await register(token, { kind: "person", label: "Twice" });
     const row = await registrationRow(reg.id);
-    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     const blockedAt = (await registrationRow(reg.id)).blockedAt;
-    const r2 = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    const r2 = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     expect(r2.status).toBe(200);
     expect((await registrationRow(reg.id)).blockedAt).toEqual(blockedAt);
     const audits = await db
@@ -768,7 +768,7 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     const { token } = await claimedResident("RG-BAZ");
     const reg = await register(token, { kind: "vehicle", label: "Locked", plate: "KDF 808F" });
     const row = await registrationRow(reg.id);
-    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     const path = `/api/auto-approval-rules/${row.autoApprovalRuleId}/clear-block`;
 
     const asResident = await api("POST", path, token, { reason: "please let me" });
@@ -792,7 +792,7 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     const { token, unit } = await claimedResident("RG-BCL");
     const reg = await register(token, { kind: "vehicle", label: "Cleared", plate: "KDG 909G" });
     const row = await registrationRow(reg.id);
-    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     await api("DELETE", `/api/resident/registrations/${reg.id}`, token);
 
     const path = `/api/auto-approval-rules/${row.autoApprovalRuleId}/clear-block`;
@@ -838,7 +838,7 @@ describe("staff block — a staff switch-off survives remove + re-register", () 
     const { token, unit } = await claimedResident("RG-BAF");
     const reg = await register(token, { kind: "vehicle", label: "Atomic", plate: "KDH 111H" });
     const row = await registrationRow(reg.id);
-    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId));
+    const off = await api("POST", `/api/auto-approval-rules/${row.autoApprovalRuleId}/deactivate`, staffToken(adminId), { reason: "Staff switch-off" });
     expect(off.status).toBe(500);
     const after = await registrationRow(reg.id);
     expect(after.blockedAt).toBeNull();
