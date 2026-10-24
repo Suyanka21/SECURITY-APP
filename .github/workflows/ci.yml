@@ -2,6 +2,7 @@ name: CI
 
 # Quality gate for every PR and every push to main.
 # Runs lint + both Vitest suites (frontend jsdom config and server node config)
+# + the real-Postgres integration suite (database built from drizzle/*.sql)
 # + the production build. All jobs must pass; configure branch protection to
 # make these checks required so a failure blocks merge.
 
@@ -53,6 +54,35 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vitest run --config vitest.server.config.ts
+
+  test-integration:
+    name: Test (integration, Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: gp
+          POSTGRES_DB: gatepass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:gp@localhost:5432/gatepass
+      SUPABASE_URL: ""
+      JWT_SECRET: ci-integration-only-not-a-secret
+      PIN_PEPPER: ci-integration-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build database from drizzle/*.sql (LC_ALL=C order, one transaction per file, RLS on every table)
+        run: scripts/build-db-from-sql.sh "$DATABASE_URL"
+      - run: npx vitest run --config vitest.integration.config.ts
 
   build:
     name: Build
