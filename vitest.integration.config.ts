@@ -31,6 +31,9 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["src/server/**/*.integration.{test,spec}.{ts,tsx}"],
+    // All files share one database and some clean up table-wide (e.g.
+    // resident_claim_attempts), so files run one at a time.
+    fileParallelism: false,
     // Longer timeout — real DB operations take more time
     testTimeout: 15_000,
     hookTimeout: 15_000,
