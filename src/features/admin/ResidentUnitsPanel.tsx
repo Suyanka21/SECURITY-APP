@@ -85,7 +85,7 @@ function useLoad<T>(fetcher: (signal: AbortSignal) => Promise<{ ok: true; data: 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   useEffect(() => {
     const controller = new AbortController();
-    setState({ status: "loading" });
+    setState((prev) => (prev.status === "ready" ? prev : { status: "loading" }));
     void fetcher(controller.signal).then((res) => {
       if (controller.signal.aborted) return;
       setState(res.ok ? { status: "ready", data: res.data } : { status: "error", error: res.error });
@@ -107,6 +107,14 @@ export function ResidentUnitsPanel() {
   );
   const units = useLoad(fetchUnits);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Lives here, not in UnitDetail: a deactivated unit drops out of the
+  // default list, which unmounts its detail.
+  const [unitNotice, setUnitNotice] = useState<string | null>(null);
+
+  const selectUnit = (id: string) => {
+    setSelectedId(id);
+    setUnitNotice(null);
+  };
 
   const [label, setLabel] = useState("");
   const [creating, setCreating] = useState(false);
@@ -121,7 +129,7 @@ export function ResidentUnitsPanel() {
     setCreating(false);
     if (res.ok) {
       setLabel("");
-      setSelectedId(res.data.unit.id);
+      selectUnit(res.data.unit.id);
       units.reload();
     } else {
       setCreateError(res.error);
@@ -193,7 +201,7 @@ export function ResidentUnitsPanel() {
                   <button
                     type="button"
                     aria-pressed={u.id === selectedId}
-                    onClick={() => setSelectedId(u.id)}
+                    onClick={() => selectUnit(u.id)}
                     className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm ${
                       u.id === selectedId ? "border-primary bg-primary/5" : "border-border hover:bg-muted"
                     }`}
@@ -211,8 +219,21 @@ export function ResidentUnitsPanel() {
 
         {/* ── Unit detail: (b) claim code, (c) residents, (d) registrations ── */}
         <div className="md:col-span-2">
+          {unitNotice && (
+            <p role="status" className="mb-3 text-sm">
+              {unitNotice}
+            </p>
+          )}
           {selected ? (
-            <UnitDetail key={selected.id} unit={selected} onUnitChanged={units.reload} />
+            <UnitDetail
+              key={selected.id}
+              unit={selected}
+              onUnitChanged={units.reload}
+              onUnitDeactivated={(message) => {
+                setUnitNotice(message);
+                units.reload();
+              }}
+            />
           ) : (
             <p className="py-4 text-sm text-muted-foreground">Select a unit to manage it.</p>
           )}
@@ -224,11 +245,20 @@ export function ResidentUnitsPanel() {
 
 // ─── Unit detail ─────────────────────────────────────────────────────────────
 
-function UnitDetail({ unit, onUnitChanged }: { unit: UnitView; onUnitChanged: () => void }) {
+function UnitDetail({
+  unit,
+  onUnitChanged,
+  onUnitDeactivated,
+}: {
+  unit: UnitView;
+  onUnitChanged: () => void;
+  onUnitDeactivated: (message: string) => void;
+}) {
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiErrorBody | null>(null);
-  const [deactivated, setDeactivated] = useState<string | null>(null);
+  const [deactivated, setDeactivated] = useState(false);
+  const [registrationsNonce, setRegistrationsNonce] = useState(0);
   const [claimCode, setClaimCode] = useState<ClaimCodeIssued | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -241,11 +271,11 @@ function UnitDetail({ unit, onUnitChanged }: { unit: UnitView; onUnitChanged: ()
     setConfirmDeactivate(false);
     if (res.ok) {
       const { deactivatedResidentCount, expiredPassCount, disabledRuleCount } = res.data;
-      setDeactivated(
-        `Unit deactivated: ${deactivatedResidentCount} resident(s) deactivated, ${expiredPassCount} open pass(es) expired, ${disabledRuleCount} rule(s) switched off.`,
-      );
+      setDeactivated(true);
       setClaimCode(null);
-      onUnitChanged();
+      onUnitDeactivated(
+        `Unit ${unit.label} deactivated: ${deactivatedResidentCount} resident(s) deactivated, ${expiredPassCount} open pass(es) expired, ${disabledRuleCount} rule(s) switched off.`,
+      );
     } else {
       setError(res.error);
     }
@@ -256,6 +286,7 @@ function UnitDetail({ unit, onUnitChanged }: { unit: UnitView; onUnitChanged: ()
     setBusy(true);
     setError(null);
     setCopied(false);
+    setClaimCode(null);
     const res = await residentAdminApi.issueClaimCode(unit.id);
     setBusy(false);
     if (res.ok) setClaimCode(res.data.claimCode);
@@ -272,7 +303,7 @@ function UnitDetail({ unit, onUnitChanged }: { unit: UnitView; onUnitChanged: ()
     }
   };
 
-  const active = unit.isActive && deactivated === null;
+  const active = unit.isActive && !deactivated;
 
   return (
     <div className="flex flex-col gap-4">
@@ -312,7 +343,6 @@ function UnitDetail({ unit, onUnitChanged }: { unit: UnitView; onUnitChanged: ()
         </div>
       )}
 
-      {deactivated && <p role="status" className="text-sm">{deactivated}</p>}
       {error && <ErrorBox error={error} />}
 
       {claimCode && (
@@ -334,15 +364,32 @@ function UnitDetail({ unit, onUnitChanged }: { unit: UnitView; onUnitChanged: ()
         </div>
       )}
 
-      <ResidentsSection unitId={unit.id} readOnly={!active} />
-      <RegistrationsSection unitId={unit.id} readOnly={!active} />
+      <ResidentsSection
+        unitId={unit.id}
+        readOnly={!active}
+        onResidentDeactivated={() => {
+          // Deactivating a resident switches off their rules and changes the
+          // unit's resident count.
+          setRegistrationsNonce((n) => n + 1);
+          onUnitChanged();
+        }}
+      />
+      <RegistrationsSection unitId={unit.id} readOnly={!active} refreshKey={registrationsNonce} />
     </div>
   );
 }
 
 // ─── (c) Residents ───────────────────────────────────────────────────────────
 
-function ResidentsSection({ unitId, readOnly }: { unitId: string; readOnly: boolean }) {
+function ResidentsSection({
+  unitId,
+  readOnly,
+  onResidentDeactivated,
+}: {
+  unitId: string;
+  readOnly: boolean;
+  onResidentDeactivated: () => void;
+}) {
   const [includeInactive, setIncludeInactive] = useState(false);
   const fetchResidents = useCallback(
     (signal: AbortSignal) => residentAdminApi.listResidents(unitId, includeInactive, signal),
@@ -360,8 +407,12 @@ function ResidentsSection({ unitId, readOnly }: { unitId: string; readOnly: bool
     const res = await residentAdminApi.deactivateResident(resident.id);
     setBusy(false);
     setConfirmId(null);
-    if (res.ok) residents.reload();
-    else setError(res.error);
+    if (res.ok) {
+      residents.reload();
+      onResidentDeactivated();
+    } else {
+      setError(res.error);
+    }
   };
 
   return (
@@ -418,12 +469,24 @@ function ResidentsSection({ unitId, readOnly }: { unitId: string; readOnly: bool
 
 type RowAction = { id: string; mode: "off" | "clear" };
 
-function RegistrationsSection({ unitId, readOnly }: { unitId: string; readOnly: boolean }) {
+function RegistrationsSection({
+  unitId,
+  readOnly,
+  refreshKey,
+}: {
+  unitId: string;
+  readOnly: boolean;
+  refreshKey: number;
+}) {
   const fetchRegistrations = useCallback(
     (signal: AbortSignal) => residentAdminApi.listRegistrations(unitId, signal),
     [unitId],
   );
   const registrations = useLoad(fetchRegistrations);
+  const { reload: reloadRegistrations } = registrations;
+  useEffect(() => {
+    if (refreshKey > 0) reloadRegistrations();
+  }, [refreshKey, reloadRegistrations]);
   const [action, setAction] = useState<RowAction | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);

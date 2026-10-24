@@ -145,7 +145,51 @@ describe("ResidentUnitsPanel", () => {
     expect(screen.getByText(/deactivates its residents, expires its open passes and switches off its rules/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /confirm deactivate a-101/i }));
     await waitFor(() => expect(api.deactivateUnit).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText(/1 resident\(s\) deactivated, 2 open pass\(es\) expired, 3 rule\(s\) switched off/i)).toBeInTheDocument();
+    expect(await screen.findByText(/unit a-101 deactivated: 1 resident\(s\) deactivated, 2 open pass\(es\) expired, 3 rule\(s\) switched off/i)).toBeInTheDocument();
+  });
+
+  it("unit deactivation counts stay visible after the unit drops out of the reloaded list", async () => {
+    setup();
+    await selectUnit("A-101");
+    api.deactivateUnit.mockResolvedValue(
+      ok({ unit: unit({ isActive: false }), expiredPassCount: 2, deactivatedResidentCount: 1, disabledRuleCount: 3 }),
+    );
+    api.listUnits.mockResolvedValue(ok({ units: [], count: 0 }));
+    fireEvent.click(await screen.findByRole("button", { name: /deactivate unit/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm deactivate a-101/i }));
+    await waitFor(() => expect(api.listUnits).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("No units yet.")).toBeInTheDocument();
+    expect(screen.getByText(/unit a-101 deactivated: 1 resident\(s\) deactivated/i)).toBeInTheDocument();
+  });
+
+  it("resident deactivation also refreshes the unit list and the registrations, keeping the unit selected", async () => {
+    setup();
+    await selectUnit("A-101");
+    const residents = await screen.findByRole("region", { name: "Residents" });
+    await within(residents).findByText("+254••••••678");
+    expect(api.listUnits).toHaveBeenCalledTimes(1);
+    expect(api.listRegistrations).toHaveBeenCalledTimes(1);
+    api.deactivateResident.mockResolvedValue(
+      ok({
+        resident: {
+          id: "res-1",
+          displayName: "Amina Wanjiru",
+          phoneMasked: "+254••••••678",
+          isActive: false,
+          unitId: "u-1",
+          unitLabel: "A-101",
+          claimedAt: "2026-01-02T00:00:00.000Z",
+          deactivatedAt: "2026-02-01T00:00:00.000Z",
+        },
+      }),
+    );
+    fireEvent.click(within(residents).getByRole("button", { name: /^deactivate$/i }));
+    fireEvent.click(within(residents).getByRole("button", { name: /confirm deactivate amina wanjiru/i }));
+    await waitFor(() => expect(api.deactivateResident).toHaveBeenCalledWith("res-1"));
+    await waitFor(() => expect(api.listUnits).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.listRegistrations).toHaveBeenCalledTimes(2));
+    expect(api.listResidents).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { name: /unit a-101/i })).toBeInTheDocument();
   });
 
   it("claim code is shown once with Copy, and is gone after Dismiss or selecting another unit", async () => {
@@ -170,6 +214,19 @@ describe("ResidentUnitsPanel", () => {
     expect(screen.queryByText("AB12-CD34")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("AB12-CD34")).toBeNull();
     expect(JSON.stringify({ ...window.localStorage })).not.toContain("AB12-CD34");
+  });
+
+  it("a failed re-issue does not leave the earlier code on screen next to the error", async () => {
+    setup();
+    await selectUnit("A-101");
+    const issued = { claimCodeId: "c1", unitId: "u-1", unitLabel: "A-101", code: "AB12-CD34", expiresAt: "2026-01-04T00:00:00.000Z" };
+    api.issueClaimCode.mockResolvedValueOnce({ ok: true, status: 201, data: { claimCode: issued } });
+    fireEvent.click(await screen.findByRole("button", { name: /issue claim code/i }));
+    expect(await screen.findByText("AB12-CD34")).toBeInTheDocument();
+    api.issueClaimCode.mockResolvedValueOnce({ ok: false, status: 500, error: { code: "INTERNAL_ERROR", message: "Try again", traceId: "t" } });
+    fireEvent.click(screen.getByRole("button", { name: /issue claim code/i }));
+    expect(await screen.findByText(/INTERNAL_ERROR/)).toBeInTheDocument();
+    expect(screen.queryByText("AB12-CD34")).not.toBeInTheDocument();
   });
 
   it("residents show the server's masked phone exactly as given", async () => {
