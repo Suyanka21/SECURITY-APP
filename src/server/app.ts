@@ -70,6 +70,7 @@ import {
   handleListDeliveries,
 } from "./routes/deliveries";
 import { handleGetMe } from "./routes/auth";
+import { handlePasswordReset } from "./routes/password-reset";
 import { handleProvisionAccount } from "./routes/accounts";
 import {
   adminResidentsRouter,
@@ -150,6 +151,20 @@ const RESIDENT_REGISTRATION_RATE_LIMIT = {
   },
 };
 
+const PASSWORD_RESET_RATE_LIMIT = {
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: "RATE_LIMIT_EXCEEDED",
+      message: "Too many reset requests. Please wait 15 minutes before trying again.",
+      traceId: "rate-limited",
+    },
+  },
+};
+
 const STRICT_RATE_LIMIT = {
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 60,                   // 60 requests per window per IP (stricter)
@@ -216,6 +231,7 @@ export function createApp(db: unknown) {
   // correct interface. Any authenticated guard role may call it; the role is
   // read from guards.role (auth-and-role-routing.md §7), never from the token.
   app.get("/api/auth/me", requireAuth, handleGetMe);
+  app.post("/api/auth/password-reset", rateLimit(PASSWORD_RESET_RATE_LIMIT), handlePasswordReset);
 
   // ─── Protected Routes ──────────────────────────────────────────────
   // Auth + stricter rate limits on mutation endpoints

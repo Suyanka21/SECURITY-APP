@@ -150,3 +150,24 @@ export const realSupabaseAdminDeps: SupabaseAdminDeps = {
   createUser: createSupabaseAuthUser,
   deleteUser: deleteSupabaseAuthUser,
 };
+
+/**
+ * Ask Supabase Auth to email a password-recovery link. Supabase answers the
+ * same way whether or not the address has an account, and so does our route.
+ * The link lands on `redirectTo` with the session tokens in the URL
+ * fragment (#...), which browsers never send to a server or in a Referer.
+ */
+export async function requestPasswordRecovery(email: string, redirectTo: string): Promise<void> {
+  const url = `${baseUrl()}/auth/v1/recover?redirect_to=${encodeURIComponent(redirectTo)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: adminHeaders(),
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    throw new SupabaseAdminError(
+      res.status === 429 ? "transient" : "unavailable",
+      `Supabase recover returned HTTP ${res.status}`,
+    );
+  }
+}

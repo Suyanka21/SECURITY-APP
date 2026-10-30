@@ -57,10 +57,20 @@ it. This is a known operational gap tracked in the pilot checklist.
 
 ## 4. Password reset
 
-There is **no in-app password reset**. Resets are done by the technical
-contact in the Supabase dashboard (Authentication → Users → the user → send
-recovery / set password). Verify the requester's identity in person or via
-their supervisor before resetting. Never reset over an unverified phone call.
+Staff reset their own password: **Forgot password?** on the sign-in screen
+opens `/reset-password`. They enter their email and get the same message
+whether or not it has an account; if it has one, Supabase emails a one-time
+link. The link opens a form to choose a new password (12–128 characters).
+Saving it signs out every device on that account.
+
+- Limits: 5 requests per 15 minutes from one network, and at most one email
+  per address per minute (extra requests get the same message, no email).
+- If the email never arrives: check spam, then check the Supabase project's
+  SMTP settings and Auth logs ([environment checklist §2a](./environment-configuration-checklist.md)).
+- The fallback is still the Supabase dashboard (Authentication → Users → the
+  user → send recovery). Verify the requester's identity in person or via
+  their supervisor first. Never reset over an unverified phone call, and never
+  read a password or link out over the phone.
 
 ## 5. When a guard leaves the company
 

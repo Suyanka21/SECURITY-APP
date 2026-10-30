@@ -54,6 +54,26 @@ that for a real deploy).
 Build with `NODE_ENV=production` so the DEV-ONLY simulate-offline / camera-failed
 controls are excluded from the bundle. Verify: `grep -c "Simulate offline" dist/assets/*.js` → `0`.
 
+## 2a. Supabase Auth settings (dashboard) — staff password reset
+
+The staff password reset (`/reset-password`) depends on these project
+settings. They live in the Supabase dashboard, not in environment variables.
+
+| Setting | Where | Value |
+|---|---|---|
+| Site URL | Authentication → URL Configuration | `APP_PUBLIC_ORIGIN` (e.g. `https://gatepass.example`). |
+| Redirect URLs | Authentication → URL Configuration | Exactly `APP_PUBLIC_ORIGIN/reset-password`. A redirect not on this list falls back to the Site URL, and the link then opens the sign-in page instead of the reset form. No wildcards, no localhost in production. |
+| Custom SMTP | Authentication → Emails → SMTP Settings | The estate's own sender. The built-in sender is for testing only, is heavily rate limited and may only deliver to project team members. |
+| "Reset password" email template | Authentication → Emails → Templates | Keep the default `{{ .ConfirmationURL }}` link. Do **not** switch it to a `{{ .TokenHash }}` link pointing at our site: that puts the token in the query string, which our host's access logs record. |
+| Email OTP expiry | Authentication → Providers → Email | 1 hour or less. |
+
+How the link stays out of logs: the email link goes to Supabase's own
+`/auth/v1/verify` endpoint, which consumes the one-time token and redirects to
+`APP_PUBLIC_ORIGIN/reset-password#access_token=…`. The part after `#` is never
+sent to our host or in a `Referer` header, and the page removes it from the
+address bar and history as soon as it has been read. Our server never sees a
+reset token; it only receives the email address, in a POST body.
+
 ## 3. Things that must never be in the browser bundle or the repo
 
 - `SUPABASE_SECRET_KEY`, `DATABASE_URL`, `PIN_PEPPER`, any `JWT_SECRET`.
