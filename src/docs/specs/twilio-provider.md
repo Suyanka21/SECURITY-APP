@@ -112,11 +112,24 @@ WhatsApp: To=whatsapp:+2547…  From=whatsapp:+…  ContentSid=HX…  ContentVar
     - A `sent` row is excluded from the 30 s stale rule.
     - **Matching a callback to its row.** Today the message SID is written
       only to the audit event. On a 201 the dispatcher also writes it to a
-      new column, `notifications.provider_message_id`. The webhook looks the
-      row up by Twilio's `MessageSid`. An unknown SID returns `200` and changes
-      nothing, so Twilio does not keep retrying. It logs only `unknown sid`.
-    - Needs a migration: `ALTER TYPE notification_status ADD VALUE 'sent'`,
-      plus `provider_message_id text` (nullable) with a unique index.
+      new column, `notifications.provider_message_id`.
+    - **Callbacks are stored before they are applied.** A callback can arrive
+      before the dispatcher has saved the SID. So every callback that passes
+      the signature check is first inserted into a new table,
+      `notification_callbacks` (`message_sid`, `status`, `received_at`;
+      unique on `message_sid` + `status`; RLS on). The webhook then returns
+      `200`.
+    - **Applying a stored callback.** The callback is applied to its row if
+      the SID is already known. If not, the dispatcher applies it in the same
+      transaction that saves the SID. Nothing is lost.
+    - **No double transitions.** A repeat callback hits the unique index and
+      is ignored. A transition applies only from `sending` or `sent`, so a
+      replayed or late callback cannot change a finished row. The fallback
+      runs only on the transition into `failed`.
+    - Needs a migration:
+      - `ALTER TYPE notification_status ADD VALUE 'sent'`;
+      - `provider_message_id text` (nullable) with a unique index;
+      - the `notification_callbacks` table.
 - **Wiring (fixes G1, G3).** `createApp()` builds the registry from
   environment variables (§4) once, at boot.
 - **SMS fallback (fixes G2).** `maybeEnqueueSmsFallback()` returns the new row,
@@ -245,7 +258,7 @@ script, `npm run test:phone-sweep:live`:
 | T3 | Registry built from environment variables at boot | `registry.ts`, `app.ts` |
 | T4 | Production config checks for §4 | `config/production-config.ts`, `.env.example` |
 | T5 | Dispatch the SMS fallback row immediately (G2) | `notification-service.ts` |
-| T6 (option B) | Status webhook + signature check; new `sent` status, `provider_message_id` column and migration | `routes/notifications.ts`, `app.ts`, `drizzle/00xx_notification_sent.sql`, `src/db/schema.ts` |
+| T6 (option B) | Status webhook + signature check; new `sent` status, `provider_message_id` column, `notification_callbacks` table and migration | `routes/notifications.ts`, `app.ts`, `drizzle/00xx_notification_sent.sql`, `src/db/schema.ts` |
 | T7 | Opt-in live sweep script | `scripts/` or `src/server/__tests__/live/` (excluded from CI) |
 | T8 (D2) | The first notification row's channel comes from configuration: `sms` when `NOTIFICATIONS_WHATSAPP_PROVIDER=disabled`, otherwise `whatsapp`. The `enqueuedNotification.channel` type widens from `"whatsapp"` to the channel union. | `services/approval-service.ts` |
 
@@ -258,6 +271,10 @@ change is T8, which picks the first channel.
   code, the timeout, the excerpt containing no number, dedup;
 - config tests;
 - signature-check tests: a valid signature, a bad one and a missing one;
+- webhook tests (integration):
+  - a callback that arrives before the SID is saved is still applied;
+  - a repeated or late callback changes nothing;
+  - a `failed` callback queues the SMS fallback exactly once;
 - an integration test that the SMS fallback is dispatched (G2), in the CI
   integration job.
 
