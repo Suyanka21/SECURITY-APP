@@ -32,11 +32,22 @@ function makeApi(result: ApiResultish) {
 function makeClient(opts: {
   session?: object | null;
   updateError?: { code?: string; name?: string; message: string } | null;
+  recoveryEventFor?: string;
 } = {}) {
   const hashAtGetSession: string[] = [];
+  type Listener = (event: string, session: object | null) => void;
+  const listeners = new Set<Listener>();
   const auth = {
+    onAuthStateChange: vi.fn((cb: Listener) => {
+      listeners.add(cb);
+      return { data: { subscription: { unsubscribe: () => listeners.delete(cb) } } };
+    }),
     getSession: vi.fn(async () => {
       hashAtGetSession.push(window.location.hash);
+      if (opts.recoveryEventFor) {
+        const id = opts.recoveryEventFor;
+        setTimeout(() => listeners.forEach((cb) => cb("PASSWORD_RECOVERY", { user: { id } })), 0);
+      }
       return {
         data: {
           session:
@@ -190,11 +201,33 @@ describe("ResetPassword — set step (recovery link)", () => {
     });
     at(`/reset-password${RECOVERY_HASH}`);
     render(<ResetPassword getClient={() => client} />);
-    expect(await screen.findByText(/expired or has already been used/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/expired or has already been used/, {}, { timeout: 3_000 }),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("New password")).toBeNull();
     expect(auth.updateUser).not.toHaveBeenCalled();
     expect(auth.signOut).not.toHaveBeenCalled();
     expect(window.location.href).not.toContain("#");
+  });
+
+  it("a link whose token Supabase refreshed still opens the form via PASSWORD_RECOVERY", async () => {
+    const { client } = makeClient({
+      session: { access_token: "refreshed-token", user: { id: "bob" } },
+      recoveryEventFor: "bob",
+    });
+    at(`/reset-password${RECOVERY_HASH}`);
+    render(<ResetPassword getClient={() => client} />);
+    expect(await screen.findByLabelText("New password")).toBeInTheDocument();
+  });
+
+  it("a PASSWORD_RECOVERY for another user does not open the form for the stored session", async () => {
+    const { client } = makeClient({
+      session: { access_token: "alice-existing-session", user: { id: "alice" } },
+      recoveryEventFor: "bob",
+    });
+    at(`/reset-password${RECOVERY_HASH}`);
+    render(<ResetPassword getClient={() => client} />);
+    expect(await screen.findByText(/expired or has already been used/)).toBeInTheDocument();
   });
 
   it("a network failure keeps the session and the form for a retry", async () => {

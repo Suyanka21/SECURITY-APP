@@ -93,6 +93,44 @@ function classifyUpdateError(err: { code?: string; name?: string }): UpdateOutco
   };
 }
 
+export const RECOVERY_EVENT_WAIT_MS = 1_000;
+
+/**
+ * True only when the stored session came from THIS link. If Supabase rejects
+ * the link, getSession() returns whatever session was already stored (possibly
+ * another staff member's), and that must not open the form. Accepted when the
+ * session still carries the link's access token, or when Supabase reported
+ * PASSWORD_RECOVERY for the same user (it may have refreshed the token).
+ */
+async function confirmRecovery(
+  supabase: SupabaseClient,
+  expectedToken: string | undefined,
+): Promise<boolean> {
+  let recoveryUserId: string | null = null;
+  let onRecovery: (() => void) | null = null;
+  const { data } = supabase.auth.onAuthStateChange((event, s) => {
+    if (event === "PASSWORD_RECOVERY" && s) {
+      recoveryUserId = s.user.id;
+      onRecovery?.();
+    }
+  });
+  try {
+    // getSession waits for the client to read the session from the hash.
+    const session = (await supabase.auth.getSession()).data.session;
+    if (!session) return false;
+    if (expectedToken && session.access_token === expectedToken) return true;
+    if (recoveryUserId === null) {
+      await new Promise<void>((resolve) => {
+        onRecovery = resolve;
+        setTimeout(resolve, RECOVERY_EVENT_WAIT_MS);
+      });
+    }
+    return recoveryUserId !== null && recoveryUserId === session.user.id;
+  } finally {
+    data.subscription.unsubscribe();
+  }
+}
+
 interface ResetPasswordProps {
   api?: typeof passwordResetApi;
   getClient?: () => SupabaseClient | null;
@@ -119,16 +157,9 @@ export default function ResetPassword({
     void (async () => {
       const expected = fragmentRef.current?.accessToken;
       const supabase = fragmentKind === "recovery" ? getClient() : null;
-      // getSession waits for the client to read the session from the hash.
-      const session = supabase
-        ? (await supabase.auth.getSession()).data.session
-        : null;
+      const recovered = supabase ? await confirmRecovery(supabase, expected) : false;
       stripFragment();
       if (fragmentRef.current) fragmentRef.current.accessToken = undefined;
-      // Only the session minted from THIS link may set a password. If the link
-      // was rejected, getSession returns whatever session was already stored
-      // (possibly another staff member's); that must not open the form.
-      const recovered = !!session && !!expected && session.access_token === expected;
       if (active) setMode(recovered ? "set" : "expired");
     })();
     return () => {
