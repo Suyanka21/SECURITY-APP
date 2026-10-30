@@ -163,8 +163,10 @@ resident approvals decided seconds after being sent from an unexpected device.
    **Copy** and give it to the resident in person or by a call you placed to
    their known number. It is valid for 72 hours and works once.
 3. The resident opens the resident portal, signs in with their phone (one-time
-   SMS code) and enters the claim code. Five wrong codes lock that caller out
-   for 15 minutes; issue a new code if the resident is stuck.
+   SMS code) and enters the claim code. Five wrong codes lock that resident's
+   sign-in out of claiming for 15 minutes, whatever code they enter next. Tell
+   them to wait 15 minutes and retry the same code. Issue a new code only if
+   the first one has expired, been used, or was lost.
 4. Done when the resident appears under the unit with a masked number
    (`+254••••••678`). Admins never see the full number.
 
@@ -175,13 +177,15 @@ Never write the code itself down.
 
 **Who:** admin only.
 
-1. **One resident leaves:** select the unit → the resident → **Deactivate**.
-   Their portal access ends and the rules from their registrations are
-   switched off.
-2. **The whole unit is vacated:** select the unit → **Deactivate unit**. Every
-   resident of the unit is deactivated, open passes for it expire and its
-   rules are switched off. The screen shows the three counts; write them down.
-3. A new occupant gets a new claim code (SOP 10).
+1. **A household moves out:** select the unit → each resident →
+   **Deactivate**. Their portal access ends and the rules from their
+   registrations are switched off. The unit stays active, so the next
+   occupant gets a new claim code for it (SOP 10).
+2. **Deactivate unit is permanent.** Use it only when the address itself no
+   longer exists. Every resident of the unit is deactivated, open passes for
+   it expire and its rules are switched off; the screen shows the three counts,
+   write them down. There is no reactivation, and its label cannot be reused,
+   so **nobody can ever claim that address again** (known gap).
 
 **Record:** unit, resident (masked number only), date, the counts from step 2.
 
