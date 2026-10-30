@@ -11,3 +11,4 @@ PR that fixes it.
 | Date | PR | Severity | Issue |
 |---|---|---|---|
 | 2026-10-30 | [#54](https://github.com/Suyanka21/SECURITY-APP/pull/54) | flag | Pilot checklist B4 and the known-gaps list still say password reset is done outside the app; A8b now tests the in-app reset. |
+| 2026-10-30 | [#56](https://github.com/Suyanka21/SECURITY-APP/pull/56) | flag | Twilio spec §8 test list: "webhook commits while the dispatcher's SID transaction is still open" cannot happen under the per-SID advisory lock; reword as "each path blocks on the lock until the other commits, in both orders". |
