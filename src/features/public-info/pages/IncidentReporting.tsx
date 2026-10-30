@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { PublicInfoLayout } from "../PublicInfoLayout";
+import { LEGAL_TEXT_APPROVED } from "../legalStatus";
 import { SupportContactBlock } from "../SupportContactBlock";
 
 /**
@@ -54,10 +55,15 @@ export default function IncidentReporting() {
           The operator&rsquo;s supervisor on duty is expected to acknowledge the report,
           preserve the relevant records (which the system does not allow to be edited),
           and follow the estate&rsquo;s incident procedure. Where a report involves
-          personal information, the operator&rsquo;s privacy process applies — see the{" "}
-          <Link className="underline" to="/legal/privacy">
-            privacy notice
-          </Link>
+          personal information, the operator&rsquo;s privacy process applies
+          {LEGAL_TEXT_APPROVED ? (
+            <>
+              {" "}— see the{" "}
+              <Link className="underline" to="/legal/privacy">
+                privacy notice
+              </Link>
+            </>
+          ) : null}
           . Response times and any external notification duties are for the operator to
           confirm with its legal adviser before launch.
         </p>

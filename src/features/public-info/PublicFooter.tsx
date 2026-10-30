@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 
+import { LEGAL_TEXT_APPROVED } from "./legalStatus";
 import { PUBLIC_INFO_LINKS } from "./publicInfoLinks";
 
 /**
@@ -25,9 +26,12 @@ export function PublicFooter() {
           ))}
         </ul>
       </nav>
-      <p className="mt-2">
-        Legal and privacy pages are drafts pending professional review.
-      </p>
+      {!LEGAL_TEXT_APPROVED && (
+        <p className="mt-2">
+          The privacy notice and terms of use are being prepared and will be linked here
+          once reviewed.
+        </p>
+      )}
     </footer>
   );
 }

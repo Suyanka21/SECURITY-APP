@@ -1,4 +1,4 @@
-import { PublicInfoLayout } from "../PublicInfoLayout";
+import { NeedsLegalReview, PublicInfoLayout } from "../PublicInfoLayout";
 import { SupportContactBlock } from "../SupportContactBlock";
 
 /**
@@ -16,8 +16,8 @@ export default function PrivacyNotice() {
     <PublicInfoLayout
       draft
       testId="privacy-notice-page"
-      title="Privacy notice (draft)"
-      lede="How this estate's GatePass system handles information about visitors, residents and guards. Draft for review — not yet approved."
+      title="Privacy notice — needs legal review"
+      lede="How this estate's GatePass system handles information about visitors, residents and guards. Structure for legal review — not approved, not in force."
     >
       <section>
         <h2>Who runs this system</h2>
@@ -26,6 +26,12 @@ export default function PrivacyNotice() {
           &ldquo;operator&rdquo;). The operator is responsible for the information held in it.
           The operator&rsquo;s name and contact details will be filled in here after review.
         </p>
+        <NeedsLegalReview
+          items={[
+            "The operator’s legal name, registration and contact details.",
+            "Who is the controller and who is a processor (estate, security company, hosting provider).",
+          ]}
+        />
       </section>
 
       <section>
@@ -55,6 +61,12 @@ export default function PrivacyNotice() {
             turned back into the code.
           </li>
         </ul>
+        <NeedsLegalReview
+          items={[
+            "The lawful basis for each kind of record.",
+            "Whether visitors must be told before their details are taken at the gate.",
+          ]}
+        />
       </section>
 
       <section>
@@ -66,6 +78,11 @@ export default function PrivacyNotice() {
           residents, guard details, or the estate&rsquo;s audit records. Those are
           available only to signed-in staff with the appropriate role.
         </p>
+        <NeedsLegalReview
+          items={[
+            "Whether this description is adequate for visitors who never see the app.",
+          ]}
+        />
       </section>
 
       <section>
@@ -82,6 +99,12 @@ export default function PrivacyNotice() {
             behalf.
           </li>
         </ul>
+        <NeedsLegalReview
+          items={[
+            "Which roles may see which records, and whether that matches the operator’s policy.",
+            "Where the hosting provider stores data and whether cross-border transfer rules apply.",
+          ]}
+        />
       </section>
 
       <section>
@@ -91,6 +114,11 @@ export default function PrivacyNotice() {
           delete records automatically today; the operator must decide a retention period
           and have it applied. Audit records are kept as written and are not edited.
         </p>
+        <NeedsLegalReview
+          items={[
+            "The retention period for each kind of record, and how deletion is carried out.",
+          ]}
+        />
       </section>
 
       <section>
@@ -100,6 +128,12 @@ export default function PrivacyNotice() {
           about you, contact the operator using the details below. The operator will set
           out, after review, how such requests are handled and within what time.
         </p>
+        <NeedsLegalReview
+          items={[
+            "How access, correction and deletion requests are made and answered, and within what time.",
+            "How complaints to a regulator are made.",
+          ]}
+        />
       </section>
 
       <SupportContactBlock heading="How to contact the operator" />
