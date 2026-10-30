@@ -16,7 +16,7 @@
  * a staff role or opens a dashboard here.
  */
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { Loader2, KeyRound } from "lucide-react";
 
@@ -33,17 +33,22 @@ export const RESET_REQUESTED_MESSAGE =
 export const PASSWORD_MIN = 12;
 export const PASSWORD_MAX = 128;
 
-type Fragment = "recovery" | "error" | null;
+type FragmentKind = "recovery" | "error";
+interface Fragment {
+  kind: FragmentKind;
+  accessToken?: string;
+}
 type Mode = "checking" | "request" | "requested" | "set" | "done" | "expired";
 
-function readFragment(): Fragment {
+function readFragment(): Fragment | null {
   const hash = window.location.hash.replace(/^#/, "");
   if (!hash) return null;
   const params = new URLSearchParams(hash);
   if (params.has("error") || params.has("error_code") || params.has("error_description")) {
-    return "error";
+    return { kind: "error" };
   }
-  if (params.get("type") === "recovery" && params.has("access_token")) return "recovery";
+  const accessToken = params.get("access_token");
+  if (params.get("type") === "recovery" && accessToken) return { kind: "recovery", accessToken };
   return null;
 }
 
@@ -54,14 +59,38 @@ function stripFragment(): void {
   }
 }
 
-function updateErrorMessage(code: string | undefined): string | null {
-  if (code === "weak_password") {
-    return "That password is too weak. Choose a longer one that is hard to guess.";
+// Errors meaning the recovery session itself is gone; anything else
+// (network, rate limit, provider outage) keeps the form open for a retry.
+const SESSION_ERROR_CODES = new Set([
+  "session_not_found",
+  "session_expired",
+  "refresh_token_not_found",
+  "refresh_token_already_used",
+  "bad_jwt",
+  "no_authorization",
+  "user_not_found",
+  "reauthentication_needed",
+]);
+
+type UpdateOutcome = { kind: "expired" } | { kind: "retry"; message: string };
+
+function classifyUpdateError(err: { code?: string; name?: string }): UpdateOutcome {
+  if (err.code === "weak_password") {
+    return { kind: "retry", message: "That password is too weak. Choose a longer one that is hard to guess." };
   }
-  if (code === "same_password") {
-    return "Choose a password that is different from your old one.";
+  if (err.code === "same_password") {
+    return { kind: "retry", message: "Choose a password that is different from your old one." };
   }
-  return null;
+  if (
+    err.name === "AuthSessionMissingError" ||
+    (err.code !== undefined && SESSION_ERROR_CODES.has(err.code))
+  ) {
+    return { kind: "expired" };
+  }
+  return {
+    kind: "retry",
+    message: "Could not save the password right now. Check your connection and try again.",
+  };
 }
 
 interface ResetPasswordProps {
@@ -74,8 +103,10 @@ export default function ResetPassword({
   getClient = getSupabaseClient,
 }: ResetPasswordProps = {}) {
   // Captured at first render, before the Supabase client clears the hash.
-  const [fragment] = useState<Fragment>(readFragment);
-  const [mode, setMode] = useState<Mode>(fragment ? "checking" : "request");
+  const fragmentRef = useRef<Fragment | null | undefined>(undefined);
+  if (fragmentRef.current === undefined) fragmentRef.current = readFragment();
+  const fragmentKind = fragmentRef.current?.kind ?? null;
+  const [mode, setMode] = useState<Mode>(fragmentKind ? "checking" : "request");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -83,21 +114,27 @@ export default function ResetPassword({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!fragment) return;
+    if (!fragmentKind) return;
     let active = true;
     void (async () => {
-      const supabase = fragment === "recovery" ? getClient() : null;
+      const expected = fragmentRef.current?.accessToken;
+      const supabase = fragmentKind === "recovery" ? getClient() : null;
       // getSession waits for the client to read the session from the hash.
       const session = supabase
         ? (await supabase.auth.getSession()).data.session
         : null;
       stripFragment();
-      if (active) setMode(session ? "set" : "expired");
+      if (fragmentRef.current) fragmentRef.current.accessToken = undefined;
+      // Only the session minted from THIS link may set a password. If the link
+      // was rejected, getSession returns whatever session was already stored
+      // (possibly another staff member's); that must not open the form.
+      const recovered = !!session && !!expected && session.access_token === expected;
+      if (active) setMode(recovered ? "set" : "expired");
     })();
     return () => {
       active = false;
     };
-  }, [fragment, getClient]);
+  }, [fragmentKind, getClient]);
 
   async function handleRequest(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -143,9 +180,9 @@ export default function ResetPassword({
     try {
       const { error: updateError } = await supabase.auth.updateUser({ password });
       if (updateError) {
-        const message = updateErrorMessage(updateError.code);
-        if (message) {
-          setError(message);
+        const outcome = classifyUpdateError(updateError);
+        if (outcome.kind === "retry") {
+          setError(outcome.message);
         } else {
           await supabase.auth.signOut({ scope: "local" });
           setMode("expired");

@@ -31,13 +31,18 @@ function makeApi(result: ApiResultish) {
 
 function makeClient(opts: {
   session?: object | null;
-  updateError?: { code?: string; message: string } | null;
+  updateError?: { code?: string; name?: string; message: string } | null;
 } = {}) {
   const hashAtGetSession: string[] = [];
   const auth = {
     getSession: vi.fn(async () => {
       hashAtGetSession.push(window.location.hash);
-      return { data: { session: opts.session === undefined ? { user: {} } : opts.session } };
+      return {
+        data: {
+          session:
+            opts.session === undefined ? { access_token: "fake-access", user: {} } : opts.session,
+        },
+      };
     }),
     updateUser: vi.fn(async () => ({ data: {}, error: opts.updateError ?? null })),
     signOut: vi.fn(async () => ({ error: null })),
@@ -168,7 +173,7 @@ describe("ResetPassword — set step (recovery link)", () => {
     expect(auth.signOut).not.toHaveBeenCalled();
   });
 
-  it("any other update error drops the session and shows the expired panel", async () => {
+  it("an expired-session error drops the session and shows the expired panel", async () => {
     const { client, auth } = makeClient({ updateError: { code: "session_not_found", message: "raw" } });
     at(`/reset-password${RECOVERY_HASH}`);
     render(<ResetPassword getClient={() => client} />);
@@ -177,6 +182,45 @@ describe("ResetPassword — set step (recovery link)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save new password" }));
     expect(await screen.findByText(/expired or has already been used/)).toBeInTheDocument();
     expect(auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+  });
+
+  it("a rejected link on a browser already signed in as someone else never opens the form", async () => {
+    const { client, auth } = makeClient({
+      session: { access_token: "alice-existing-session", user: { id: "alice" } },
+    });
+    at(`/reset-password${RECOVERY_HASH}`);
+    render(<ResetPassword getClient={() => client} />);
+    expect(await screen.findByText(/expired or has already been used/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("New password")).toBeNull();
+    expect(auth.updateUser).not.toHaveBeenCalled();
+    expect(auth.signOut).not.toHaveBeenCalled();
+    expect(window.location.href).not.toContain("#");
+  });
+
+  it("a network failure keeps the session and the form for a retry", async () => {
+    const { client, auth } = makeClient({
+      updateError: { name: "AuthRetryableFetchError", message: "Failed to fetch" },
+    });
+    at(`/reset-password${RECOVERY_HASH}`);
+    render(<ResetPassword getClient={() => client} />);
+    fireEvent.change(await screen.findByLabelText("New password"), { target: { value: STRONG } });
+    fireEvent.change(screen.getByLabelText("Repeat new password"), { target: { value: STRONG } });
+    fireEvent.click(screen.getByRole("button", { name: "Save new password" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("try again");
+    expect(screen.getByLabelText("New password")).toBeInTheDocument();
+    expect(auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it("a missing session (AuthSessionMissingError) shows the expired panel", async () => {
+    const { client } = makeClient({
+      updateError: { name: "AuthSessionMissingError", message: "Auth session missing!" },
+    });
+    at(`/reset-password${RECOVERY_HASH}`);
+    render(<ResetPassword getClient={() => client} />);
+    fireEvent.change(await screen.findByLabelText("New password"), { target: { value: STRONG } });
+    fireEvent.change(screen.getByLabelText("Repeat new password"), { target: { value: STRONG } });
+    fireEvent.click(screen.getByRole("button", { name: "Save new password" }));
+    expect(await screen.findByText(/expired or has already been used/)).toBeInTheDocument();
   });
 
   it("a recovery fragment with no resulting session shows the expired panel", async () => {
