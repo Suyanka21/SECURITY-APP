@@ -110,7 +110,13 @@ WhatsApp: To=whatsapp:+2547…  From=whatsapp:+…  ContentSid=HX…  ContentVar
     - A `failed` or `undelivered` callback moves it to `failed` and runs the
       same fallback and attempt logic as a send error.
     - A `sent` row is excluded from the 30 s stale rule.
-    - Needs a migration: `ALTER TYPE notification_status ADD VALUE 'sent'`.
+    - **Matching a callback to its row.** Today the message SID is written
+      only to the audit event. On a 201 the dispatcher also writes it to a
+      new column, `notifications.provider_message_id`. The webhook looks the
+      row up by Twilio's `MessageSid`. An unknown SID returns `200` and changes
+      nothing, so Twilio does not keep retrying. It logs only `unknown sid`.
+    - Needs a migration: `ALTER TYPE notification_status ADD VALUE 'sent'`,
+      plus `provider_message_id text` (nullable) with a unique index.
 - **Wiring (fixes G1, G3).** `createApp()` builds the registry from
   environment variables (§4) once, at boot.
 - **SMS fallback (fixes G2).** `maybeEnqueueSmsFallback()` returns the new row,
@@ -239,11 +245,13 @@ script, `npm run test:phone-sweep:live`:
 | T3 | Registry built from environment variables at boot | `registry.ts`, `app.ts` |
 | T4 | Production config checks for §4 | `config/production-config.ts`, `.env.example` |
 | T5 | Dispatch the SMS fallback row immediately (G2) | `notification-service.ts` |
-| T6 (option B) | Status webhook + signature check; new `sent` status and migration | `routes/notifications.ts`, `app.ts`, `drizzle/00xx_notification_sent.sql`, `src/db/schema.ts` |
+| T6 (option B) | Status webhook + signature check; new `sent` status, `provider_message_id` column and migration | `routes/notifications.ts`, `app.ts`, `drizzle/00xx_notification_sent.sql`, `src/db/schema.ts` |
 | T7 | Opt-in live sweep script | `scripts/` or `src/server/__tests__/live/` (excluded from CI) |
+| T8 (D2) | The first notification row's channel comes from configuration: `sms` when `NOTIFICATIONS_WHATSAPP_PROVIDER=disabled`, otherwise `whatsapp`. The `enqueuedNotification.channel` type widens from `"whatsapp"` to the channel union. | `services/approval-service.ts` |
 
-No change to the approval flow, the link format, the routes guards call, or
-the guard screen (except the status label `sent` under option B).
+No change to the link format, the routes guards call, or the guard screen
+(except the status label `sent` under option B). The only approval-flow
+change is T8, which picks the first channel.
 
 **Tests:**
 - unit tests for the provider mapping with a mocked `fetch`: every status
