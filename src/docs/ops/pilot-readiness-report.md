@@ -22,13 +22,51 @@ commercial rollout, and nothing in it is legal advice.
 ## Gates (this branch)
 
 ```
-npx eslint .                                        0 errors, 90 warnings (identical to main)
+npx eslint .                                        0 errors; warning count identical to main
 npx tsc --noEmit                                    clean
-npx vitest run                                      Test Files 41 passed   Tests 534 passed
-SUPABASE_URL= npx vitest run --config vitest.server.config.ts
-                                                    Test Files 43 passed   Tests 578 passed
+npx vitest run                                      Test Files 49 passed   Tests 623 passed
+vitest -c vitest.server.config.ts                   Test Files 53 passed   Tests 683 passed
+vitest -c vitest.integration.config.ts (fresh DB from drizzle/*.sql, also in CI)
+                                                    Test Files 7 passed    Tests 101 passed
 NODE_ENV=production npx vite build                  ✓ built
 ```
+
+## API types versus real responses (one-time check, 2026-10-30)
+
+**Method.** The full integration suite (7 files, 101 tests, local Postgres
+built from `drizzle/*.sql`) was run with a temporary hook that recorded the
+JSON body of every 2xx response (507 responses, 34 routes). For each
+staff-facing response type in `src/lib/api/types.ts`, every field path (nested
+objects and list items included) was compared with the field paths actually
+returned. Each mismatch was then checked against the screens. The hook and
+compare script were local only and are not committed. **Nothing was fixed.**
+
+**Mismatches (typed, but the server never returns them):**
+
+| Type | Field | Server | Screen reads it? | Risk |
+|---|---|---|---|---|
+| `NotificationView` (in `NotificationsListResponse`, `NotificationRetryResponse`) | `templateKey: string` (required) | never sent | no (only declared again in `src/features/gatepass/types.ts:143`) | none today; a future screen would get `undefined`, like `targetPhone` did |
+
+**Typed as optional, never seen in the integration responses:**
+
+| Type | Field | Note |
+|---|---|---|
+| `QrValidateResponse` | `watchlistMatch` | Sent only on a watchlist hit (`qr-service.ts:209`); the screen reads it (`GatePassPanels.tsx:700`). No integration test scans a watchlisted visitor, so the real shape is unproven on a real DB. |
+
+**Lists that were empty in every integration response** (top level matched;
+item fields not observable): `ListShiftsResponse` (14 item fields),
+`ListDeliveriesResponse` (9), `ListOnPremiseResponse` (14),
+`ListWatchlistResponse` (13).
+
+**Matched exactly:** `ApprovalStatusResponse`, `CreateApprovalResponse`,
+`ListVisitorProfilesResponse`, `IssueVisitorInvitationResponse`,
+`PreviewVisitorInvitationResponse`. No route returned a field its type lacks.
+
+**Not reached by any integration test** (no comparison possible):
+`CreateEntryResponse`, `PinValidateResponse`, `SyncBatchResponse`,
+`RecognizedVisitorsResponse`, `VisitorProfileResponse`, `RecordExitResponse`,
+`AddGuardNoteResponse`/`ListGuardNotesResponse`, `CreateDeliveryEntryResponse`,
+`WatchlistEntryResponse`.
 
 ## Legal / privacy items that require professional review before rollout
 
@@ -50,12 +88,12 @@ NODE_ENV=production npx vite build                  ✓ built
 | No in-app account deactivation | Technical contact must edit `guards.is_active` in the database | Runbook §3, SOP 2 |
 | Staff password reset depends on Supabase Auth email settings | Without custom SMTP and the redirect URL, reset emails fail or open the sign-in page | Runbook §4, environment checklist §2a, gate A8b |
 | `/api/audit` serves the in-memory log; it empties on restart | Disputes must use the `audit_events` table via DB access | Runbook §8, Incident §5 |
+| Unit deactivation is permanent: no reactivation, label not reusable | A deactivated unit can never be claimed again; move-outs must deactivate residents, not the unit | SOP 11 |
+| Resident deactivation does not expire staff-issued passes for the unit | Only passes the resident sent are expired; staff passes run to their own expiry | SOP 11 |
 | No visitor-history export | Manual SQL on written admin instruction | Runbook §9 |
 | No retention enforcement | Data accumulates until manually deleted | Privacy draft §4, checklist D6 |
 | No offline page reload (no service worker) | Queue survives; a hard refresh offline shows the browser error page | Runbook §6 |
-| `drizzle/` migrations do not apply in file order on an empty DB | Use `drizzle-kit push` for the pilot | Checklist A2 |
-| RLS enablement script is not in the repository | Technical contact keeps it with deploy notes | Checklist A3 |
-| No real SMS/WhatsApp provider wired (default-deny mock) | Resident links must be relayed by the guard until a provider is added | Privacy draft §3 |
+| No real SMS/WhatsApp provider wired (default-deny mock); the SMS fallback row is never dispatched | Resident links must be relayed by the guard until Twilio lands (`src/docs/specs/twilio-provider.md`) | Privacy draft §3, checklist A10 |
 | Support contact, escalation contacts and sign-off names all blank | Fill before go-live | Checklist A9, D3, F |
 
 ## Out of scope for this report
