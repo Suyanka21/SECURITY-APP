@@ -178,8 +178,10 @@ Never write the code itself down.
 **Who:** admin only.
 
 1. **A household moves out:** select the unit → each resident →
-   **Deactivate**. Their portal access ends and the rules from their
-   registrations are switched off. The unit stays active, so the next
+   **Deactivate**. Their portal access ends, the rules from their
+   registrations are switched off and every open pass they sent expires at
+   once. Passes staff issued for the unit are not touched (known gap); they
+   still end at their own expiry time. The unit stays active, so the next
    occupant gets a new claim code for it (SOP 10).
 2. **Deactivate unit is permanent.** Use it only when the address itself no
    longer exists. Every resident of the unit is deactivated, open passes for

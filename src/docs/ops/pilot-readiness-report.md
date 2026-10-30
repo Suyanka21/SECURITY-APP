@@ -89,6 +89,7 @@ item fields not observable): `ListShiftsResponse` (14 item fields),
 | Staff password reset depends on Supabase Auth email settings | Without custom SMTP and the redirect URL, reset emails fail or open the sign-in page | Runbook §4, environment checklist §2a, gate A8b |
 | `/api/audit` serves the in-memory log; it empties on restart | Disputes must use the `audit_events` table via DB access | Runbook §8, Incident §5 |
 | Unit deactivation is permanent: no reactivation, label not reusable | A deactivated unit can never be claimed again; move-outs must deactivate residents, not the unit | SOP 11 |
+| Resident deactivation does not expire staff-issued passes for the unit | Only passes the resident sent are expired; staff passes run to their own expiry | SOP 11 |
 | No visitor-history export | Manual SQL on written admin instruction | Runbook §9 |
 | No retention enforcement | Data accumulates until manually deleted | Privacy draft §4, checklist D6 |
 | No offline page reload (no service worker) | Queue survives; a hard refresh offline shows the browser error page | Runbook §6 |
