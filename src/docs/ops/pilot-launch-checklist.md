@@ -62,7 +62,7 @@ Related: [Operations runbook](./operations-runbook.md) ·
 | C8 | Sign-out returns to login; next guard signs in as themselves. | Supervisor | Shift-handover rehearsal. |
 | C9 | Audit persistence: an override made today has a matching row in `audit_events` (`override_authorized`) **and** in `override_events`. Restart the server: the row is still in the table. | Technical | SQL count before/after restart. **GAP:** the `/api/audit` view is in-memory and empties on restart. |
 | C10 | Public pages leak nothing: open `/pass/not-a-real-token` and `/approve/not-a-real-id` — plain-language message, no code like `INVITATION_NOT_FOUND`, no "Bearer token". | Supervisor | Screenshot both. |
-| C11 | `/legal/privacy`, `/legal/terms`, `/support`, `/support/incident` open **without signing in** and show the DRAFT banner on the two legal pages. | Estate manager | Open all four in a private window. |
+| C11 | `/support` and `/support/incident` open **without signing in** and appear in every public footer. While the legal text is unapproved, `/legal/privacy` and `/legal/terms` show the NEEDS LEGAL REVIEW banner and **no screen links to them**. | Estate manager | Open all four in a private window; check the footer of the login, visitor-pass and approval pages shows only Support and Report a problem. |
 | C12 | Guard (not senior) console has **no admin tab**; a guard's session calling `/api/audit/events` directly gets 403. | Technical | Browser dev tools or `curl` with a guard token. |
 
 ## D. People & process
@@ -73,7 +73,7 @@ Related: [Operations runbook](./operations-runbook.md) ·
 | D2 | Senior guards/admins have read the [SOPs](./admin-sops.md) and the [incident response guide](./incident-response.md). | Estate manager | Signed sheet on file. |
 | D3 | Support & escalation contacts filled in: runbook §15, `/support` page, incident guide §0. | Estate manager | No "(fill in)" left anywhere. |
 | D4 | Residents told, in plain language, what GatePass records about their visitors and where the (draft) privacy notice is. | Estate manager | Notice sent; copy on file. |
-| D5 | **Privacy notice and terms reviewed by a Kenyan lawyer or compliance professional — or the estate accepts in writing that the pilot runs with DRAFT text.** | Estate manager | Reviewer's written sign-off, or a signed acceptance of the draft status. |
+| D5 | **Privacy notice and terms reviewed by a Kenyan lawyer or compliance professional — or the estate accepts in writing that the pilot runs with no published privacy notice or terms.** Reviewed text replaces each "Needs legal review" box, and the same PR sets `LEGAL_TEXT_APPROVED = true` in `src/features/public-info/legalStatus.ts` so the footer links appear. | Estate manager | Reviewer's written sign-off, or a signed acceptance that the pages stay unlinked. |
 | D6 | Retention period for visitor records decided and written into the privacy notice (**GAP:** nothing is auto-deleted today). | Estate manager + Legal reviewer | Number of days appears in `/legal/privacy`. |
 | D7 | Rollback plan: who can switch the gate back to paper, and how queued entries are recovered afterwards. | Supervisor | One paragraph, on file. |
 | D8 | Pilot review date set (suggest 2–4 weeks) with the list of things to measure: failed syncs, overrides per shift, resident non-response rate, incidents. | Estate manager | Calendar entry + metric list. |

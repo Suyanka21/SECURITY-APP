@@ -1,4 +1,4 @@
-import { PublicInfoLayout } from "../PublicInfoLayout";
+import { NeedsLegalReview, PublicInfoLayout } from "../PublicInfoLayout";
 import { SupportContactBlock } from "../SupportContactBlock";
 
 /** Terms / acceptable use — DRAFT scaffolding for legal review. */
@@ -7,8 +7,8 @@ export default function TermsOfUse() {
     <PublicInfoLayout
       draft
       testId="terms-page"
-      title="Terms of use and acceptable use (draft)"
-      lede="Plain-English expectations for anyone using this estate's GatePass system. Draft for review — not yet approved."
+      title="Terms of use — needs legal review"
+      lede="Plain-English expectations for anyone using this estate's GatePass system. Structure for legal review — not approved, not in force."
     >
       <section>
         <h2>What GatePass is</h2>
@@ -18,6 +18,11 @@ export default function TermsOfUse() {
           itself decide who may enter. Final decisions at the gate rest with the estate
           and its security staff.
         </p>
+        <NeedsLegalReview
+          items={[
+            "Who the agreement is between, and the governing law.",
+          ]}
+        />
       </section>
 
       <section>
@@ -27,6 +32,11 @@ export default function TermsOfUse() {
           <li>A pass can expire, be used once only, or be locked after repeated wrong PINs.</li>
           <li>Give accurate details. Guards may refuse entry if details do not match.</li>
         </ul>
+        <NeedsLegalReview
+          items={[
+            "Whether visitors are bound by any terms, and how they are told.",
+          ]}
+        />
       </section>
 
       <section>
@@ -39,6 +49,11 @@ export default function TermsOfUse() {
           </li>
           <li>Tell the estate if your phone number changes so requests reach you.</li>
         </ul>
+        <NeedsLegalReview
+          items={[
+            "Residents’ obligations when approving visitors and issuing passes.",
+          ]}
+        />
       </section>
 
       <section>
@@ -49,6 +64,11 @@ export default function TermsOfUse() {
           <li>Sign out at the end of every shift.</li>
           <li>Report a lost or stolen device, or any suspected misuse, immediately.</li>
         </ul>
+        <NeedsLegalReview
+          items={[
+            "Staff obligations, and how these terms relate to employment contracts.",
+          ]}
+        />
       </section>
 
       <section>
@@ -63,6 +83,11 @@ export default function TermsOfUse() {
           dealt with under the estate&rsquo;s rules and the security company&rsquo;s
           employment terms.
         </p>
+        <NeedsLegalReview
+          items={[
+            "What misuse leads to, and who enforces it.",
+          ]}
+        />
       </section>
 
       <section>
@@ -73,6 +98,11 @@ export default function TermsOfUse() {
           or dispute resolution. Those must be written by a qualified professional for the
           operator&rsquo;s jurisdiction.
         </p>
+        <NeedsLegalReview
+          items={[
+            "Any limitation of liability, and what the operator promises about availability.",
+          ]}
+        />
       </section>
 
       <SupportContactBlock heading="Questions" />

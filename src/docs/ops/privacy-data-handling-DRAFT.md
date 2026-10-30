@@ -11,7 +11,10 @@
 > **[OPERATOR / LEGAL REVIEWER TO DECIDE]**. Do not publish this text as-is.
 
 The short public version of this draft is rendered at `/legal/privacy`
-(`src/features/public-info/pages/PrivacyNotice.tsx`), with the same banner.
+(`src/features/public-info/pages/PrivacyNotice.tsx`) with a NEEDS LEGAL REVIEW
+banner and a "Needs legal review" list in every section. No screen links to it
+until `LEGAL_TEXT_APPROVED` in `src/features/public-info/legalStatus.ts` is set to
+`true` with the reviewed text (checklist D5).
 
 ## 1. Who operates GatePass
 

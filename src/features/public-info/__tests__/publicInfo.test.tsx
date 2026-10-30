@@ -4,11 +4,13 @@
  * Proves, through the real App router:
  *   - /legal/privacy, /legal/terms, /support, /support/incident render without
  *     any auth, onboarding state or role
- *   - both legal pages carry the unmissable DRAFT banner at top AND bottom
+ *   - both legal pages carry the NEEDS LEGAL REVIEW banner top AND bottom, and
+ *     every section lists what the legal adviser must decide
  *   - the operational pages (support, incident) do not claim to be legal text
  *   - no page hard-codes a fake contact; unconfigured → honest notice
  *   - the pages never render raw error codes, trace ids, tokens or PII
- *   - the footer with all four links is present on every public surface
+ *   - the footer is on every public surface and, while LEGAL_TEXT_APPROVED is
+ *     false, no screen links to the legal placeholders
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -25,6 +27,7 @@ vi.mock("@/features/auth/AuthContext", () => ({
 import App from "@/App";
 import { PublicFooter } from "../PublicFooter";
 import { PUBLIC_INFO_LINKS } from "../publicInfoLinks";
+import { LEGAL_TEXT_APPROVED } from "../legalStatus";
 import { DRAFT_LEGAL_LABEL } from "../PublicInfoLayout";
 import { readSupportContact } from "../supportContact";
 
@@ -77,8 +80,12 @@ describe("public info routes render without auth", () => {
         expect(bottom).toBeInTheDocument();
         expect(top).toHaveTextContent(DRAFT_LEGAL_LABEL);
         expect(bottom).toHaveTextContent(DRAFT_LEGAL_LABEL);
+        expect(top).toHaveTextContent(/needs legal review/i);
         expect(top).toHaveTextContent(/not a legal document/i);
-        expect(top).toHaveTextContent(/not yet reviewed by a lawyer/i);
+        expect(top).toHaveTextContent(/not linked from any screen/i);
+        // every section lists what the adviser must decide
+        const reviewBoxes = within(page).getAllByTestId("needs-legal-review");
+        expect(reviewBoxes.length).toBeGreaterThanOrEqual(6);
       } else {
         expect(top).not.toBeInTheDocument();
         expect(bottom).not.toBeInTheDocument();
@@ -155,19 +162,25 @@ describe("support contact", () => {
 });
 
 describe("PublicFooter", () => {
-  it("links to exactly the four public info routes", () => {
+  it("links only to the support pages while the legal text is unapproved", () => {
+    expect(LEGAL_TEXT_APPROVED).toBe(false);
     render(
       <MemoryRouter>
         <PublicFooter />
       </MemoryRouter>
     );
     const links = screen.getAllByRole("link");
-    expect(links.map((l) => l.getAttribute("href"))).toEqual([
-      "/legal/privacy",
-      "/legal/terms",
-      "/support",
-      "/support/incident",
-    ]);
-    expect(screen.getByText(/drafts pending professional review/i)).toBeInTheDocument();
+    expect(links.map((l) => l.getAttribute("href"))).toEqual(["/support", "/support/incident"]);
+    expect(screen.getByText(/will be linked here once reviewed/i)).toBeInTheDocument();
   });
+});
+
+describe("no screen links to a legal placeholder", () => {
+  for (const path of ["/", "/support", "/support/incident", "/legal/privacy", "/legal/terms", "/nope"]) {
+    it(`${path} has no link to /legal/*`, () => {
+      const { container } = renderAt(path);
+      const hrefs = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");
+      expect(hrefs.filter((h) => h.startsWith("/legal"))).toEqual([]);
+    });
+  }
 });

@@ -34,18 +34,21 @@ Start here if you are preparing, running or reviewing the GatePass pilot.
 | [Incident response](./incident-response.md) | Supervisor, estate manager, technical contact | First 15 minutes / then / evidence / who closes, for eight incident types. |
 | [Privacy & data-handling DRAFT](./privacy-data-handling-DRAFT.md) | Legal / compliance reviewer | Accurate description of what is stored, who sees it, and every decision the reviewer must make. |
 | [Pilot-readiness report](./pilot-readiness-report.md) | Estate manager, security company | PASS/FAIL verdict for operations and for legal/privacy scaffolding, with blockers. |
+| [Parked issues](./parked-issues.md) | Engineering, owner | Review flags (style, test coverage, wording) deliberately not fixed in the PR that raised them. |
 
 ## Public pages (role-neutral, no login)
 
-| Route | Content | Draft banner |
+| Route | Content | NEEDS LEGAL REVIEW banner |
 |---|---|---|
 | `/legal/privacy` | Short privacy notice | yes |
 | `/legal/terms` | Terms / acceptable use | yes |
 | `/support` | Help for visitors, residents and staff | no (operational) |
 | `/support/incident` | How to report a problem | no (operational) |
 
-Reachable from the footer on the login, visitor pass, resident approval and
-404 pages. Source: `src/features/public-info/`. Tests:
+`/support` and `/support/incident` are linked from the footer on the login,
+visitor pass, resident approval, reset-password and 404 pages. The two legal
+pages are **not linked from any screen** until `LEGAL_TEXT_APPROVED` is `true`
+(checklist D5); they open only by typing the address. Source: `src/features/public-info/`. Tests:
 `src/features/public-info/__tests__/publicInfo.test.tsx`,
 `src/server/__tests__/access-boundaries.test.ts`.
 

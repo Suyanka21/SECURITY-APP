@@ -3,8 +3,9 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { PublicFooter } from "./PublicFooter";
 
-export const DRAFT_LEGAL_LABEL =
-  "DRAFT — NOT A LEGAL DOCUMENT. Not yet reviewed by a lawyer or compliance professional.";
+import { NEEDS_LEGAL_REVIEW_LABEL } from "./legalStatus";
+
+export const DRAFT_LEGAL_LABEL = NEEDS_LEGAL_REVIEW_LABEL;
 
 /**
  * Unmissable banner for legal/privacy scaffolding. Rendered at the top AND
@@ -25,12 +26,29 @@ export function DraftLegalBanner({ position }: { position: "top" | "bottom" }) {
           {DRAFT_LEGAL_LABEL}
         </p>
         <p className="mt-1">
-          This page is placeholder scaffolding written by the engineering team so the
-          estate and its legal adviser have something concrete to review. It creates no
-          rights or obligations, and nothing on it should be relied on as legal advice.
-          The estate operator must replace it with reviewed text before commercial use.
+          This page is a structure for the estate&rsquo;s legal adviser. Each section
+          states what the system does today and lists what the adviser must decide. It
+          creates no rights or obligations and is not linked from any screen until
+          reviewed text replaces it.
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Questions the legal adviser must answer for one section. */
+export function NeedsLegalReview({ items }: { items: string[] }) {
+  return (
+    <div
+      data-testid="needs-legal-review"
+      className="mt-3 border-l-4 border-amber-600 bg-amber-50 p-3 text-amber-950"
+    >
+      <p className="font-bold uppercase tracking-wide">Needs legal review</p>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
     </div>
   );
 }

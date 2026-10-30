@@ -9,7 +9,7 @@ commercial rollout, and nothing in it is legal advice.
 | Area | Verdict | Why |
 |---|---|---|
 | **Operations readiness** | **PASS — conditional** | Every day-to-day situation in the handoff has a written, code-accurate procedure; the access boundaries those procedures rely on are enforced server-side and proven by HTTP-level tests. Conditional on the three operational gaps below being accepted in writing on the launch checklist (section E). |
-| **Privacy / legal scaffolding readiness** | **PASS as scaffolding · FAIL as legal text** | The public pages and the reviewer draft exist, are reachable without login, carry an unmissable DRAFT banner, invent no guarantees, and list every decision the reviewer must make. They are **not** usable as a published privacy notice or terms until a Kenyan lawyer / compliance professional reviews them (checklist D5). |
+| **Privacy / legal scaffolding readiness** | **PASS as scaffolding · FAIL as legal text** | The public pages and the reviewer draft exist and open without login. The two legal pages carry a NEEDS LEGAL REVIEW banner and a review list in every section, and no screen links to them, invent no guarantees, and list every decision the reviewer must make. They are **not** usable as a published privacy notice or terms until a Kenyan lawyer / compliance professional reviews them (checklist D5). |
 
 ## What was verified in code (not only documented)
 
