@@ -16,7 +16,7 @@ commercial rollout, and nothing in it is legal advice.
 - `/api/audit/*` requires `admin` or `senior-guard`: 401 unauthenticated, 403 for a plain guard, through the real Express middleware stack (`access-boundaries.test.ts`, 13 tests).
 - Admin reports (`/api/admin/*`) are refused to plain guards and unauthenticated callers.
 - Public approval preview/decision and visitor preview return plain-language 4xx bodies with no stack, SQL, driver text, auth-header instructions or unexpected keys; the only identifier allowed is the labelled opaque `trace-<uuid>` support reference.
-- `/legal/privacy`, `/legal/terms`, `/support`, `/support/incident` render with no auth or onboarding, legal pages show the DRAFT banner top and bottom, all public surfaces expose the four footer links, and no page contains raw error codes, trace IDs, bearer/auth text, service-role or database details, invented emails or phone numbers, or claimed retention/law/liability (`publicInfo.test.tsx`, 9 tests).
+- `/legal/privacy`, `/legal/terms`, `/support`, `/support/incident` render with no auth or onboarding, legal pages show the NEEDS LEGAL REVIEW banner top and bottom and a review list in every section, the footer on every public surface links only to the two support pages and no screen links to `/legal/*` while `LEGAL_TEXT_APPROVED` is false, and no page contains raw error codes, trace IDs, bearer/auth text, service-role or database details, invented emails or phone numbers, or claimed retention/law/liability (`publicInfo.test.tsx`, 16 tests).
 - Support contact comes only from `VITE_SUPPORT_EMAIL` / `VITE_SUPPORT_PHONE`; when unset the pages say so rather than inventing one.
 
 ## Gates (this branch)

@@ -10,3 +10,4 @@ PR that fixes it.
 
 | Date | PR | Severity | Issue |
 |---|---|---|---|
+| 2026-10-30 | [#54](https://github.com/Suyanka21/SECURITY-APP/pull/54) | flag | Pilot checklist B4 and the known-gaps list still say password reset is done outside the app; A8b now tests the in-app reset. |
