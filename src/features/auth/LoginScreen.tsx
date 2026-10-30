@@ -82,7 +82,12 @@ export function LoginScreen() {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="login-password">Password</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="login-password">Password</Label>
+              <a href="/reset-password" className="text-sm underline">
+                Forgot password?
+              </a>
+            </div>
             <Input
               id="login-password"
               type="password"

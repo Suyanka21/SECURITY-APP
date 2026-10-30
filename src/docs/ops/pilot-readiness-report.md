@@ -47,7 +47,8 @@ NODE_ENV=production npx vite build                  ✓ built
 
 | Gap | Impact | Workaround in docs |
 |---|---|---|
-| No in-app account deactivation or password reset | Technical contact must edit `guards.is_active` / use Supabase Auth dashboard | Runbook §3–§4, SOP 2 |
+| No in-app account deactivation | Technical contact must edit `guards.is_active` in the database | Runbook §3, SOP 2 |
+| Staff password reset depends on Supabase Auth email settings | Without custom SMTP and the redirect URL, reset emails fail or open the sign-in page | Runbook §4, environment checklist §2a, gate A8b |
 | `/api/audit` serves the in-memory log; it empties on restart | Disputes must use the `audit_events` table via DB access | Runbook §8, Incident §5 |
 | No visitor-history export | Manual SQL on written admin instruction | Runbook §9 |
 | No retention enforcement | Data accumulates until manually deleted | Privacy draft §4, checklist D6 |

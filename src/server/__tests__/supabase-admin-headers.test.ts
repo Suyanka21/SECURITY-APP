@@ -11,6 +11,8 @@ import {
   adminHeaders,
   createSupabaseAuthUser,
   isSupabaseAdminConfigured,
+  requestPasswordRecovery,
+  SupabaseAdminError,
 } from "../auth/supabase-admin";
 
 describe("Supabase admin API headers", () => {
@@ -49,5 +51,37 @@ describe("Supabase admin API headers", () => {
     const headers = init.headers as Record<string, string>;
     expect(headers.apikey).toBe("sb_secret_test_value");
     expect(headers.Authorization).toBeUndefined();
+  });
+
+  it("password recovery: email in the JSON body only; URL carries just the redirect", async () => {
+    vi.stubEnv("SUPABASE_URL", "https://ref.supabase.co");
+    vi.stubEnv("SUPABASE_SECRET_KEY", "sb_secret_test_value");
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await requestPasswordRecovery("staff@example.test", "https://app.example.test/reset-password");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(
+      "https://ref.supabase.co/auth/v1/recover?redirect_to=https%3A%2F%2Fapp.example.test%2Freset-password",
+    );
+    expect(url).not.toContain("staff");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ email: "staff@example.test" });
+    expect((init.headers as Record<string, string>).apikey).toBe("sb_secret_test_value");
+  });
+
+  it("password recovery: provider failure surfaces as a coarse error with no body text", async () => {
+    vi.stubEnv("SUPABASE_URL", "https://ref.supabase.co");
+    vi.stubEnv("SUPABASE_SECRET_KEY", "sb_secret_test_value");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"msg":"staff@example.test not found"}', { status: 500 })),
+    );
+    const err = await requestPasswordRecovery("staff@example.test", "https://x.test/reset-password").catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(SupabaseAdminError);
+    expect((err as Error).message).toBe("Supabase recover returned HTTP 500");
   });
 });
