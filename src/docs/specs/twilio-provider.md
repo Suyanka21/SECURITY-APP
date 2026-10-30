@@ -121,7 +121,13 @@ WhatsApp: To=whatsapp:+2547…  From=whatsapp:+…  ContentSid=HX…  ContentVar
       `200`.
     - **Applying a stored callback.** The callback is applied to its row if
       the SID is already known. If not, the dispatcher applies it in the same
-      transaction that saves the SID. Nothing is lost.
+      transaction that saves the SID.
+    - **The two paths never run at the same time.** The webhook (store the
+      callback, look up the row, apply) and the dispatcher (save the SID, look
+      up stored callbacks, apply) each run in one transaction. Each takes
+      `pg_advisory_xact_lock(hashtextextended(message_sid, 0))` before its
+      lookup. So whichever runs second sees the other's committed write, and
+      a callback cannot be missed by both.
     - **No double transitions.** A repeat callback hits the unique index and
       is ignored. A transition applies only from `sending` or `sent`, so a
       replayed or late callback cannot change a finished row. The fallback
@@ -273,6 +279,9 @@ change is T8, which picks the first channel.
 - signature-check tests: a valid signature, a bad one and a missing one;
 - webhook tests (integration):
   - a callback that arrives before the SID is saved is still applied;
+  - the same holds with the two transactions deliberately interleaved: the
+    webhook commits while the dispatcher's SID transaction is still open, and
+    the reverse;
   - a repeated or late callback changes nothing;
   - a `failed` callback queues the SMS fallback exactly once;
 - an integration test that the SMS fallback is dispatched (G2), in the CI
