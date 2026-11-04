@@ -85,12 +85,18 @@ async function statusOf(id: string) {
 }
 
 describe("queued-notification sweep", () => {
-  it("sends a stranded queued row once; skips fresh rows and expired approvals", async () => {
+  it("sends a stranded queued row once; skips fresh rows, expired approvals and approvals past their deadline", async () => {
     const stranded = await queuedApproval("Sweep Stranded");
     const fresh = await queuedApproval("Sweep Fresh");
     const decided = await queuedApproval("Sweep Decided");
+    const pastDeadline = await queuedApproval("Sweep Past Deadline");
     await backdate(stranded.notificationId, 5);
     await backdate(decided.notificationId, 5);
+    await backdate(pastDeadline.notificationId, 5);
+    // Still 'pending' in the row (expiry is applied on read), but past expires_at.
+    await db.execute(
+      sql`UPDATE approval_requests SET expires_at = now() - interval '1 minute' WHERE id = ${pastDeadline.approvalId}`,
+    );
     await db.execute(
       sql`UPDATE approval_requests SET status = 'expired', decided_at = now() WHERE id = ${decided.approvalId}`,
     );
@@ -114,6 +120,8 @@ describe("queued-notification sweep", () => {
     expect(await sendsFor(fresh.notificationId)).toBe(0);
     expect(await statusOf(decided.notificationId)).toBe("queued");
     expect(await sendsFor(decided.notificationId)).toBe(0);
+    expect(await statusOf(pastDeadline.notificationId)).toBe("queued");
+    expect(await sendsFor(pastDeadline.notificationId)).toBe(0);
 
     await dispatchStrandedQueuedNotifications(sweepDb(), { providers });
     expect(await sendsFor(stranded.notificationId), "second sweep sends nothing again").toBe(1);

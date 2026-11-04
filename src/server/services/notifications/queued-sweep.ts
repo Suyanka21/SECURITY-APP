@@ -5,7 +5,7 @@
  * fallback). If the server stops between that commit and the dispatch, the
  * row stays `queued` and nothing else picks it up. This sweep runs at start-up
  * and then every minute (one server instance, decision D3) and dispatches such
- * rows while their approval is still pending.
+ * rows while their approval is still pending and before its deadline.
  */
 
 import { sql } from "drizzle-orm";
@@ -30,12 +30,23 @@ export async function dispatchStrandedQueuedNotifications(
      WHERE n.approval_id = a.id
        AND n.status = 'queued'
        AND a.status = 'pending'
+       AND a.expires_at > now()
        AND n.updated_at < now() - make_interval(secs => ${olderThanMs / 1000})
     RETURNING n.id, a.requested_by_guard_id
   `)) as unknown as { rows: { id: string; requested_by_guard_id: string }[] };
 
+  let dispatched = 0;
   for (const row of claimed.rows) {
     try {
+      // A backlog takes time: re-check just before this send that the guard
+      // is still waiting (decided or past its deadline = no link to send).
+      const still = (await pg.execute(sql`
+        SELECT 1 FROM notifications n JOIN approval_requests a ON a.id = n.approval_id
+         WHERE n.id = ${row.id} AND n.status = 'queued'
+           AND a.status = 'pending' AND a.expires_at > now()
+      `)) as unknown as { rows: unknown[] };
+      if (still.rows.length === 0) continue;
+      dispatched += 1;
       await dispatchNotification(db, row.id, {
         providers: opts.providers,
         systemGuardId: row.requested_by_guard_id,
@@ -44,10 +55,10 @@ export async function dispatchStrandedQueuedNotifications(
       console.error(`[NOTIFY] queued sweep dispatch error | notification=${row.id}`, err);
     }
   }
-  if (claimed.rows.length > 0) {
-    console.log(`[NOTIFY] queued sweep dispatched ${claimed.rows.length} notification(s)`);
+  if (dispatched > 0) {
+    console.log(`[NOTIFY] queued sweep dispatched ${dispatched} notification(s)`);
   }
-  return claimed.rows.length;
+  return dispatched;
 }
 
 /** Runs the sweep now and every interval; returns a stop function. */
