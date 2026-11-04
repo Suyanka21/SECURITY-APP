@@ -14,6 +14,9 @@
  *     REASON_REQUIRED with nothing written; clear-block needs a reason
  *   - after a clear, a not-removed entry still blocks re-registration as a
  *     duplicate until the resident removes it
+ *   - POST /api/admin/units/:id/reactivate is admin only, needs a reason,
+ *     restores only the unit, voids earlier unused claim codes and lets a new
+ *     occupant claim with a fresh code
  *
  * PREREQUISITES: DATABASE_URL set, schema migrated.
  */
@@ -446,5 +449,104 @@ describe("S3 a reason is required to switch off a resident's rule; clear-block n
     expect((await api("DELETE", `/api/resident/registrations/${reg.id}`, token)).status).toBe(200);
     const again = await api("POST", "/api/resident/registrations", token, { kind: "person", label: "Cleared Later" });
     expect(again.status, JSON.stringify(again.body)).toBe(201);
+  });
+});
+
+describe("unit reactivation: POST /api/admin/units/:id/reactivate", () => {
+  async function deactivatedUnitWithLeftoverCode() {
+    const first = await claimedResident("PA-RE");
+    const leftover = await api("POST", `/api/admin/units/${first.unit.id}/claim-codes`, staffToken(adminId), {});
+    expect(leftover.status, JSON.stringify(leftover.body)).toBe(201);
+    const off = await api("POST", `/api/admin/units/${first.unit.id}/deactivate`, staffToken(adminId));
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    return { ...first, leftoverCode: (leftover.body.claimCode as { code: string }).code };
+  }
+
+  async function reactivatedAudits(unitId: string) {
+    return (
+      await db.select().from(auditEvents).where(eq(auditEvents.eventType, "unit_reactivated"))
+    ).filter((e) => (e.payload as { unitId?: string }).unitId === unitId);
+  }
+
+  it("anon 401; guard and senior-guard 403; a resident token is refused; the unit stays inactive", async () => {
+    const { unit, token } = await deactivatedUnitWithLeftoverCode();
+    const path = `/api/admin/units/${unit.id}/reactivate`;
+    const body = { reason: "Deactivated by mistake" };
+    expect((await api("POST", path, null, body)).status).toBe(401);
+    for (const id of [guardId, seniorId]) {
+      const r = await api("POST", path, staffToken(id), body);
+      expect(r.status, JSON.stringify(r.body)).toBe(403);
+    }
+    const asResident = await api("POST", path, token, body);
+    expect([401, 403], JSON.stringify(asResident.body)).toContain(asResident.status);
+    const [row] = await db.select().from(units).where(eq(units.id, unit.id));
+    expect(row.isActive).toBe(false);
+  });
+
+  it("no reason or a short one is 422 REASON_REQUIRED with nothing written; an active unit is 409; unknown 404", async () => {
+    const { unit } = await deactivatedUnitWithLeftoverCode();
+    const path = `/api/admin/units/${unit.id}/reactivate`;
+    for (const body of [{}, { reason: "" }, { reason: "  ab  " }]) {
+      const r = await api("POST", path, staffToken(adminId), body);
+      expect(r.status, JSON.stringify(r.body)).toBe(422);
+      expect(r.body.error).toMatchObject({ code: "REASON_REQUIRED", field: "reason" });
+    }
+    const [row] = await db.select().from(units).where(eq(units.id, unit.id));
+    expect(row.isActive).toBe(false);
+    expect(await reactivatedAudits(unit.id)).toHaveLength(0);
+
+    const live = await claimedResident("PA-RA");
+    const again = await api("POST", `/api/admin/units/${live.unit.id}/reactivate`, staffToken(adminId), {
+      reason: "Not needed",
+    });
+    expect(again.status, JSON.stringify(again.body)).toBe(409);
+    expect(again.body.error?.code).toBe("UNIT_ALREADY_ACTIVE");
+
+    const missing = await api("POST", `/api/admin/units/${randomUUID()}/reactivate`, staffToken(adminId), {
+      reason: "Not needed",
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error?.code).toBe("UNIT_NOT_FOUND");
+  });
+
+  it("restores only the unit: the old resident stays off, the leftover code is void, a fresh code lets a new occupant claim", async () => {
+    const { unit, resident, phone, leftoverCode } = await deactivatedUnitWithLeftoverCode();
+    const re = await raw("POST", `/api/admin/units/${unit.id}/reactivate`, staffToken(adminId), {
+      reason: "Deactivated by mistake",
+    });
+    expect(re.status, re.text).toBe(200);
+    expectNoPhone("reactivate", re, phone);
+    const body = JSON.parse(re.text) as { unit: { isActive: boolean; deactivatedAt: string | null }; voidedClaimCodeCount: number };
+    expect(body.unit).toMatchObject({ isActive: true, deactivatedAt: null });
+    expect(body.voidedClaimCodeCount).toBe(1);
+
+    const [oldResident] = await db.select().from(residents).where(eq(residents.id, resident.id));
+    expect(oldResident.isActive).toBe(false);
+
+    const newcomer = residentToken(randomUUID(), freshPhone().slice(1));
+    const stale = await api("POST", "/api/resident/claim", newcomer, { code: leftoverCode, displayName: "New Tenant" });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(403);
+
+    const fresh = await api("POST", `/api/admin/units/${unit.id}/claim-codes`, staffToken(adminId), {});
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(201);
+    const claim = await api("POST", "/api/resident/claim", newcomer, {
+      code: (fresh.body.claimCode as { code: string }).code,
+      displayName: "New Tenant",
+    });
+    expect(claim.status, JSON.stringify(claim.body)).toBe(201);
+    expect((claim.body.resident as { id: string }).id).not.toBe(resident.id);
+
+    const audits = await reactivatedAudits(unit.id);
+    expect(audits).toHaveLength(1);
+    expect(audits[0].guardId).toBe(adminId);
+    expect(audits[0].payload).toMatchObject({
+      unitId: unit.id,
+      label: unit.label,
+      reason: "Deactivated by mistake",
+      voidedClaimCodeCount: 1,
+    });
+
+    const filtered = await api("GET", "/api/audit/events?eventType=unit_reactivated&pageSize=100", staffToken(adminId));
+    expect(filtered.status, JSON.stringify(filtered.body)).toBe(200);
   });
 });

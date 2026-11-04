@@ -46,6 +46,17 @@ export const UnitParamsSchema = z.object({
   id: z.string().uuid("Unit id must be a UUID"),
 });
 
+export const UNIT_REACTIVATE_REASON_MIN = 3;
+export const UNIT_REACTIVATE_REASON_MAX = 500;
+
+export const ReactivateUnitSchema = z.object({
+  reason: z
+    .string({ required_error: "reason is required" })
+    .trim()
+    .min(UNIT_REACTIVATE_REASON_MIN, `reason must be at least ${UNIT_REACTIVATE_REASON_MIN} characters`)
+    .max(UNIT_REACTIVATE_REASON_MAX, `reason must be at most ${UNIT_REACTIVATE_REASON_MAX} characters`),
+});
+
 export const IssueClaimCodeSchema = z.object({
   ttlHours: z
     .number()

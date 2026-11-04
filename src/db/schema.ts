@@ -1831,6 +1831,8 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   // Migration: drizzle/0014_units_residents.sql.
   "unit_created",
   "unit_deactivated",
+  // Migration: drizzle/0017_unit_reactivated_audit_enum.sql.
+  "unit_reactivated",
   "unit_claim_code_issued",
   "resident_claimed",
   "resident_deactivated",
