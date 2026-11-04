@@ -16,8 +16,10 @@ import { db, pool } from "@/db";
 import { setAuditDB } from "./services/audit-logger";
 import {
   buildNotificationProvidersFromEnv,
+  getNotificationProviders,
   setNotificationProviders,
 } from "./services/notifications/registry";
+import { startQueuedNotificationSweep } from "./services/notifications/queued-sweep";
 
 const PORT = process.env.PORT || 3001;
 
@@ -34,6 +36,12 @@ const app = createApp(db);
 // can be processed without audit persistence active.
 setAuditDB(db as any);
 
+// Sends notification rows left queued by a stop between commit and dispatch.
+const stopQueuedSweep = startQueuedNotificationSweep(
+  db as unknown as Parameters<typeof startQueuedNotificationSweep>[0],
+  getNotificationProviders,
+);
+
 const server = app.listen(PORT, () => {
   console.log(`[GatePass] Server running on http://localhost:${PORT}`);
   console.log(`[GatePass] POST /api/entries ready`);
@@ -43,6 +51,7 @@ const server = app.listen(PORT, () => {
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   console.log("[GatePass] SIGTERM received, shutting down...");
+  stopQueuedSweep();
   server.close();
   await pool.end();
   process.exit(0);
@@ -50,6 +59,7 @@ process.on("SIGTERM", async () => {
 
 process.on("SIGINT", async () => {
   console.log("[GatePass] SIGINT received, shutting down...");
+  stopQueuedSweep();
   server.close();
   await pool.end();
   process.exit(0);

@@ -260,6 +260,11 @@ describe("Audit Query Validation", () => {
     "unit_claim_code_issued",
     "resident_claimed",
     "resident_deactivated",
+    "notification_sent",
+    "notification_failed",
+    "notification_permanently_failed",
+    "notification_delivered",
+    "approval_requested",
   ])("accepts eventType=%s", (eventType) => {
     expect(validateAuditQuery({ eventType }).success).toBe(true);
   });

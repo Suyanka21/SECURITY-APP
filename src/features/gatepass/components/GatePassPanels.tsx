@@ -840,6 +840,9 @@ function formatCountdown(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/** A "sent" row with no delivery report after this long is shown as unconfirmed. */
+export const SENT_UNCONFIRMED_AFTER_MS = 120_000;
+
 function statusBadgeClass(status: NotificationDeliveryView["status"]) {
   switch (status) {
     case "delivered":
@@ -933,6 +936,9 @@ function DeliveryStatusBlock({
           const inCooldown = cooldownRemainingMs > 0;
           const canRetry =
             row.status === "failed" && !row.retryInFlight && !inCooldown;
+          const unconfirmed =
+            row.status === "sent" &&
+            nowMs - Date.parse(row.updatedAt) > SENT_UNCONFIRMED_AFTER_MS;
           return (
             <li
               key={row.id}
@@ -950,6 +956,15 @@ function DeliveryStatusBlock({
                   Attempt {row.attempts}
                   {row.lastErrorCode ? ` · ${row.lastErrorCode}` : ""}
                 </span>
+                {unconfirmed && (
+                  <span
+                    className="text-xs font-semibold text-warning-foreground"
+                    role="status"
+                    data-testid={`delivery-unconfirmed-${row.id}`}
+                  >
+                    No delivery report yet. Phone the resident.
+                  </span>
+                )}
                 {row.retryError && (
                   <span
                     className="text-xs text-destructive"

@@ -446,6 +446,46 @@ describe("GatePass UI", () => {
     );
   });
 
+  it.each([
+    ["shows", 3, true],
+    ["does not show", 1, false],
+  ])("%s 'phone the resident' on a sent row with no delivery report after %d min", async (_label, minutes, shown) => {
+    // The panel's clock is the real Date.now() (1 Hz tick).
+    const updatedAt = new Date(Date.now() - minutes * 60_000).toISOString();
+    const notificationsApi = makeNotificationsApi([
+      notificationView({ id: "n-1", status: "sent", updatedAt }),
+    ]);
+    render(
+      <GatePassApp
+        controller={{
+          api: buildApi(),
+          approvalApi: makeApprovalApi(),
+          notificationsApi,
+          now: () => new Date("2024-01-01T00:00:00Z"),
+          approvalPollIntervalMs: 60_000,
+          notificationsPollIntervalMs: 10,
+        }}
+      />,
+    );
+    await fillWalkInDraft();
+    fireEvent.change(screen.getByTestId("host-phone-input"), {
+      target: { value: "+15551230001" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Request resident approval/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("delivery-row-n-1")).toBeInTheDocument();
+    });
+    if (shown) {
+      expect(screen.getByTestId("delivery-unconfirmed-n-1")).toHaveTextContent(
+        "No delivery report yet. Phone the resident.",
+      );
+    } else {
+      expect(screen.queryByTestId("delivery-unconfirmed-n-1")).toBeNull();
+    }
+  });
+
   it("Resend button only appears for failed rows and calls retryNotification", async () => {
     const approvalApi = makeApprovalApi();
     const notificationsApi = makeNotificationsApi([
