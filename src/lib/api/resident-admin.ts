@@ -29,6 +29,11 @@ export interface UnitDeactivatedResponse {
   disabledRuleCount: number;
 }
 
+export interface UnitReactivatedResponse {
+  unit: UnitView;
+  voidedClaimCodeCount: number;
+}
+
 export interface ClaimCodeIssued {
   claimCodeId: string;
   unitId: string;
@@ -86,6 +91,9 @@ export const residentAdminApi = {
   },
   deactivateUnit(unitId: string): Promise<ApiResult<UnitDeactivatedResponse>> {
     return apiClient.post(`/api/admin/units/${encodeURIComponent(unitId)}/deactivate`, {});
+  },
+  reactivateUnit(unitId: string, reason: string): Promise<ApiResult<UnitReactivatedResponse>> {
+    return apiClient.post(`/api/admin/units/${encodeURIComponent(unitId)}/reactivate`, { reason });
   },
   /** Uses the server's default lifetime (72 hours). */
   issueClaimCode(unitId: string): Promise<ApiResult<{ claimCode: ClaimCodeIssued }>> {

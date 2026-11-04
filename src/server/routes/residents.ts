@@ -7,6 +7,7 @@
  *   POST   /api/admin/units                    create unit
  *   GET    /api/admin/units                    list units (?includeInactive=true)
  *   POST   /api/admin/units/:id/deactivate     deactivate unit (+ residents, + open passes)
+ *   POST   /api/admin/units/:id/reactivate     reactivate unit (reason required; nothing else restored)
  *   POST   /api/admin/units/:id/claim-codes    issue one-shot claim code (raw code shown once)
  *   GET    /api/admin/units/:id/registrations  a unit's registrations + block state (R4a)
  *   GET    /api/admin/residents                list residents (?unitId=, ?includeInactive=true)
@@ -41,6 +42,7 @@ import {
   issueClaimCode,
   listResidents,
   listUnits,
+  reactivateUnit,
   type ResidentDb,
 } from "../services/resident-service";
 import { issueResidentPass } from "../services/resident-pass-service";
@@ -59,6 +61,7 @@ import {
   IssueClaimCodeSchema,
   ListResidentsQuerySchema,
   ListUnitsQuerySchema,
+  ReactivateUnitSchema,
   RegistrationParamsSchema,
   ResidentErrorCodes,
   ResidentIssuePassSchema,
@@ -131,6 +134,39 @@ export async function handleDeactivateUnit(req: Request, res: Response, next: Ne
     const result = await deactivateUnit(params.data.id, guardId, getDb(req));
     const { expiredPassCount, deactivatedResidentCount, disabledRuleCount, ...unit } = result;
     res.status(200).json({ unit, expiredPassCount, deactivatedResidentCount, disabledRuleCount });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function handleReactivateUnit(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const params = UnitParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      const { message, field } = firstIssue(params.error);
+      invalidInput(res, message, field);
+      return;
+    }
+    const body = ReactivateUnitSchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(422).json({
+        error: {
+          code: "REASON_REQUIRED",
+          message: firstIssue(body.error).message,
+          field: "reason",
+          traceId: `trace-${randomUUID()}`,
+        },
+      });
+      return;
+    }
+    const guardId = (req as AuthenticatedRequest).guardId;
+    const { voidedClaimCodeCount, ...unit } = await reactivateUnit(
+      params.data.id,
+      body.data.reason,
+      guardId,
+      getDb(req),
+    );
+    res.status(200).json({ unit, voidedClaimCodeCount });
   } catch (err) {
     next(err);
   }
@@ -362,6 +398,7 @@ export const adminUnitsRouter = Router();
 adminUnitsRouter.post("/", handleCreateUnit);
 adminUnitsRouter.get("/", handleListUnits);
 adminUnitsRouter.post("/:id/deactivate", handleDeactivateUnit);
+adminUnitsRouter.post("/:id/reactivate", handleReactivateUnit);
 adminUnitsRouter.post("/:id/claim-codes", handleIssueClaimCode);
 adminUnitsRouter.get("/:id/registrations", handleListUnitRegistrations);
 

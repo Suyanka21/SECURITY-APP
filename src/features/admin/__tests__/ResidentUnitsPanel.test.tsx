@@ -18,6 +18,7 @@ vi.mock("@/lib/api/resident-admin", async (importOriginal) => {
       listUnits: vi.fn(),
       createUnit: vi.fn(),
       deactivateUnit: vi.fn(),
+      reactivateUnit: vi.fn(),
       issueClaimCode: vi.fn(),
       listResidents: vi.fn(),
       deactivateResident: vi.fn(),
@@ -160,6 +161,37 @@ describe("ResidentUnitsPanel", () => {
     await waitFor(() => expect(api.listUnits).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("No units yet.")).toBeInTheDocument();
     expect(screen.getByText(/unit a-101 deactivated: 1 resident\(s\) deactivated/i)).toBeInTheDocument();
+  });
+
+  it("an inactive unit offers Reactivate, which needs a 3+ character reason and says nothing else comes back", async () => {
+    setup({ units: [unit({ isActive: false, deactivatedAt: "2026-02-01T00:00:00.000Z", activeResidentCount: 0 })] });
+    await selectUnit("A-101");
+    expect(screen.queryByRole("button", { name: /issue claim code/i })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /^reactivate unit$/i }));
+    expect(screen.getByText(/its former residents, passes and rules stay off/i)).toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: /confirm reactivate a-101/i });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/reason \(required\)/i), { target: { value: "  ab " } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/reason \(required\)/i), { target: { value: "  Deactivated by mistake  " } });
+    api.reactivateUnit.mockResolvedValue(ok({ unit: unit(), voidedClaimCodeCount: 1 }));
+    api.listUnits.mockResolvedValue(ok({ units: [unit({ activeResidentCount: 0 })], count: 1 }));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.reactivateUnit).toHaveBeenCalledWith("u-1", "Deactivated by mistake"));
+    expect(await screen.findByText(/unit a-101 reactivated\. .*1 unused earlier claim code\(s\) voided/i)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /issue claim code/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reactivate unit$/i })).not.toBeInTheDocument();
+  });
+
+  it("a refused reactivation shows the server's code and leaves the unit inactive", async () => {
+    setup({ units: [unit({ isActive: false, deactivatedAt: "2026-02-01T00:00:00.000Z", activeResidentCount: 0 })] });
+    await selectUnit("A-101");
+    fireEvent.click(await screen.findByRole("button", { name: /^reactivate unit$/i }));
+    fireEvent.change(screen.getByLabelText(/reason \(required\)/i), { target: { value: "Mistake" } });
+    api.reactivateUnit.mockResolvedValue(fail("UNIT_ALREADY_ACTIVE", "Unit is already active"));
+    fireEvent.click(screen.getByRole("button", { name: /confirm reactivate a-101/i }));
+    expect(await screen.findByText(/UNIT_ALREADY_ACTIVE/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /issue claim code/i })).not.toBeInTheDocument();
   });
 
   it("resident deactivation also refreshes the unit list and the registrations, keeping the unit selected", async () => {

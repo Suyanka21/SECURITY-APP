@@ -183,13 +183,18 @@ Never write the code itself down.
    once. Passes staff issued for the unit are not touched (known gap); they
    still end at their own expiry time. The unit stays active, so the next
    occupant gets a new claim code for it (SOP 10).
-2. **Deactivate unit is permanent.** Use it only when the address itself no
-   longer exists. Every resident of the unit is deactivated, open passes for
-   it expire and its rules are switched off; the screen shows the three counts,
-   write them down. There is no reactivation, and its label cannot be reused,
-   so **nobody can ever claim that address again** (known gap).
+2. **Deactivate unit** is for an address that no longer exists. Every
+   resident of the unit is deactivated, open passes for it expire and its
+   rules are switched off; the screen shows the three counts, write them down.
+3. **Undo a unit deactivation:** tick **Include inactive units** → select the
+   unit → **Reactivate unit**, give a reason (3–500 characters; the server
+   refuses without one). Only the unit comes back: its former residents,
+   passes and rules stay off, and any unused claim code issued before the
+   deactivation stops working. Issue a new claim code for the occupant
+   (SOP 10).
 
-**Record:** unit, resident (masked number only), date, the counts from step 2.
+**Record:** unit, resident (masked number only), date, the counts from step 2,
+and for a reactivation the reason.
 
 ## SOP 12 — Switch off a resident's registration or clear a block
 

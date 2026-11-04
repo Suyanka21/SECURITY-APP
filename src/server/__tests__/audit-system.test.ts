@@ -256,6 +256,7 @@ describe("Audit Query Validation", () => {
   it.each([
     "unit_created",
     "unit_deactivated",
+    "unit_reactivated",
     "unit_claim_code_issued",
     "resident_claimed",
     "resident_deactivated",

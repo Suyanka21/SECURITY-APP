@@ -233,6 +233,10 @@ export function ResidentUnitsPanel() {
                 setUnitNotice(message);
                 units.reload();
               }}
+              onUnitReactivated={(message) => {
+                setUnitNotice(message);
+                units.reload();
+              }}
             />
           ) : (
             <p className="py-4 text-sm text-muted-foreground">Select a unit to manage it.</p>
@@ -249,15 +253,22 @@ function UnitDetail({
   unit,
   onUnitChanged,
   onUnitDeactivated,
+  onUnitReactivated,
 }: {
   unit: UnitView;
   onUnitChanged: () => void;
   onUnitDeactivated: (message: string) => void;
+  onUnitReactivated: (message: string) => void;
 }) {
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiErrorBody | null>(null);
-  const [deactivated, setDeactivated] = useState(false);
+  // The server's answer to this screen's own deactivate/reactivate, until the
+  // reloaded list catches up.
+  const [activeOverride, setActiveOverride] = useState<boolean | null>(null);
+  const [confirmReactivate, setConfirmReactivate] = useState(false);
+  const [reactivateReason, setReactivateReason] = useState("");
+  const reactivateReasonId = useId();
   const [registrationsNonce, setRegistrationsNonce] = useState(0);
   const [claimCode, setClaimCode] = useState<ClaimCodeIssued | null>(null);
   const [copied, setCopied] = useState(false);
@@ -271,10 +282,31 @@ function UnitDetail({
     setConfirmDeactivate(false);
     if (res.ok) {
       const { deactivatedResidentCount, expiredPassCount, disabledRuleCount } = res.data;
-      setDeactivated(true);
+      setActiveOverride(false);
       setClaimCode(null);
       onUnitDeactivated(
         `Unit ${unit.label} deactivated: ${deactivatedResidentCount} resident(s) deactivated, ${expiredPassCount} open pass(es) expired, ${disabledRuleCount} rule(s) switched off.`,
+      );
+    } else {
+      setError(res.error);
+    }
+  };
+
+  const onReactivate = async () => {
+    const reason = reactivateReason.trim();
+    if (busy || reason.length < REASON_MIN) return;
+    setBusy(true);
+    setError(null);
+    const res = await residentAdminApi.reactivateUnit(unit.id, reason);
+    setBusy(false);
+    if (res.ok) {
+      setActiveOverride(true);
+      setConfirmReactivate(false);
+      setReactivateReason("");
+      const { voidedClaimCodeCount } = res.data;
+      onUnitReactivated(
+        `Unit ${unit.label} reactivated. Its former residents, passes and rules stay off; issue a new claim code for the next occupant.` +
+          (voidedClaimCodeCount > 0 ? ` ${voidedClaimCodeCount} unused earlier claim code(s) voided.` : ""),
       );
     } else {
       setError(res.error);
@@ -303,7 +335,7 @@ function UnitDetail({
     }
   };
 
-  const active = unit.isActive && !deactivated;
+  const active = activeOverride ?? unit.isActive;
 
   return (
     <div className="flex flex-col gap-4">
@@ -324,13 +356,67 @@ function UnitDetail({
             )}
           </div>
         )}
+        {!active && !confirmReactivate && (
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setConfirmReactivate(true)}>
+            Reactivate unit
+          </Button>
+        )}
       </div>
+
+      {confirmReactivate && !active && (
+        <form
+          className="flex flex-col gap-2 rounded-md border border-border p-3 text-sm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void onReactivate();
+          }}
+        >
+          <p>
+            Reactivate unit {unit.label}? Only the unit comes back: its former
+            residents, passes and rules stay off, and any unused earlier claim
+            code stops working. The next occupant needs a new claim code.
+          </p>
+          <Label htmlFor={reactivateReasonId} className="text-xs">
+            Reason (required)
+          </Label>
+          <Input
+            id={reactivateReasonId}
+            value={reactivateReason}
+            onChange={(e) => setReactivateReason(e.target.value)}
+            maxLength={REASON_MAX}
+            aria-invalid={error?.field === "reason" || undefined}
+            autoComplete="off"
+            disabled={busy}
+          />
+          <span className="text-xs text-muted-foreground">
+            {REASON_MIN}–{REASON_MAX} characters. {reactivateReason.trim().length}/{REASON_MAX}
+          </span>
+          <div className="flex gap-2">
+            <Button type="submit" size="sm" disabled={busy || reactivateReason.trim().length < REASON_MIN}>
+              Confirm reactivate {unit.label}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setConfirmReactivate(false);
+                setReactivateReason("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
 
       {confirmDeactivate && active && (
         <div className="rounded-md border border-destructive/30 p-3 text-sm">
           <p>
             Deactivate unit {unit.label}? In the same step this deactivates its
             residents, expires its open passes and switches off its rules.
+            Reactivating it later brings back only the unit, not these.
           </p>
           <div className="mt-2 flex gap-2">
             <Button type="button" size="sm" variant="destructive" disabled={busy} onClick={() => void onDeactivate()}>

@@ -385,6 +385,82 @@ export async function deactivateUnit(
   };
 }
 
+export type UnitReactivated = UnitView & { voidedClaimCodeCount: number };
+
+/**
+ * Reactivates a deactivated unit so a new occupant can claim it with a fresh
+ * code. Only the unit comes back: its former residents, expired passes and
+ * switched-off rules stay off. Unused claim codes issued before the
+ * deactivation are voided in the same transaction, so an old code cannot be
+ * redeemed once the unit is active again.
+ */
+export async function reactivateUnit(
+  unitId: string,
+  reason: string,
+  adminGuardId: string,
+  db: ResidentDb,
+): Promise<UnitReactivated> {
+  const traceId = `trace-${randomUUID()}`;
+  const now = new Date();
+
+  const result = await db.transaction(async (tx) => {
+    const current = await tx
+      .select({
+        id: units.id,
+        label: units.label,
+        isActive: units.isActive,
+        deactivatedAt: units.deactivatedAt,
+      })
+      .from(units)
+      .where(eq(units.id, unitId))
+      .for("update");
+    const unit = current[0];
+    if (!unit) {
+      throw new ServiceError("UNIT_NOT_FOUND", "Unit not found", 404, undefined, traceId);
+    }
+    if (unit.isActive) {
+      throw new ServiceError("UNIT_ALREADY_ACTIVE", "Unit is already active", 409, undefined, traceId);
+    }
+
+    await tx
+      .update(units)
+      .set({ isActive: true, deactivatedAt: null, deactivatedByGuardId: null, updatedAt: now })
+      .where(eq(units.id, unitId));
+
+    const voidedCodes = await tx
+      .update(unitClaimCodes)
+      .set({ expiresAt: now })
+      .where(
+        and(
+          eq(unitClaimCodes.unitId, unitId),
+          isNull(unitClaimCodes.usedAt),
+          sql`${unitClaimCodes.expiresAt} > ${now}`,
+        ),
+      )
+      .returning({ id: unitClaimCodes.id });
+
+    const event = await emitAuditEvent(
+      "unit_reactivated",
+      adminGuardId,
+      traceId,
+      {
+        unitId,
+        label: unit.label,
+        reason,
+        deactivatedAt: isoOrNull(unit.deactivatedAt),
+        voidedClaimCodeCount: voidedCodes.length,
+      },
+      { tx },
+    );
+
+    return { event, voidedClaimCodeCount: voidedCodes.length };
+  });
+
+  publishAuditEvent(result.event);
+  const view = await unitView(db, unitId);
+  return { ...view, voidedClaimCodeCount: result.voidedClaimCodeCount };
+}
+
 // ─── Claim codes (admin) ─────────────────────────────────────────────────────
 
 export async function issueClaimCode(
