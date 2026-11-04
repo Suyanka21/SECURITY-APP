@@ -815,11 +815,30 @@ export async function deactivateResident(
       )
       .returning({ id: autoApprovalRules.id });
 
+    // Open passes this resident sent stop working when they leave, so a
+    // former occupant's visitor cannot enter after the next household moves in.
+    const expiredPasses = await tx
+      .update(authorizationDecisions)
+      .set({ expiresAt: now })
+      .where(
+        and(
+          eq(authorizationDecisions.issuedByResidentId, residentId),
+          eq(authorizationDecisions.isUsed, false),
+          sql`${authorizationDecisions.expiresAt} > ${now}`,
+        ),
+      )
+      .returning({ id: authorizationDecisions.id });
+
     return emitAuditEvent(
       "resident_deactivated",
       adminGuardId,
       traceId,
-      { residentId, unitId: updated[0].unitId, disabledRuleCount: disabledRules.length },
+      {
+        residentId,
+        unitId: updated[0].unitId,
+        disabledRuleCount: disabledRules.length,
+        expiredPassCount: expiredPasses.length,
+      },
       { tx },
     );
   });

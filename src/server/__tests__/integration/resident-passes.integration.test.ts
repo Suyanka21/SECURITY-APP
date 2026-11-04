@@ -372,6 +372,38 @@ describe("resident pass — scope", () => {
     expect((await issue(b.token, { visitorName: "X" })).status).toBe(403);
   });
 
+  it("deactivating a resident expires the open passes they sent; another resident's pass still scans", async () => {
+    const a = await claimedResident("RX-MO");
+    const b = await claimedResident("RX-MK");
+    const pa = (await issue(a.token, { visitorName: "Old Guest", ttlHours: 24 })).body.invitation as IssuedPass;
+    const pb = (await issue(b.token, { visitorName: "Other Guest", ttlHours: 24 })).body.invitation as IssuedPass;
+
+    const d = await api("POST", `/api/admin/residents/${a.resident.id}/deactivate`, staffToken(adminId));
+    expect(d.status, JSON.stringify(d.body)).toBe(200);
+
+    const [row] = await db.select().from(authorizationDecisions).where(eq(authorizationDecisions.id, pa.id));
+    expect(row.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+    const scanA = await api("POST", "/api/entries/qr/validate", staffToken(guardId), {
+      qrToken: pa.qrToken,
+      scannedAt: new Date().toISOString(),
+    });
+    expect(scanA.status).not.toBe(200);
+    expect(scanA.body.outcome).not.toBe("valid");
+
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.eventType, "resident_deactivated"), sql`${auditEvents.payload}->>'residentId' = ${a.resident.id}`));
+    expect(audit.payload).toMatchObject({ expiredPassCount: 1 });
+
+    const scanB = await api("POST", "/api/entries/qr/validate", staffToken(guardId), {
+      qrToken: pb.qrToken,
+      scannedAt: new Date().toISOString(),
+    });
+    expect(scanB.status, JSON.stringify(scanB.body)).toBe(200);
+    expect(scanB.body.outcome).toBe("valid");
+  });
+
   it("a resident deactivated after auth resolved is refused inside the transaction", async () => {
     const a = await claimedResident("RX-ST");
     const [row] = await db.select().from(residents).where(eq(residents.id, a.resident.id));

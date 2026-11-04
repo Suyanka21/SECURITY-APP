@@ -86,11 +86,14 @@ function createMockDB(opts: {
   /** Rows RETURNed by the atomic `is_used=false` guarded consume update.
    *  Empty array simulates losing the race to a concurrent redemption. */
   consumeResult?: { id: string }[];
+  /** 0-row consume because the pass was expired mid-redemption, not used. */
+  revokedMidScan?: boolean;
 } = {}) {
   const { guardActive = true, guardMissing = false, row = makeRow() } = opts;
   const consumeResult =
     opts.consumeResult ?? [{ id: (row?.id as string) ?? DECISION_ID }];
   const updates: Record<string, unknown>[] = [];
+  let attempted = false;
 
   return {
     select: (...args: unknown[]) => ({
@@ -103,7 +106,10 @@ function createMockDB(opts: {
               );
             }
             if (table === authorizationDecisions) {
-              return Promise.resolve(row ? [row] : []);
+              if (!row) return Promise.resolve([]);
+              return Promise.resolve([
+                attempted && !opts.revokedMidScan ? { ...row, isUsed: true } : row,
+              ]);
             }
             return Promise.resolve([]);
           },
@@ -119,7 +125,10 @@ function createMockDB(opts: {
         // chained with `.returning()` on the atomic success-consume path.
         return {
           where: () => ({
-            returning: () => Promise.resolve(consumeResult),
+            returning: () => {
+              attempted = true;
+              return Promise.resolve(consumeResult);
+            },
             then: (resolve: (v: unknown) => unknown) => resolve(undefined),
           }),
         };
@@ -276,6 +285,19 @@ describe("validatePinRedemption", () => {
       validatePinRedemption(input("112233"), db)
     ).rejects.toMatchObject({ code: "PIN_REPLAYED", statusCode: 409 });
     // No success audit — the redemption did not complete.
+    expect(getAuditEventsByType("pin_redeemed").length).toBe(0);
+  });
+
+  it("R5c: a pass revoked between the read and the consume returns 410 PIN_EXPIRED", async () => {
+    const db = createMockDB({
+      row: makeRow({ pinHash: hashPin(DECISION_ID, "112233") }),
+      consumeResult: [],
+      revokedMidScan: true,
+    });
+    await expect(validatePinRedemption(input("112233"), db)).rejects.toMatchObject({
+      code: "PIN_EXPIRED",
+      statusCode: 410,
+    });
     expect(getAuditEventsByType("pin_redeemed").length).toBe(0);
   });
 

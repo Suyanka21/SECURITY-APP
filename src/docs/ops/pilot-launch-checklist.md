@@ -37,6 +37,7 @@ Related: [Operations runbook](./operations-runbook.md) ·
 | A8a | **GO-LIVE GATE — verified database certificate.** The production host must set exactly one of `DATABASE_SSL_ROOT_CERT` (path to the project CA file) or `DATABASE_SSL_CA` (the CA certificate text), and `DATABASE_SSL_REJECT_UNAUTHORIZED` must stay unset (never `false`). The server refuses to start in production otherwise. | Technical | Production host env shows one CA setting and no `DATABASE_SSL_REJECT_UNAUTHORIZED=false`; the API starts with no `[FATAL]` and `/health` answers; one verified connection logged. |
 | A8b | **Staff password reset configured** per the [environment checklist §2a](./environment-configuration-checklist.md): Site URL and the single Redirect URL `APP_PUBLIC_ORIGIN/reset-password`, custom SMTP, default reset template. | Technical | A test staff account requests a reset on the real domain; the email arrives; the link opens `/reset-password` with the new-password form; the address bar shows no `#access_token`; the new password signs in and the old one is refused; the host's access log shows `/reset-password` with no token. An unknown email gets the same on-screen message and no email. |
 | A9 | `VITE_SUPPORT_EMAIL` / `VITE_SUPPORT_PHONE` set to the estate's real support desk. | Estate manager + Technical | Open `/support` — contact shown, no "not yet published" notice. |
+| A10 | **GO-LIVE GATE — real message provider.** Twilio SMS (and WhatsApp, if used) is wired per [the Twilio spec](../specs/twilio-provider.md), with production credentials set only on the production host. **Re-run the phone sweep with the real provider before go-live** (spec §7): no staff or non-resident response, stored provider excerpt or log line contains a resident's full number, and a real message arrives on a test phone. Until this passes, guards relay approval links by hand. | Owner + Technical | Sweep output and a photo of the received message, with date and who ran it. |
 
 ## B. Accounts
 
@@ -45,7 +46,7 @@ Related: [Operations runbook](./operations-runbook.md) ·
 | B1 | First admin created with `npm run bootstrap:admin` ([procedure](../deploy/first-admin-bootstrap.md)); generated password stored in the estate's password manager, not in chat. | Technical + Admin | Admin signs in to dashboard. |
 | B2 | Initial senior guard(s) and guards created from the dashboard, each with a **unique badge number** and their own email. | Admin | Each signs in on the console; header shows their own name and badge. |
 | B3 | No shared logins. Every device sign-in is a named person. | Supervisor | Ask each guard to sign in in front of you. |
-| B4 | Deactivation and password-reset procedures (done outside the app — **GAP**) rehearsed once on a test account. | Technical | Test guard set `is_active=false` → console shows access refused on next action. |
+| B4 | Deactivation (done in the database — **GAP**) and the in-app password reset (`/reset-password`) rehearsed once on a test account. | Technical | Test guard set `is_active=false` → console shows access refused on next action. |
 | B5 | Test accounts used during setup removed or deactivated before go-live. | Admin | Accounts list shows only real staff. |
 
 ## C. Behaviour proven on the real deployment
@@ -82,7 +83,7 @@ Related: [Operations runbook](./operations-runbook.md) ·
 
 Tick only if the sign-off group accepts each in writing.
 
-- [ ] No in-app account deactivation or password reset (done via database / Supabase dashboard by the technical contact).
+- [ ] No in-app account deactivation (done in the database by the technical contact). Staff password reset is in the app (`/reset-password`, gate A8b).
 - [ ] No in-app visitor-history export (database query on written request).
 - [ ] Audit **API** is in-memory; durable audit is the database table only.
 - [ ] No offline page reload (no service worker); queue survives, page does not.

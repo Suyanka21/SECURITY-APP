@@ -153,6 +153,76 @@ resident approvals decided seconds after being sent from an unexpected device.
 
 ---
 
+## SOP 10 — Add a unit and give its resident a claim code
+
+**Who:** admin only. Dashboard → **Units and residents**.
+
+1. **Create unit.** Enter the label exactly as it appears at the gate
+   (1–32 characters, e.g. `B12`). Labels are unique.
+2. Select the unit → **Issue claim code**. The code is shown **once**; use
+   **Copy** and give it to the resident in person or by a call you placed to
+   their known number. It is valid for 72 hours and works once.
+3. The resident opens the resident portal, signs in with their phone (one-time
+   SMS code) and enters the claim code. Five wrong codes lock that resident's
+   sign-in out of claiming for 15 minutes, whatever code they enter next. Tell
+   them to wait 15 minutes and retry the same code. Issue a new code only if
+   the first one has expired, been used, or was lost.
+4. Done when the resident appears under the unit with a masked number
+   (`+254••••••678`). Admins never see the full number.
+
+**Record:** unit, date, admin who issued the code, how it was handed over.
+Never write the code itself down.
+
+## SOP 11 — A resident moves out (deactivate a resident or a unit)
+
+**Who:** admin only.
+
+1. **A household moves out:** select the unit → each resident →
+   **Deactivate**. Their portal access ends, the rules from their
+   registrations are switched off and every open pass they sent expires at
+   once. Passes staff issued for the unit are not touched (known gap); they
+   still end at their own expiry time. The unit stays active, so the next
+   occupant gets a new claim code for it (SOP 10).
+2. **Deactivate unit is permanent.** Use it only when the address itself no
+   longer exists. Every resident of the unit is deactivated, open passes for
+   it expire and its rules are switched off; the screen shows the three counts,
+   write them down. There is no reactivation, and its label cannot be reused,
+   so **nobody can ever claim that address again** (known gap).
+
+**Record:** unit, resident (masked number only), date, the counts from step 2.
+
+## SOP 12 — Switch off a resident's registration or clear a block
+
+**Who:** admin only. Select the unit → **Registrations**.
+
+1. **Switch off** stops a household member, worker or vehicle being let in
+   automatically. A reason is required (the server refuses without one).
+2. **Clear block** lifts a block placed on a registration. A reason of 3–500
+   characters is required.
+3. After a clear, if the resident still has the old entry listed, they must
+   **remove it in the portal first**, then register again; a fresh
+   registration of a listed entry is refused as a duplicate.
+
+**Record:** registration, action, reason, date, admin.
+
+## SOP 13 — A resident's approval message did not arrive
+
+**Who:** guard; senior guard if it repeats.
+
+Until the real message provider is live (checklist A10) **no WhatsApp or SMS is
+sent**: every delivery row shows as failed.
+
+1. The guard tells the visitor to wait, and calls the resident on the number
+   the resident gave the estate (not one the visitor offers).
+2. If the resident approves by phone, the guard follows the normal walk-in or
+   override procedure; an override is reviewed (SOP 4).
+3. Once the provider is live, use **Resend** on the delivery row first. It is
+   rate limited; after three failed attempts, call the resident.
+
+**Record:** visitor, unit, time, how the resident was reached.
+
+---
+
 ## Record-keeping
 
 Every SOP ends with a written record. Keep them in one place (a locked

@@ -14,7 +14,7 @@
  * 7. Return visitor data
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 import { guards, authorizationDecisions } from "@/db/schema";
 import { ServiceError } from "./entry-service";
@@ -35,6 +35,21 @@ import { checkWatchlistForEntry } from "./watchlist-service";
  * - Replay attacks prevented via is_used flag
  * - Expired QR codes rejected at validation layer
  */
+/**
+ * After a guarded consume UPDATE matched no row: true when the pass was
+ * already redeemed (replay), false when it was not, i.e. it expired or was
+ * revoked between the read and the write.
+ */
+export async function isRecordUsed(db: DrizzleDB, id: string): Promise<boolean> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (await (db as any)
+    .select({ isUsed: authorizationDecisions.isUsed })
+    .from(authorizationDecisions)
+    .where(eq(authorizationDecisions.id, id))
+    .limit(1)) as { isUsed: boolean }[];
+  return rows.length === 0 || rows[0].isUsed;
+}
+
 export async function validateQrToken(
   input: QrValidateInput,
   db: DrizzleDB
@@ -155,10 +170,27 @@ export async function validateQrToken(
     .where(
       and(
         eq(authorizationDecisions.id, record.id),
-        eq(authorizationDecisions.isUsed, false)
+        eq(authorizationDecisions.isUsed, false),
+        // Re-checked at write time: a pass revoked (expired) after the read
+        // above, e.g. by resident deactivation, must not be consumed.
+        sql`${authorizationDecisions.expiresAt} > ${now}`
       )
     )
     .returning({ id: authorizationDecisions.id })) as { id: string }[];
+
+  if ((!consumed || consumed.length === 0) && !(await isRecordUsed(db, record.id))) {
+    await emitAuditEvent("qr_scan_rejected", input.guardId, traceId, {
+      reason: "QR_EXPIRED",
+      qrTokenHash,
+      preApprovalId: record.id,
+    });
+    throw new ServiceError(
+      QrErrorCodes.QR_EXPIRED,
+      "This QR code has expired",
+      410,
+      "qrToken"
+    );
+  }
 
   if (!consumed || consumed.length === 0) {
     await emitAuditEvent("qr_scan_rejected", input.guardId, traceId, {

@@ -23,6 +23,8 @@ function createMockDB(overrides: {
   /** Rows RETURNed by the atomic `is_used=false` guarded consume update.
    *  Empty array simulates losing the race to a concurrent redemption. */
   consumeResult?: { id: string }[];
+  /** 0-row consume because the pass was expired mid-scan, not used. */
+  revokedMidScan?: boolean;
 } = {}) {
   const {
     consumeResult = [{ id: "approval-uuid-001" }],
@@ -40,9 +42,13 @@ function createMockDB(overrides: {
       usedByGuardId: null,
       createdAt: new Date().toISOString(),
     }],
+    revokedMidScan = false,
   } = overrides;
 
   const updates: unknown[] = [];
+  // After a consume attempt, a re-read sees the row as the winner left it:
+  // used when a concurrent redemption won, unused when it was revoked.
+  let attempted = false;
 
   return {
     select: vi.fn().mockImplementation(() => ({
@@ -50,7 +56,13 @@ function createMockDB(overrides: {
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockImplementation(() => {
             if (table === guards) return Promise.resolve(guardResult);
-            if (table === authorizationDecisions) return Promise.resolve(approvalResult);
+            if (table === authorizationDecisions) {
+              return Promise.resolve(
+                attempted && !revokedMidScan
+                  ? approvalResult.map((r) => ({ ...r, isUsed: true }))
+                  : approvalResult,
+              );
+            }
             return Promise.resolve([]);
           }),
         }),
@@ -59,6 +71,7 @@ function createMockDB(overrides: {
     update: vi.fn().mockImplementation(() => ({
       set: vi.fn().mockImplementation((data: unknown) => {
         updates.push(data);
+        attempted = true;
         return {
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue(consumeResult),
@@ -225,6 +238,17 @@ describe("QrService.validateQrToken", () => {
   });
 
   // Test 8: Response includes traceId for audit
+  it("rejects with QR_EXPIRED when the pass is revoked between the read and the consume", async () => {
+    // The guarded update also requires expires_at > now; 0 rows while the
+    // row is still unused means it was expired (e.g. resident deactivation).
+    const db = createMockDB({ consumeResult: [], revokedMidScan: true });
+    await expect(validateQrToken(validQrInput(), db)).rejects.toMatchObject({
+      code: "QR_EXPIRED",
+      statusCode: 410,
+    });
+    expect(getAuditEventsByType("qr_scan_succeeded").length).toBe(0);
+  });
+
   it("generates traceId for audit correlation", async () => {
     const db = createMockDB();
     const { response } = await validateQrToken(validQrInput(), db);

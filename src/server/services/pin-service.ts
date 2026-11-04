@@ -16,7 +16,7 @@
  *      per-pass limiter, and audit on every branch.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createHmac, randomInt, randomUUID, timingSafeEqual } from "crypto";
 
 import { guards, authorizationDecisions } from "@/db/schema";
@@ -27,6 +27,7 @@ import { PinErrorCodes } from "../validation/pin-schemas";
 import type { PinValidateInput } from "../validation/pin-schemas";
 import { emitAuditEvent } from "./audit-logger";
 import { checkWatchlistForEntry } from "./watchlist-service";
+import { isRecordUsed } from "./qr-service";
 
 // ─── Limiter policy (HARD constants — not env-driven) ────────────────────────
 // Source: spec §6 — "3–5 wrong guesses in a short window". We use 5 attempts
@@ -324,10 +325,27 @@ export async function validatePinRedemption(
     .where(
       and(
         eq(authorizationDecisions.id, record.id),
-        eq(authorizationDecisions.isUsed, false)
+        eq(authorizationDecisions.isUsed, false),
+        // Re-checked at write time: a pass revoked (expired) after the read
+        // above, e.g. by resident deactivation, must not be consumed.
+        sql`${authorizationDecisions.expiresAt} > ${now}`
       )
     )
     .returning({ id: authorizationDecisions.id })) as { id: string }[];
+
+  if ((!consumed || consumed.length === 0) && !(await isRecordUsed(db, record.id))) {
+    await emitAuditEvent("pin_failed", input.guardId, traceId, {
+      reason: "PIN_EXPIRED",
+      preApprovalId: record.id,
+      passRef: input.passRef,
+    });
+    throw new ServiceError(
+      PinErrorCodes.PIN_EXPIRED,
+      "This pass has expired",
+      410,
+      "pin"
+    );
+  }
 
   if (!consumed || consumed.length === 0) {
     // Lost the race — another redemption consumed this record first.

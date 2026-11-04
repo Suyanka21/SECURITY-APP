@@ -11,7 +11,7 @@ const ROLES: { role: StakeholderRole; label: string; description: string; icon: 
   {
     role: "resident",
     label: "Resident / Host",
-    description: "I approve or deny my visitors from a one-off link sent to my phone — no account or dashboard needed.",
+    description: "I approve or deny visitors from a link on my phone, and send passes from the resident portal.",
     icon: UserCheck,
   },
   {
