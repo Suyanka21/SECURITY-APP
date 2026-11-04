@@ -176,6 +176,7 @@ function toView(row: NotificationRow) {
     channel: row.channel,
     // Staff see only the masked target; the full number stays on the server.
     targetPhoneMasked: maskPhoneE164(row.targetPhone),
+    templateKey: row.templateKey,
     status: row.status,
     attempts: row.attempts,
     lastErrorCode: row.lastErrorCode,
