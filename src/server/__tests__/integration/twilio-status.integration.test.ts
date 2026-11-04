@@ -44,6 +44,7 @@ const saved = {
   SUPABASE_URL: process.env.SUPABASE_URL,
   TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
   APP_PUBLIC_ORIGIN: process.env.APP_PUBLIC_ORIGIN,
+  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
 };
 
 let pool: Pool;
@@ -166,6 +167,7 @@ beforeAll(async () => {
   delete process.env.SUPABASE_URL;
   process.env.TWILIO_AUTH_TOKEN = AUTH_TOKEN;
   process.env.APP_PUBLIC_ORIGIN = ORIGIN;
+  process.env.TWILIO_ACCOUNT_SID = `AC${"a".repeat(32)}`;
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required for integration tests.");
   if (!process.env.PIN_PEPPER) process.env.PIN_PEPPER = "integration-test-pepper-not-for-production";
@@ -253,6 +255,8 @@ describe("Twilio status webhook", () => {
     expect((await callback(status(sid, "delivered"), "bm9wZQ==")).status).toBe(403);
     const forged = computeTwilioSignature(CALLBACK_URL, status(sid, "delivered"), "someone-elses-token");
     expect((await callback(status(sid, "delivered"), forged)).status).toBe(403);
+    // Validly signed, but for another (sub)account that shares the token.
+    expect((await callback(status(sid, "delivered", { AccountSid: `AC${"b".repeat(32)}` }))).status).toBe(403);
     expect(await db.select().from(notificationCallbacks).where(eq(notificationCallbacks.messageSid, sid))).toHaveLength(0);
   });
 

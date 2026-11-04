@@ -45,6 +45,7 @@ import {
   truncateResponseExcerpt,
   type NotificationProvider,
   type NotificationChannel,
+  type NotificationSendResult,
 } from "./provider";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -297,19 +298,22 @@ export async function dispatchNotification(
   row.status = "sending";
 
   const provider = opts.providers[row.channel];
+  let accepted: NotificationSendResult | null = null;
   try {
     const templateVars = parseApprovalMagicLinkBody(row.renderedBody);
     const result = await provider.send({
       target: row.targetPhone,
       body: row.renderedBody,
-      idempotencyKey: row.idempotencyKey,
+      // One key per attempt: a concurrent replay of this attempt dedups, a
+      // Resend (next attempt) sends a new message.
+      idempotencyKey: `${row.idempotencyKey}:${row.attempts}`,
       ...(templateVars
         ? { template: { key: row.templateKey, variables: { ...templateVars } } }
         : {}),
     });
     if (result.acceptedOnly) {
-      return await acceptAndApplyStoredCallbacks(db, row, result, opts, maxAttempts);
-    }
+      accepted = result;
+    } else {
     await markDelivered(db, row, {
       providerResponseCode: result.responseCode,
       providerResponseExcerpt: truncateResponseExcerpt(result.responseExcerpt),
@@ -331,6 +335,7 @@ export async function dispatchNotification(
       finalStatus: "delivered",
       fallbackEnqueued: false,
     };
+    }
   } catch (err) {
     const isNotificationError = err instanceof NotificationError;
     const errorCode = isNotificationError ? err.code : "UNEXPECTED_ERROR";
@@ -383,6 +388,9 @@ export async function dispatchNotification(
       fallbackEnqueued,
     };
   }
+  // Twilio has the message: from here a failed local write is not a send failure.
+  if (!accepted) throw new Error("unreachable: provider send neither returned nor threw");
+  return acceptAndApplyStoredCallbacks(db, row, accepted, opts, maxAttempts);
 }
 
 /**
@@ -437,8 +445,8 @@ interface StoredCallback {
 
 interface CallbackOutcome {
   events: AuditEvent[];
-  /** The row that moved to 'failed' and may need the SMS fallback. */
-  failedRow: NotificationRow | null;
+  /** SMS fallback row queued in the same transaction, dispatched after commit. */
+  fallbackId: string | null;
   finalStatus: NotificationStatus;
 }
 
@@ -458,7 +466,7 @@ async function applyCallbacks(
 ): Promise<CallbackOutcome> {
   const events: AuditEvent[] = [];
   let status = row.status;
-  let failedRow: NotificationRow | null = null;
+  let fallbackId: string | null = null;
   for (const cb of callbacks) {
     // Only a row still waiting on the provider can move; a late or replayed
     // callback cannot change a finished row.
@@ -512,10 +520,12 @@ async function applyCallbacks(
           { tx },
         ),
       );
-      if (row.channel === "whatsapp" && !exhausted) failedRow = row;
+      if (row.channel === "whatsapp" && !exhausted) {
+        fallbackId = await maybeEnqueueSmsFallback(tx, row);
+      }
     }
   }
-  return { events, failedRow, finalStatus: status };
+  return { events, fallbackId, finalStatus: status };
 }
 
 async function acceptAndApplyStoredCallbacks(
@@ -526,7 +536,9 @@ async function acceptAndApplyStoredCallbacks(
   maxAttempts: number,
 ): Promise<DispatchOutcome> {
   const sid = result.providerMessageId;
-  const outcome: CallbackOutcome = await (db.transaction as (fn: (tx: Tx) => Promise<CallbackOutcome>) => Promise<CallbackOutcome>)(
+  let outcome: CallbackOutcome;
+  try {
+  outcome = await (db.transaction as (fn: (tx: Tx) => Promise<CallbackOutcome>) => Promise<CallbackOutcome>)(
     async (tx) => {
       await lockMessageSid(tx, sid);
       const now = new Date();
@@ -565,11 +577,49 @@ async function acceptAndApplyStoredCallbacks(
       return { ...applied, events: [sentEvent, ...applied.events] };
     },
   );
+  } catch (err) {
+    // Keep the SID so Twilio's callback can still find the row; never treat
+    // the failed write as a refused send (no SMS fallback here).
+    const saved = await saveAcceptedSidBestEffort(db, row, result);
+    if (!saved) throw err;
+    return { notificationId: row.id, finalStatus: "sent", fallbackEnqueued: false };
+  }
   outcome.events.forEach(publishAuditEvent);
-  const fallbackEnqueued = outcome.failedRow
-    ? await enqueueAndDispatchSmsFallback(db, outcome.failedRow, opts)
-    : false;
+  const fallbackEnqueued = await dispatchQueuedFallback(db, outcome.fallbackId, opts);
   return { notificationId: row.id, finalStatus: outcome.finalStatus, fallbackEnqueued };
+}
+
+async function saveAcceptedSidBestEffort(
+  db: DrizzleDB,
+  row: NotificationRow,
+  result: { providerMessageId: string; responseCode: number },
+): Promise<boolean> {
+  try {
+    const now = new Date();
+    await (db.update as (t: unknown) => Tx)(notifications)
+      .set({
+        status: "sent",
+        updatedAt: now,
+        attempts: row.attempts + 1,
+        providerMessageId: result.providerMessageId,
+        lastProviderResponseCode: result.responseCode,
+        lastErrorCode: null,
+      })
+      .where(and(eq(notifications.id, row.id), eq(notifications.status, "sending")));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function dispatchQueuedFallback(
+  db: DrizzleDB,
+  fallbackId: string | null,
+  opts: DispatchOptions,
+): Promise<boolean> {
+  if (!fallbackId) return false;
+  await dispatchNotification(db, fallbackId, opts);
+  return true;
 }
 
 export interface TwilioCallbackInput {
@@ -622,13 +672,11 @@ export async function recordTwilioStatusCallback(
     return { stored: out.stored, notificationId: out.row?.id ?? null, finalStatus: out.row?.status ?? null, fallbackEnqueued: false };
   }
   out.outcome.events.forEach(publishAuditEvent);
-  const fallbackEnqueued = out.outcome.failedRow
-    ? await enqueueAndDispatchSmsFallback(db, out.outcome.failedRow, {
-        providers: opts.providers,
-        systemGuardId: out.guardId ?? "",
-        maxAttempts,
-      })
-    : false;
+  const fallbackEnqueued = await dispatchQueuedFallback(db, out.outcome.fallbackId, {
+    providers: opts.providers,
+    systemGuardId: out.guardId ?? "",
+    maxAttempts,
+  });
   return { stored: true, notificationId: out.row.id, finalStatus: out.outcome.finalStatus, fallbackEnqueued };
 }
 

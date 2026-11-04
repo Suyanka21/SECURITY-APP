@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
+import { twilioStatusCallbackUrl,
   TwilioSmsProvider,
   TwilioWhatsAppProvider,
   TWILIO_DEDUP_TTL_MS,
@@ -126,6 +126,17 @@ describe("TwilioSmsProvider", () => {
     await p.send({ target: PHONE, body: BODY, idempotencyKey: "same" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("a refused send is not replayed: the same key tries Twilio again", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => jsonResponse(503, { code: 20500 }))
+      .mockImplementation(async () => jsonResponse(201, { sid: SID, status: "queued" }));
+    const p = sms(fetchMock as unknown as typeof fetch);
+    await expect(p.send({ target: PHONE, body: BODY, idempotencyKey: "k" })).rejects.toMatchObject({ code: "PROVIDER_5XX" });
+    await expect(p.send({ target: PHONE, body: BODY, idempotencyKey: "k" })).resolves.toMatchObject({ providerMessageId: SID });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("TwilioWhatsAppProvider", () => {
@@ -205,5 +216,15 @@ describe("provider wiring from environment", () => {
     expect(r.whatsapp).toBeInstanceOf(MockNotificationProvider);
     expect(firstNotificationChannel(env)).toBe("sms");
     expect(firstNotificationChannel({})).toBe("whatsapp");
+  });
+
+  it("status callback URL: APP_PUBLIC_ORIGIN, or TWILIO_STATUS_CALLBACK_ORIGIN for a separate API host", () => {
+    expect(twilioStatusCallbackUrl({ APP_PUBLIC_ORIGIN: "https://app.example/" })).toBe(
+      "https://app.example/api/notifications/twilio-status",
+    );
+    expect(
+      twilioStatusCallbackUrl({ APP_PUBLIC_ORIGIN: "https://app.example", TWILIO_STATUS_CALLBACK_ORIGIN: "https://api.example" }),
+    ).toBe("https://api.example/api/notifications/twilio-status");
+    expect(twilioStatusCallbackUrl({})).toBeUndefined();
   });
 });

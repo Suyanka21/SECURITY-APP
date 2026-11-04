@@ -15,7 +15,7 @@
 
 import { MockNotificationProvider } from "./mock-provider";
 import {
-  TWILIO_STATUS_CALLBACK_PATH,
+  twilioStatusCallbackUrl,
   TwilioSmsProvider,
   TwilioWhatsAppProvider,
   type TwilioProviderDeps,
@@ -79,17 +79,12 @@ export function firstNotificationChannel(env: ProviderEnv = process.env): Notifi
   return env.NOTIFICATIONS_WHATSAPP_PROVIDER?.trim() === "disabled" ? "sms" : "whatsapp";
 }
 
-function statusCallbackUrl(env: ProviderEnv): string | undefined {
-  const origin = env.APP_PUBLIC_ORIGIN?.trim().replace(/\/+$/, "");
-  return origin ? `${origin}${TWILIO_STATUS_CALLBACK_PATH}` : undefined;
-}
-
 function twilioCredentials(env: ProviderEnv) {
   return {
     accountSid: env.TWILIO_ACCOUNT_SID?.trim() ?? "",
     apiKeySid: env.TWILIO_API_KEY_SID?.trim() ?? "",
     apiKeySecret: env.TWILIO_API_KEY_SECRET ?? "",
-    statusCallbackUrl: statusCallbackUrl(env),
+    statusCallbackUrl: twilioStatusCallbackUrl(env),
   };
 }
 

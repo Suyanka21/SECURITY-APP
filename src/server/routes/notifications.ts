@@ -35,7 +35,7 @@ import {
   type TwilioCallbackStatus,
 } from "../services/notifications/notification-service";
 import { isValidTwilioSignature } from "../services/notifications/twilio-signature";
-import { TWILIO_STATUS_CALLBACK_PATH } from "../services/notifications/twilio-provider";
+import { twilioStatusCallbackUrl } from "../services/notifications/twilio-provider";
 import { getNotificationProviders } from "../services/notifications/registry";
 import { ServiceError } from "../services/errors";
 import type { AuthenticatedRequest } from "../middleware/auth";
@@ -181,8 +181,9 @@ export async function handleTwilioStatusCallback(
 ): Promise<void> {
   try {
     const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const origin = process.env.APP_PUBLIC_ORIGIN?.trim().replace(/\/+$/, "");
-    if (!authToken || !origin) {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+    const callbackUrl = twilioStatusCallbackUrl(process.env);
+    if (!authToken || !accountSid || !callbackUrl) {
       res.status(503).end();
       return;
     }
@@ -192,7 +193,12 @@ export async function handleTwilioStatusCallback(
       if (typeof v === "string") params[k] = v;
     }
     const signature = req.get("X-Twilio-Signature");
-    if (!isValidTwilioSignature(signature, `${origin}${TWILIO_STATUS_CALLBACK_PATH}`, params, authToken)) {
+    if (!isValidTwilioSignature(signature, callbackUrl, params, authToken)) {
+      res.status(403).end();
+      return;
+    }
+    // Subaccounts can share a signing token: only our own account's messages count.
+    if (params.AccountSid !== accountSid) {
       res.status(403).end();
       return;
     }

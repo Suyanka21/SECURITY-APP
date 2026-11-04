@@ -628,3 +628,39 @@ describe("MockNotificationProvider", () => {
     ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
   });
 });
+
+describe("dispatchNotification — Twilio accepted, local save fails", () => {
+  it("keeps the SID as 'sent' and does NOT start the SMS fallback", async () => {
+    const row = baseRow();
+    const db = makeMockDB({ approval: defaultApproval(), initialNotifications: [row] });
+    db.transaction = vi.fn().mockRejectedValue(new Error("db down"));
+    const sid = `SM${"c".repeat(32)}`;
+    const providers = {
+      ...makeProviders(),
+      whatsapp: {
+        channel: "whatsapp" as const,
+        send: vi.fn().mockResolvedValue({
+          providerMessageId: sid,
+          responseCode: 201,
+          responseExcerpt: "HTTP 201",
+          acceptedOnly: true,
+        }),
+      },
+    };
+    const outcome = await dispatchNotification(db, row.id, { providers, systemGuardId: SYSTEM_GUARD_ID });
+    expect(outcome).toEqual({ notificationId: row.id, finalStatus: "sent", fallbackEnqueued: false });
+    const wa = db._rows.find((r) => r.channel === "whatsapp");
+    expect(wa?.status).toBe("sent");
+    expect(wa?.providerMessageId).toBe(sid);
+    expect(db._rows.some((r) => r.channel === "sms")).toBe(false);
+    expect(providers.sms.attempts).toHaveLength(0);
+  });
+
+  it("each attempt gets its own provider idempotency key", async () => {
+    const row = baseRow({ status: "failed", attempts: 1 });
+    const db = makeMockDB({ approval: defaultApproval(), initialNotifications: [row] });
+    const providers = makeProviders();
+    await dispatchNotification(db, row.id, { providers, systemGuardId: SYSTEM_GUARD_ID });
+    expect(providers.whatsapp.attempts[0]?.idempotencyKey).toBe(`${row.idempotencyKey}:1`);
+  });
+});

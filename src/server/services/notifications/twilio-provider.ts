@@ -27,6 +27,16 @@ export const TWILIO_TIMEOUT_MS = 10_000;
 export const TWILIO_DEDUP_TTL_MS = 10 * 60_000;
 export const TWILIO_STATUS_CALLBACK_PATH = "/api/notifications/twilio-status";
 
+/**
+ * The public URL Twilio posts delivery status to, and the URL the webhook
+ * signs against. TWILIO_STATUS_CALLBACK_ORIGIN is the API's public origin
+ * when it differs from APP_PUBLIC_ORIGIN (separate API host).
+ */
+export function twilioStatusCallbackUrl(env: Record<string, string | undefined>): string | undefined {
+  const origin = (env.TWILIO_STATUS_CALLBACK_ORIGIN?.trim() || env.APP_PUBLIC_ORIGIN?.trim() || "").replace(/\/+$/, "");
+  return origin ? `${origin}${TWILIO_STATUS_CALLBACK_PATH}` : undefined;
+}
+
 export interface TwilioCredentials {
   accountSid: string;
   apiKeySid: string;
@@ -76,8 +86,13 @@ abstract class TwilioProviderBase implements NotificationProvider {
     }
     const prior = this.sent.get(input.idempotencyKey);
     if (prior) return prior.result;
+    const key = input.idempotencyKey;
     const result = this.post(input);
-    this.sent.set(input.idempotencyKey, { at: nowMs, result });
+    this.sent.set(key, { at: nowMs, result });
+    // Only an accepted send is replayed; a refusal must not block the next try.
+    result.catch(() => {
+      if (this.sent.get(key)?.result === result) this.sent.delete(key);
+    });
     return result;
   }
 

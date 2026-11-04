@@ -209,6 +209,10 @@ function collectNotificationProviderProblems(env: ProductionEnv, problems: Confi
     requireTwilio(env, name, problems);
   }
   if (sms === "twilio") requireTwilio(env, "TWILIO_SMS_MESSAGING_SERVICE_SID", problems);
+  const callbackOrigin = env.TWILIO_STATUS_CALLBACK_ORIGIN?.trim();
+  if (callbackOrigin && !/^https:\/\/[^/\s?#]+$/.test(callbackOrigin)) {
+    problems.push({ name: "TWILIO_STATUS_CALLBACK_ORIGIN", reason: "must be an https:// origin with no path" });
+  }
   if (whatsapp === "twilio") {
     requireTwilio(env, "TWILIO_WHATSAPP_FROM", problems);
     requireTwilio(env, "TWILIO_WHATSAPP_CONTENT_SID", problems);
