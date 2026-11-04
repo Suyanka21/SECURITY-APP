@@ -22,6 +22,13 @@ const deployable = (): ProductionEnv => ({
   SUPABASE_SECRET_KEY: "sb_secret_real_key_value",
   ALLOWED_ORIGINS: "https://gatepass.estate.co.ke",
   APP_PUBLIC_ORIGIN: "https://gatepass.estate.co.ke",
+  NOTIFICATIONS_WHATSAPP_PROVIDER: "disabled",
+  NOTIFICATIONS_SMS_PROVIDER: "twilio",
+  TWILIO_ACCOUNT_SID: `AC${"a".repeat(32)}`,
+  TWILIO_API_KEY_SID: `SK${"b".repeat(32)}`,
+  TWILIO_API_KEY_SECRET: "test-api-key-secret-value",
+  TWILIO_AUTH_TOKEN: "test-auth-token-value",
+  TWILIO_SMS_MESSAGING_SERVICE_SID: `MG${"c".repeat(32)}`,
 });
 
 const names = (env: ProductionEnv) =>
@@ -63,7 +70,48 @@ describe("production config fail-fast", () => {
       "SUPABASE_SECRET_KEY",
       "ALLOWED_ORIGINS",
       "APP_PUBLIC_ORIGIN",
+      "NOTIFICATIONS_WHATSAPP_PROVIDER",
+      "NOTIFICATIONS_SMS_PROVIDER",
     ]);
+  });
+
+  it("refuses the mock message provider and unknown provider values", () => {
+    const env = deployable();
+    env.NOTIFICATIONS_SMS_PROVIDER = "mock";
+    env.NOTIFICATIONS_WHATSAPP_PROVIDER = "twillio";
+    expect(names(env)).toEqual([
+      "NOTIFICATIONS_WHATSAPP_PROVIDER",
+      "NOTIFICATIONS_SMS_PROVIDER",
+    ]);
+  });
+
+  it("requires every Twilio setting for SMS, in the right format", () => {
+    const env = deployable();
+    delete env.TWILIO_AUTH_TOKEN;
+    env.TWILIO_ACCOUNT_SID = "AC123";
+    env.TWILIO_SMS_MESSAGING_SERVICE_SID = `SK${"c".repeat(32)}`;
+    expect(names(env)).toEqual([
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_SMS_MESSAGING_SERVICE_SID",
+    ]);
+  });
+
+  it("requires the WhatsApp sender and template only when WhatsApp is on", () => {
+    const env = deployable();
+    env.NOTIFICATIONS_WHATSAPP_PROVIDER = "twilio";
+    expect(names(env)).toEqual(["TWILIO_WHATSAPP_FROM", "TWILIO_WHATSAPP_CONTENT_SID"]);
+    env.TWILIO_WHATSAPP_FROM = "whatsapp:+254700000001";
+    env.TWILIO_WHATSAPP_CONTENT_SID = `HX${"d".repeat(32)}`;
+    expect(names(env)).toEqual([]);
+  });
+
+  it("never echoes a Twilio secret in the problem list", () => {
+    const env = deployable();
+    env.TWILIO_ACCOUNT_SID = "not-a-sid-secretish";
+    const text = JSON.stringify(collectProductionConfigProblems(env));
+    expect(text).not.toContain("not-a-sid-secretish");
+    expect(text).not.toContain("test-api-key-secret-value");
   });
 
   it("refuses to start without a database CA certificate", () => {

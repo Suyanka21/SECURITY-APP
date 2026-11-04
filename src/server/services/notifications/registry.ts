@@ -14,6 +14,12 @@
  */
 
 import { MockNotificationProvider } from "./mock-provider";
+import {
+  twilioStatusCallbackUrl,
+  TwilioSmsProvider,
+  TwilioWhatsAppProvider,
+  type TwilioProviderDeps,
+} from "./twilio-provider";
 import type {
   NotificationProvider,
   NotificationChannel,
@@ -56,4 +62,59 @@ export function setNotificationProvider(
 
 export function resetNotificationProviders(): void {
   current = buildDefaultRegistry();
+}
+
+// ─── Boot wiring from environment variables (twilio-provider.md §4) ─────────
+
+export type ProviderEnv = Record<string, string | undefined>;
+
+export const WHATSAPP_PROVIDER_VALUES = ["twilio", "disabled", "mock"] as const;
+export const SMS_PROVIDER_VALUES = ["twilio", "mock"] as const;
+
+/**
+ * The channel the first notification row uses. With WhatsApp disabled
+ * (SMS-only pilot, decision D2) the approval goes straight to SMS.
+ */
+export function firstNotificationChannel(env: ProviderEnv = process.env): NotificationChannel {
+  return env.NOTIFICATIONS_WHATSAPP_PROVIDER?.trim() === "disabled" ? "sms" : "whatsapp";
+}
+
+function twilioCredentials(env: ProviderEnv) {
+  return {
+    accountSid: env.TWILIO_ACCOUNT_SID?.trim() ?? "",
+    apiKeySid: env.TWILIO_API_KEY_SID?.trim() ?? "",
+    apiKeySecret: env.TWILIO_API_KEY_SECRET ?? "",
+    statusCallbackUrl: twilioStatusCallbackUrl(env),
+  };
+}
+
+/**
+ * Builds the registry at boot. Unset (or `disabled`, `mock` and unknown
+ * values) keeps the default-deny provider for that channel, so nothing is
+ * sent by accident; production refuses `mock` and unknown values before this
+ * runs (production-config.ts). `mock` never succeeds outside tests, which set
+ * their own providers.
+ */
+export function buildNotificationProvidersFromEnv(
+  env: ProviderEnv = process.env,
+  deps?: TwilioProviderDeps,
+): NotificationProviderRegistry {
+  const registry = buildDefaultRegistry();
+  if (env.NOTIFICATIONS_SMS_PROVIDER?.trim() === "twilio") {
+    registry.sms = new TwilioSmsProvider(
+      { ...twilioCredentials(env), messagingServiceSid: env.TWILIO_SMS_MESSAGING_SERVICE_SID?.trim() ?? "" },
+      deps,
+    );
+  }
+  if (env.NOTIFICATIONS_WHATSAPP_PROVIDER?.trim() === "twilio") {
+    registry.whatsapp = new TwilioWhatsAppProvider(
+      {
+        ...twilioCredentials(env),
+        from: env.TWILIO_WHATSAPP_FROM?.trim() ?? "",
+        contentSid: env.TWILIO_WHATSAPP_CONTENT_SID?.trim() ?? "",
+      },
+      deps,
+    );
+  }
+  return registry;
 }

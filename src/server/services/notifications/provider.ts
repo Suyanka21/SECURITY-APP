@@ -31,6 +31,12 @@ export interface NotificationSendInput {
    * header where supported (e.g. WhatsApp Cloud API `Idempotency-Key`).
    */
   idempotencyKey: string;
+  /**
+   * Pre-approved template for channels that require one (WhatsApp outside
+   * the 24 h window). Filled by the dispatcher from the same values it
+   * renders into `body`; providers that send free text ignore it.
+   */
+  template?: { key: string; variables: Record<string, string> };
 }
 
 export interface NotificationSendResult {
@@ -40,6 +46,12 @@ export interface NotificationSendResult {
   responseCode: number;
   /** Provider response body, truncated to ≤ 200 chars (PII rule §3). */
   responseExcerpt: string;
+  /**
+   * True when the provider only accepted the message and reports delivery
+   * later through a status callback (Twilio). The dispatcher then marks the
+   * row 'sent' instead of 'delivered'.
+   */
+  acceptedOnly?: boolean;
 }
 
 /**

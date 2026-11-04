@@ -135,6 +135,7 @@ export type NotificationDeliveryView = {
   status:
     | "queued"
     | "sending"
+    | "sent"
     | "delivered"
     | "failed"
     | "permanently_failed";

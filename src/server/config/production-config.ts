@@ -167,7 +167,56 @@ export function collectProductionConfigProblems(
     });
   }
 
+  collectNotificationProviderProblems(env, problems);
+
   return problems;
+}
+
+const TWILIO_SID_FORMATS: Record<string, RegExp> = {
+  TWILIO_ACCOUNT_SID: /^AC[0-9a-f]{32}$/i,
+  TWILIO_API_KEY_SID: /^SK[0-9a-f]{32}$/i,
+  TWILIO_SMS_MESSAGING_SERVICE_SID: /^MG[0-9a-f]{32}$/i,
+  TWILIO_WHATSAPP_CONTENT_SID: /^HX[0-9a-f]{32}$/i,
+  TWILIO_WHATSAPP_FROM: /^whatsapp:\+[1-9]\d{7,14}$/,
+};
+
+function requireTwilio(env: ProductionEnv, name: string, problems: ConfigProblem[]): void {
+  const value = requirePresent(env, name, problems);
+  const format = TWILIO_SID_FORMATS[name];
+  if (value && format && !format.test(value)) {
+    problems.push({ name, reason: "has the wrong format (see .env.example)" });
+  }
+}
+
+/** twilio-provider.md §4: production refuses `mock`, unknown values and missing Twilio settings. */
+function collectNotificationProviderProblems(env: ProductionEnv, problems: ConfigProblem[]): void {
+  const whatsapp = env.NOTIFICATIONS_WHATSAPP_PROVIDER?.trim();
+  const sms = env.NOTIFICATIONS_SMS_PROVIDER?.trim();
+  if (whatsapp !== "twilio" && whatsapp !== "disabled") {
+    problems.push({
+      name: "NOTIFICATIONS_WHATSAPP_PROVIDER",
+      reason: whatsapp ? `"${whatsapp}" is not allowed in production (twilio | disabled)` : "is not set (twilio | disabled)",
+    });
+  }
+  if (sms !== "twilio") {
+    problems.push({
+      name: "NOTIFICATIONS_SMS_PROVIDER",
+      reason: sms ? `"${sms}" is not allowed in production (twilio)` : "is not set (twilio)",
+    });
+  }
+  if (whatsapp !== "twilio" && sms !== "twilio") return;
+  for (const name of ["TWILIO_ACCOUNT_SID", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_AUTH_TOKEN"]) {
+    requireTwilio(env, name, problems);
+  }
+  if (sms === "twilio") requireTwilio(env, "TWILIO_SMS_MESSAGING_SERVICE_SID", problems);
+  const callbackOrigin = env.TWILIO_STATUS_CALLBACK_ORIGIN?.trim();
+  if (callbackOrigin && !/^https:\/\/[^/\s?#]+$/.test(callbackOrigin)) {
+    problems.push({ name: "TWILIO_STATUS_CALLBACK_ORIGIN", reason: "must be an https:// origin with no path" });
+  }
+  if (whatsapp === "twilio") {
+    requireTwilio(env, "TWILIO_WHATSAPP_FROM", problems);
+    requireTwilio(env, "TWILIO_WHATSAPP_CONTENT_SID", problems);
+  }
 }
 
 export function formatProductionConfigError(problems: ConfigProblem[]): string {

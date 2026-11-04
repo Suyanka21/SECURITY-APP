@@ -1,6 +1,8 @@
 # Spec — Real message provider (Twilio SMS + WhatsApp) for guard-initiated approvals
 
-> Status: **proposal for owner approval. No code until approved.**
+> Status: **approved and built.** Owner chose D1 = webhook (option B), D2 = SMS-only
+> pilot, D3 = one server instance (§9). Built in the Twilio SMS PR: T1–T6, T8, G1, G2.
+> T7 (the live phone sweep script) waits for the owner's dev Twilio subaccount.
 > Extends `notifications.md` §5–§6. Twilio facts below were checked against
 > Twilio's docs (links in §10) on 2026-10-30; code facts against `main` @ `47282b5`.
 

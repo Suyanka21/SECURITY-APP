@@ -92,7 +92,7 @@ item fields not observable): `ListShiftsResponse` (14 item fields),
 | No visitor-history export | Manual SQL on written admin instruction | Runbook §9 |
 | No retention enforcement | Data accumulates until manually deleted | Privacy draft §4, checklist D6 |
 | No offline page reload (no service worker) | Queue survives; a hard refresh offline shows the browser error page | Runbook §6 |
-| No real SMS/WhatsApp provider wired (default-deny mock); the SMS fallback row is never dispatched | Resident links must be relayed by the guard until Twilio lands (`src/docs/specs/twilio-provider.md`) | Privacy draft §3, checklist A10 |
+| Twilio SMS provider and delivery-status webhook are built and tested against a fake Twilio only; no real message has been sent yet, and the live phone sweep (spec T7) is not written | Until the owner sets up Twilio and gate A10 passes, guards relay approval links by hand | Twilio spec §7, checklist A10 |
 | Support contact, escalation contacts and sign-off names all blank | Fill before go-live | Checklist A9, D3, F |
 
 ## Out of scope for this report

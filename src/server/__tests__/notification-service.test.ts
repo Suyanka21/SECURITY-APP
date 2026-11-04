@@ -87,6 +87,28 @@ interface MockDBOpts {
   initialNotifications?: NotificationRowState[];
 }
 
+// Drizzle's eq(col, value) keeps `value` in a Param chunk. When a where
+// clause names a known row id, narrow to that row so a second row (the
+// SMS fallback) can be loaded by id.
+function idFilterFrom(
+  clause: unknown,
+  rows: NotificationRowState[],
+): ((r: NotificationRowState) => boolean) | undefined {
+  const values: unknown[] = [];
+  const seen = new Set<unknown>();
+  const walk = (node: unknown) => {
+    if (!node || typeof node !== "object" || seen.has(node)) return;
+    seen.add(node);
+    const n = node as { value?: unknown; queryChunks?: unknown[] };
+    if ("value" in n && typeof n.value === "string") values.push(n.value);
+    if (Array.isArray(n.queryChunks)) n.queryChunks.forEach(walk);
+  };
+  walk(clause);
+  const ids = new Set(rows.map((r) => r.id));
+  const id = values.find((v) => ids.has(v as string));
+  return id ? (r) => r.id === id : undefined;
+}
+
 function makeMockDB(opts: MockDBOpts = {}) {
   const approval: ApprovalRowState | null = opts.approval ?? null;
   const rows: NotificationRowState[] = [...(opts.initialNotifications ?? [])];
@@ -109,7 +131,9 @@ function makeMockDB(opts: MockDBOpts = {}) {
         where: vi
           .fn()
           .mockImplementation((_clause: unknown) => {
-            const where = (_clause as { _testFilter?: (r: NotificationRowState) => boolean })._testFilter;
+            const where =
+              (_clause as { _testFilter?: (r: NotificationRowState) => boolean })._testFilter ??
+              (table === notifications ? idFilterFrom(_clause, rows) : undefined);
             const got = apply(where);
             return Object.assign(Promise.resolve(got), {
               limit: vi.fn().mockImplementation((n: number) => {
@@ -125,7 +149,9 @@ function makeMockDB(opts: MockDBOpts = {}) {
   const updateMock = vi.fn().mockImplementation((table: unknown) => ({
     set: vi.fn().mockImplementation((patch: Partial<NotificationRowState>) => ({
       where: vi.fn().mockImplementation((_clause: unknown) => {
-        const filter = (_clause as { _testFilter?: (r: NotificationRowState) => boolean })._testFilter;
+        const filter =
+          (_clause as { _testFilter?: (r: NotificationRowState) => boolean })._testFilter ??
+          idFilterFrom(_clause, rows);
         if (table === notifications) {
           for (const r of rows) {
             if (!filter || filter(r)) {
@@ -347,11 +373,12 @@ describe("dispatchNotification — WA failure", () => {
     expect(wa?.attempts).toBe(1);
     expect(wa?.lastErrorCode).toBe("PROVIDER_5XX");
     expect(wa?.lastProviderResponseCode).toBe(503);
-    // SMS fallback enqueued
+    // SMS fallback enqueued and dispatched straight away (Twilio spec G2)
     const sms = db._rows.find((r) => r.channel === "sms");
     expect(sms).toBeTruthy();
-    expect(sms?.status).toBe("queued");
-    expect(sms?.attempts).toBe(0);
+    expect(sms?.status).toBe("delivered");
+    expect(sms?.attempts).toBe(1);
+    expect(providers.sms.attempts).toHaveLength(1);
   });
 
   it("flips to permanently_failed on the last attempt and does NOT enqueue SMS again", async () => {
@@ -599,5 +626,41 @@ describe("MockNotificationProvider", () => {
     await expect(
       p.send({ target: PHONE, body: "x", idempotencyKey: "kD" }),
     ).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+  });
+});
+
+describe("dispatchNotification — Twilio accepted, local save fails", () => {
+  it("keeps the SID as 'sent' and does NOT start the SMS fallback", async () => {
+    const row = baseRow();
+    const db = makeMockDB({ approval: defaultApproval(), initialNotifications: [row] });
+    db.transaction = vi.fn().mockRejectedValue(new Error("db down"));
+    const sid = `SM${"c".repeat(32)}`;
+    const providers = {
+      ...makeProviders(),
+      whatsapp: {
+        channel: "whatsapp" as const,
+        send: vi.fn().mockResolvedValue({
+          providerMessageId: sid,
+          responseCode: 201,
+          responseExcerpt: "HTTP 201",
+          acceptedOnly: true,
+        }),
+      },
+    };
+    const outcome = await dispatchNotification(db, row.id, { providers, systemGuardId: SYSTEM_GUARD_ID });
+    expect(outcome).toEqual({ notificationId: row.id, finalStatus: "sent", fallbackEnqueued: false });
+    const wa = db._rows.find((r) => r.channel === "whatsapp");
+    expect(wa?.status).toBe("sent");
+    expect(wa?.providerMessageId).toBe(sid);
+    expect(db._rows.some((r) => r.channel === "sms")).toBe(false);
+    expect(providers.sms.attempts).toHaveLength(0);
+  });
+
+  it("each attempt gets its own provider idempotency key", async () => {
+    const row = baseRow({ status: "failed", attempts: 1 });
+    const db = makeMockDB({ approval: defaultApproval(), initialNotifications: [row] });
+    const providers = makeProviders();
+    await dispatchNotification(db, row.id, { providers, systemGuardId: SYSTEM_GUARD_ID });
+    expect(providers.whatsapp.attempts[0]?.idempotencyKey).toBe(`${row.idempotencyKey}:1`);
   });
 });

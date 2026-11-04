@@ -14,8 +14,16 @@ import "./config/assert-startup";
 import { createApp } from "./app";
 import { db, pool } from "@/db";
 import { setAuditDB } from "./services/audit-logger";
+import {
+  buildNotificationProvidersFromEnv,
+  setNotificationProviders,
+} from "./services/notifications/registry";
 
 const PORT = process.env.PORT || 3001;
+
+// Real message providers from NOTIFICATIONS_*_PROVIDER / TWILIO_* (unset
+// keeps the default-deny provider). No call to Twilio happens here.
+setNotificationProviders(buildNotificationProvidersFromEnv(process.env));
 
 const app = createApp(db);
 
