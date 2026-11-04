@@ -48,6 +48,7 @@ export type AuditEventType =
   | "notification_sent"
   | "notification_failed"
   | "notification_permanently_failed"
+  | "notification_delivered"
   // Source: src/docs/specs/auto-approval.md §3 — Feature 3 audit events.
   // The auto_approval_matched event is written ALONGSIDE the existing
   // entry_created row inside the same transaction so the audit trail

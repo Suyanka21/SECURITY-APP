@@ -48,6 +48,8 @@ import {
   renderApprovalMagicLinkBody,
   TEMPLATE_KEYS,
 } from "./notifications/notification-service";
+import { firstNotificationChannel } from "./notifications/registry";
+import type { NotificationChannel } from "./notifications/provider";
 import { evaluate as evaluateAutoApprovalRule } from "./auto-approval-service";
 
 // Re-exported so route handlers keep a single import surface.
@@ -203,7 +205,7 @@ export async function createApprovalRequest(
   response: CreateApprovalResponse;
   statusCode: number;
   /** Set when the create call also enqueued a notification row (slice 3). */
-  enqueuedNotification: { id: string; channel: "whatsapp" } | null;
+  enqueuedNotification: { id: string; channel: NotificationChannel } | null;
 }> {
   const traceId = generateTraceId();
 
@@ -302,7 +304,7 @@ export async function createApprovalRequest(
   // dispatcher kick is fire-and-forget AFTER commit — done by the
   // route handler, not this service, so a slow provider can never
   // delay the approval HTTP response.
-  let notificationEnqueued: { id: string; channel: "whatsapp" } | null = null;
+  let notificationEnqueued: { id: string; channel: NotificationChannel } | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (db as any).transaction(async (tx: DrizzleDB) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -331,15 +333,16 @@ export async function createApprovalRequest(
         unit: input.draft.unit,
         magicLinkUrl: `${resolvePublicOrigin()}/approve/${approvalId}?token=${rawToken}`,
       });
+      const channel = firstNotificationChannel();
       const enq = await enqueueNotification(tx, {
         approvalId,
-        channel: "whatsapp",
+        channel,
         targetPhone: input.hostPhoneE164,
         templateKey: TEMPLATE_KEYS.approvalMagicLink,
         renderedBody,
         attemptNo: 0,
       });
-      notificationEnqueued = { id: enq.id, channel: "whatsapp" };
+      notificationEnqueued = { id: enq.id, channel };
     }
   });
 
@@ -787,7 +790,7 @@ async function runAutoApprovalShortCircuit(args: {
 }): Promise<{
   response: CreateApprovalResponse;
   statusCode: number;
-  enqueuedNotification: { id: string; channel: "whatsapp" } | null;
+  enqueuedNotification: { id: string; channel: NotificationChannel } | null;
 }> {
   const { autoDecision, input, guardId, db, nowMs, traceId } = args;
   const rule = autoDecision.rule;

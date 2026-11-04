@@ -29,13 +29,14 @@
  */
 
 import { createHash, randomUUID } from "crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 import {
   notifications,
+  notificationCallbacks,
   approvalRequests,
 } from "@/db/schema";
-import { emitAuditEvent } from "../audit-logger";
+import { emitAuditEvent, publishAuditEvent, type AuditEvent } from "../audit-logger";
 import { ServiceError } from "../errors";
 import { maskPhoneE164 } from "../phone-mask";
 import { NotificationErrorCodes } from "../../validation/notification-schemas";
@@ -65,6 +66,7 @@ export const RETRY_RATE_LIMIT_MS = 30_000;
 type NotificationStatus =
   | "queued"
   | "sending"
+  | "sent"
   | "delivered"
   | "failed"
   | "permanently_failed";
@@ -112,6 +114,17 @@ export const TEMPLATE_KEYS = {
   approvalMagicLink: "approval.magic_link",
 } as const;
 
+/**
+ * Inverse of renderApprovalMagicLinkBody, for providers that need the
+ * template variables (WhatsApp Content Templates) rather than the body.
+ * Returns null for a body this renderer did not produce.
+ */
+export function parseApprovalMagicLinkBody(body: string): ApprovalTemplateInput | null {
+  const m = /^GatePass: (.+) is at the gate for (.+) \(Unit (.+)\)\.\nApprove or deny: (\S+)$/s.exec(body);
+  if (!m) return null;
+  return { visitorName: m[1], host: m[2], unit: m[3], magicLinkUrl: m[4] };
+}
+
 export function renderApprovalMagicLinkBody(input: ApprovalTemplateInput): string {
   // Plain text body. WhatsApp + SMS both accept this shape. The link is
   // last so SMS character truncation doesn't lose it.
@@ -150,6 +163,7 @@ interface NotificationRow {
   updatedAt: Date;
   deliveredAt: Date | null;
   failedAt: Date | null;
+  providerMessageId?: string | null;
 }
 
 // ─── Public API view mapper ──────────────────────────────────────────────────
@@ -263,9 +277,11 @@ export async function dispatchNotification(
     row.status = "failed";
   }
 
-  // Terminal rows are no-op (idempotent at the API).
+  // Terminal rows, and rows Twilio already accepted ('sent', waiting for
+  // its status callback), are a no-op (idempotent at the API).
   if (
     row.status === "delivered" ||
+    row.status === "sent" ||
     row.status === "permanently_failed"
   ) {
     return {
@@ -282,14 +298,22 @@ export async function dispatchNotification(
 
   const provider = opts.providers[row.channel];
   try {
+    const templateVars = parseApprovalMagicLinkBody(row.renderedBody);
     const result = await provider.send({
       target: row.targetPhone,
       body: row.renderedBody,
       idempotencyKey: row.idempotencyKey,
+      ...(templateVars
+        ? { template: { key: row.templateKey, variables: { ...templateVars } } }
+        : {}),
     });
+    if (result.acceptedOnly) {
+      return await acceptAndApplyStoredCallbacks(db, row, result, opts, maxAttempts);
+    }
     await markDelivered(db, row, {
       providerResponseCode: result.responseCode,
       providerResponseExcerpt: truncateResponseExcerpt(result.responseExcerpt),
+      providerMessageId: result.providerMessageId,
     });
     await emitAuditEvent(
       "notification_sent",
@@ -351,7 +375,7 @@ export async function dispatchNotification(
     const fallbackEnqueued =
       row.channel === "whatsapp" &&
       !exhausted &&
-      (await maybeEnqueueSmsFallback(db, row));
+      (await enqueueAndDispatchSmsFallback(db, row, opts));
 
     return {
       notificationId: row.id,
@@ -361,20 +385,33 @@ export async function dispatchNotification(
   }
 }
 
+/**
+ * Queues the SMS fallback row and dispatches it straight away (spec
+ * twilio-provider.md G2: nothing else ever picks a queued row up).
+ */
+async function enqueueAndDispatchSmsFallback(
+  db: DrizzleDB,
+  failedRow: NotificationRow,
+  opts: DispatchOptions,
+): Promise<boolean> {
+  const fallbackId = await maybeEnqueueSmsFallback(db, failedRow);
+  if (!fallbackId) return false;
+  await dispatchNotification(db, fallbackId, opts);
+  return true;
+}
+
 async function maybeEnqueueSmsFallback(
   db: DrizzleDB,
   failedRow: NotificationRow,
-): Promise<boolean> {
+): Promise<string | null> {
   // Has an SMS attempt already been queued for this approval? If yes,
   // do not duplicate — the dispatcher already has it.
   const existing = await loadNotificationsForApproval(db, failedRow.approvalId);
   const smsAlreadyExists = existing.some((n) => n.channel === "sms");
-  if (smsAlreadyExists) return false;
+  if (smsAlreadyExists) return null;
 
-  // The SMS attempt is its own row with attempt_no=0. The dispatcher
-  // tick that picks this row up runs the same dispatchNotification()
-  // logic.
-  await enqueueNotification(db, {
+  // The SMS attempt is its own row with attempt_no=0.
+  const { id } = await enqueueNotification(db, {
     approvalId: failedRow.approvalId,
     channel: "sms",
     targetPhone: failedRow.targetPhone,
@@ -382,7 +419,217 @@ async function maybeEnqueueSmsFallback(
     renderedBody: failedRow.renderedBody,
     attemptNo: 0,
   });
-  return true;
+  return id;
+}
+
+// ─── Twilio delivery status (twilio-provider.md §3, option B) ───────────────
+// The dispatcher (saves the SID, applies stored callbacks) and the webhook
+// (stores the callback, applies it if the SID is known) each run in one
+// transaction holding pg_advisory_xact_lock on the SID, so whichever runs
+// second sees the other's committed write and no callback is missed.
+
+export type TwilioCallbackStatus = "delivered" | "read" | "failed" | "undelivered";
+
+interface StoredCallback {
+  status: string;
+  errorCode: string | null;
+}
+
+interface CallbackOutcome {
+  events: AuditEvent[];
+  /** The row that moved to 'failed' and may need the SMS fallback. */
+  failedRow: NotificationRow | null;
+  finalStatus: NotificationStatus;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Tx = any;
+
+async function lockMessageSid(tx: Tx, sid: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${sid}, 0))`);
+}
+
+async function applyCallbacks(
+  tx: Tx,
+  row: NotificationRow,
+  callbacks: StoredCallback[],
+  guardId: string,
+  maxAttempts: number,
+): Promise<CallbackOutcome> {
+  const events: AuditEvent[] = [];
+  let status = row.status;
+  let failedRow: NotificationRow | null = null;
+  for (const cb of callbacks) {
+    // Only a row still waiting on the provider can move; a late or replayed
+    // callback cannot change a finished row.
+    if (status !== "sending" && status !== "sent") break;
+    const now = new Date();
+    if (cb.status === "delivered" || cb.status === "read") {
+      await tx
+        .update(notifications)
+        .set({ status: "delivered", deliveredAt: now, updatedAt: now, lastErrorCode: null })
+        .where(eq(notifications.id, row.id));
+      status = "delivered";
+      events.push(
+        await emitAuditEvent(
+          "notification_delivered",
+          guardId,
+          row.id,
+          { notificationId: row.id, approvalId: row.approvalId, channel: row.channel },
+          { tx },
+        ),
+      );
+    } else if (cb.status === "failed" || cb.status === "undelivered") {
+      const exhausted = row.attempts >= maxAttempts;
+      const nextStatus = exhausted ? "permanently_failed" : "failed";
+      const errorCode = `DELIVERY_${cb.status.toUpperCase()}`;
+      await tx
+        .update(notifications)
+        .set({
+          status: nextStatus,
+          failedAt: now,
+          updatedAt: now,
+          lastErrorCode: errorCode,
+          lastProviderResponseExcerpt: truncateResponseExcerpt(
+            `callback status=${cb.status}${cb.errorCode ? ` code=${cb.errorCode}` : ""}`,
+          ),
+        })
+        .where(eq(notifications.id, row.id));
+      status = nextStatus;
+      events.push(
+        await emitAuditEvent(
+          nextStatus === "permanently_failed" ? "notification_permanently_failed" : "notification_failed",
+          guardId,
+          row.id,
+          {
+            notificationId: row.id,
+            approvalId: row.approvalId,
+            channel: row.channel,
+            errorCode,
+            providerErrorCode: cb.errorCode,
+            attempts: row.attempts,
+          },
+          { tx },
+        ),
+      );
+      if (row.channel === "whatsapp" && !exhausted) failedRow = row;
+    }
+  }
+  return { events, failedRow, finalStatus: status };
+}
+
+async function acceptAndApplyStoredCallbacks(
+  db: DrizzleDB,
+  row: NotificationRow,
+  result: { providerMessageId: string; responseCode: number; responseExcerpt: string },
+  opts: DispatchOptions,
+  maxAttempts: number,
+): Promise<DispatchOutcome> {
+  const sid = result.providerMessageId;
+  const outcome: CallbackOutcome = await (db.transaction as (fn: (tx: Tx) => Promise<CallbackOutcome>) => Promise<CallbackOutcome>)(
+    async (tx) => {
+      await lockMessageSid(tx, sid);
+      const now = new Date();
+      const attempts = row.attempts + 1;
+      await tx
+        .update(notifications)
+        .set({
+          status: "sent",
+          updatedAt: now,
+          attempts,
+          providerMessageId: sid,
+          lastProviderResponseCode: result.responseCode,
+          lastProviderResponseExcerpt: truncateResponseExcerpt(result.responseExcerpt),
+          lastErrorCode: null,
+        })
+        .where(eq(notifications.id, row.id));
+      const sentEvent = await emitAuditEvent(
+        "notification_sent",
+        opts.systemGuardId,
+        row.id,
+        { notificationId: row.id, approvalId: row.approvalId, channel: row.channel, providerMessageId: sid },
+        { tx },
+      );
+      const stored: StoredCallback[] = await tx
+        .select({ status: notificationCallbacks.status, errorCode: notificationCallbacks.errorCode })
+        .from(notificationCallbacks)
+        .where(eq(notificationCallbacks.messageSid, sid))
+        .orderBy(asc(notificationCallbacks.receivedAt));
+      const applied = await applyCallbacks(
+        tx,
+        { ...row, status: "sent", attempts },
+        stored,
+        opts.systemGuardId,
+        maxAttempts,
+      );
+      return { ...applied, events: [sentEvent, ...applied.events] };
+    },
+  );
+  outcome.events.forEach(publishAuditEvent);
+  const fallbackEnqueued = outcome.failedRow
+    ? await enqueueAndDispatchSmsFallback(db, outcome.failedRow, opts)
+    : false;
+  return { notificationId: row.id, finalStatus: outcome.finalStatus, fallbackEnqueued };
+}
+
+export interface TwilioCallbackInput {
+  messageSid: string;
+  status: TwilioCallbackStatus;
+  errorCode: string | null;
+}
+
+export interface TwilioCallbackResult {
+  stored: boolean;
+  notificationId: string | null;
+  finalStatus: NotificationStatus | null;
+  fallbackEnqueued: boolean;
+}
+
+/**
+ * Stores a signature-verified Twilio status callback, then applies it if the
+ * message SID is already saved on a row. A repeat (same SID + status) hits
+ * the unique index and changes nothing.
+ */
+export async function recordTwilioStatusCallback(
+  db: DrizzleDB,
+  input: TwilioCallbackInput,
+  opts: { providers: NotificationProviderRegistry; maxAttempts?: number },
+): Promise<TwilioCallbackResult> {
+  const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  type Out = { stored: boolean; row: NotificationRow | null; guardId: string | null; outcome: CallbackOutcome | null };
+  const out: Out = await (db.transaction as (fn: (tx: Tx) => Promise<Out>) => Promise<Out>)(async (tx) => {
+    await lockMessageSid(tx, input.messageSid);
+    const inserted = await tx
+      .insert(notificationCallbacks)
+      .values({ messageSid: input.messageSid, status: input.status, errorCode: input.errorCode })
+      .onConflictDoNothing()
+      .returning({ id: notificationCallbacks.id });
+    const rows: NotificationRow[] = await tx
+      .select()
+      .from(notifications)
+      .where(eq(notifications.providerMessageId, input.messageSid))
+      .limit(1);
+    const row = rows[0] ?? null;
+    if (inserted.length === 0 || !row) {
+      return { stored: inserted.length > 0, row, guardId: null, outcome: null };
+    }
+    const approval = await loadApprovalGuardId(tx, row.approvalId);
+    const guardId = approval?.requestedByGuardId ?? "";
+    const outcome = await applyCallbacks(tx, row, [input], guardId, maxAttempts);
+    return { stored: true, row, guardId, outcome };
+  });
+  if (!out.outcome || !out.row) {
+    return { stored: out.stored, notificationId: out.row?.id ?? null, finalStatus: out.row?.status ?? null, fallbackEnqueued: false };
+  }
+  out.outcome.events.forEach(publishAuditEvent);
+  const fallbackEnqueued = out.outcome.failedRow
+    ? await enqueueAndDispatchSmsFallback(db, out.outcome.failedRow, {
+        providers: opts.providers,
+        systemGuardId: out.guardId ?? "",
+        maxAttempts,
+      })
+    : false;
+  return { stored: true, notificationId: out.row.id, finalStatus: out.outcome.finalStatus, fallbackEnqueued };
 }
 
 // ─── listNotificationsForApproval (route handler use) ────────────────────────
@@ -494,6 +741,8 @@ export async function retryNotification(
       lastProviderResponseCode: null,
       lastProviderResponseExcerpt: null,
       failedAt: null,
+      // A late callback for the previous attempt must not touch the new one.
+      providerMessageId: null,
       updatedAt: new Date(),
     })
     .where(eq(notifications.id, row.id));
@@ -571,6 +820,7 @@ async function markDelivered(
   opts: {
     providerResponseCode: number | null;
     providerResponseExcerpt: string | null;
+    providerMessageId?: string | null;
   },
 ): Promise<void> {
   const now = new Date();

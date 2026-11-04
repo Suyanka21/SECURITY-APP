@@ -847,6 +847,7 @@ function statusBadgeClass(status: NotificationDeliveryView["status"]) {
     case "failed":
       return "border-destructive bg-destructive/10 text-destructive";
     case "sending":
+    case "sent":
       return "border-info bg-info/10 text-info-foreground";
     case "queued":
     default:

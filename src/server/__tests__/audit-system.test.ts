@@ -419,6 +419,7 @@ describe("Audit event type — TS union vs. Postgres enum (drift guard)", () => 
       "notification_sent",
       "notification_failed",
       "notification_permanently_failed",
+      "notification_delivered",
       // F3 — auto-approval
       "auto_approval_rule_created",
       "auto_approval_rule_deactivated",

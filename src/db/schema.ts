@@ -1030,6 +1030,9 @@ export const notificationChannelEnum = pgEnum("notification_channel", [
 export const notificationStatusEnum = pgEnum("notification_status", [
   "queued",
   "sending",
+  // Twilio accepted the message; waiting for its status callback.
+  // Migration: drizzle/0018_twilio_sms_status.sql.
+  "sent",
   "delivered",
   "failed",
   "permanently_failed",
@@ -1122,6 +1125,12 @@ export const notifications = pgTable(
 
     /** Set when status becomes 'failed' or 'permanently_failed' */
     failedAt: timestamp("failed_at", { precision: 3, withTimezone: true }),
+
+    /**
+     * Provider message ID (Twilio SID) saved on acceptance, so a status
+     * callback can find its row. Migration: drizzle/0018_twilio_sms_status.sql.
+     */
+    providerMessageId: text("provider_message_id"),
   },
   (table) => [
     check(
@@ -1150,6 +1159,36 @@ export const notifications = pgTable(
     index("notifications_status_updated_idx")
       .on(table.status, table.updatedAt)
       .where(sql`${table.status} IN ('queued','sending','failed')`),
+    uniqueIndex("notifications_provider_message_id_unique")
+      .on(table.providerMessageId)
+      .where(sql`${table.providerMessageId} IS NOT NULL`),
+  ]
+);
+
+// ─── Table: Notification callbacks (Twilio status webhook) ──────────────────
+// Source: src/docs/specs/twilio-provider.md §3 option B.
+// Every signature-verified callback is stored here before it is applied, so a
+// callback that arrives before the dispatcher saved the message SID is applied
+// when the SID is saved. UNIQUE (message_sid, status) makes a repeat a no-op.
+// Migration: drizzle/0018_twilio_sms_status.sql.
+export const notificationCallbacks = pgTable(
+  "notification_callbacks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    messageSid: text("message_sid").notNull(),
+    status: text("status").notNull(),
+    errorCode: text("error_code"),
+    receivedAt: timestamp("received_at", { precision: 3, withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check("notification_callbacks_sid_not_empty", sql`length(trim(${table.messageSid})) > 0`),
+    check(
+      "notification_callbacks_status_known",
+      sql`${table.status} IN ('delivered','read','failed','undelivered')`
+    ),
+    uniqueIndex("notification_callbacks_sid_status_unique").on(table.messageSid, table.status),
   ]
 );
 
@@ -1761,6 +1800,8 @@ export const auditEventTypeEnum = pgEnum("audit_event_type", [
   "notification_sent",
   "notification_failed",
   "notification_permanently_failed",
+  // Twilio status callback confirmed delivery. Migration: 0018.
+  "notification_delivered",
   // Source: src/docs/specs/auto-approval.md §3 — Feature 3 audit events.
   // The rule_created / rule_deactivated / rule_expired events let admins
   // reconstruct the lifecycle of any rule. The `auto_approval_matched`

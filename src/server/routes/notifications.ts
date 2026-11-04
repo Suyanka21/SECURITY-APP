@@ -30,8 +30,12 @@ import {
   listNotificationsForApproval,
   retryNotification,
   dispatchNotification,
+  recordTwilioStatusCallback,
   toView,
+  type TwilioCallbackStatus,
 } from "../services/notifications/notification-service";
+import { isValidTwilioSignature } from "../services/notifications/twilio-signature";
+import { TWILIO_STATUS_CALLBACK_PATH } from "../services/notifications/twilio-provider";
 import { getNotificationProviders } from "../services/notifications/registry";
 import { ServiceError } from "../services/errors";
 import type { AuthenticatedRequest } from "../middleware/auth";
@@ -155,6 +159,60 @@ export async function handleRetryNotification(
       next(err);
       return;
     }
+    next(err);
+  }
+}
+
+// ─── POST /api/notifications/twilio-status ──────────────────────────────────
+
+const TWILIO_TERMINAL_STATUSES = new Set(["delivered", "read", "failed", "undelivered"]);
+const TWILIO_SID_RE = /^(SM|MM)[0-9a-fA-F]{32}$/;
+
+/**
+ * Twilio's delivery-status webhook (twilio-provider.md §3, option B).
+ * Public, but every request must carry a valid X-Twilio-Signature made with
+ * TWILIO_AUTH_TOKEN over APP_PUBLIC_ORIGIN + this path. Nothing from the
+ * body is logged: it holds the recipient's number.
+ */
+export async function handleTwilioStatusCallback(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    const origin = process.env.APP_PUBLIC_ORIGIN?.trim().replace(/\/+$/, "");
+    if (!authToken || !origin) {
+      res.status(503).end();
+      return;
+    }
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    const params: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === "string") params[k] = v;
+    }
+    const signature = req.get("X-Twilio-Signature");
+    if (!isValidTwilioSignature(signature, `${origin}${TWILIO_STATUS_CALLBACK_PATH}`, params, authToken)) {
+      res.status(403).end();
+      return;
+    }
+    const sid = params.MessageSid;
+    const status = params.MessageStatus;
+    if (!sid || !TWILIO_SID_RE.test(sid) || !status || !TWILIO_TERMINAL_STATUSES.has(status)) {
+      // queued / sending / sent / accepted: nothing to record.
+      res.status(200).end();
+      return;
+    }
+    const errorCode = /^\d{1,10}$/.test(params.ErrorCode ?? "") ? params.ErrorCode : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (req as any).db;
+    await recordTwilioStatusCallback(
+      db,
+      { messageSid: sid, status: status as TwilioCallbackStatus, errorCode },
+      { providers: getNotificationProviders() },
+    );
+    res.status(200).end();
+  } catch (err) {
     next(err);
   }
 }

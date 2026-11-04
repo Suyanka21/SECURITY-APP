@@ -235,6 +235,7 @@ export type NotificationChannel = "whatsapp" | "sms";
 export type NotificationStatus =
   | "queued"
   | "sending"
+  | "sent"
   | "delivered"
   | "failed"
   | "permanently_failed";

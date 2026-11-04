@@ -87,6 +87,7 @@ export interface NotificationView {
   status:
     | "queued"
     | "sending"
+    | "sent"
     | "delivered"
     | "failed"
     | "permanently_failed";

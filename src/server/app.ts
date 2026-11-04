@@ -36,6 +36,7 @@ import {
 import {
   handleListNotifications,
   handleRetryNotification,
+  handleTwilioStatusCallback,
 } from "./routes/notifications";
 import {
   handleSeedAutoApprovalRule,
@@ -263,6 +264,13 @@ export function createApp(db: unknown) {
   app.post("/api/approvals/:id/preview", strictLimiter, handlePreviewApproval);
 
   // Feature 2 — Notifications (spec §7)
+  // Twilio status webhook: public, signature-checked in the handler
+  // (twilio-provider.md §3). Twilio posts form-encoded bodies.
+  app.post(
+    "/api/notifications/twilio-status",
+    express.urlencoded({ extended: false, limit: "10kb" }),
+    handleTwilioStatusCallback
+  );
   app.get("/api/notifications", requireAuth, handleListNotifications);
   app.post(
     "/api/notifications/:id/retry",
