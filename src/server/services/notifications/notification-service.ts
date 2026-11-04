@@ -590,6 +590,11 @@ async function acceptAndApplyStoredCallbacks(
     // the SID so Twilio's next callback can find the row.
     try {
       outcome = await run(false);
+      // The audit table is missing this one 'sent' row; leave a trace in the
+      // server log (ids only, no number or body) so it can be reconciled.
+      console.error(
+        `[NOTIFY] notification_sent audit row not written | notification=${row.id} | sid=${sid} | pg=${pgErrorCode(err)}`,
+      );
     } catch {
       const saved = await saveAcceptedSidBestEffort(db, row, result);
       if (!saved) throw err;
@@ -599,6 +604,12 @@ async function acceptAndApplyStoredCallbacks(
   outcome.events.forEach(publishAuditEvent);
   const fallbackEnqueued = await dispatchQueuedFallback(db, outcome.fallbackId, opts);
   return { notificationId: row.id, finalStatus: outcome.finalStatus, fallbackEnqueued };
+}
+
+function pgErrorCode(err: unknown): string {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  const code = e?.code ?? e?.cause?.code;
+  return typeof code === "string" ? code : "?";
 }
 
 async function saveAcceptedSidBestEffort(
