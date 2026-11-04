@@ -41,6 +41,15 @@ objects and list items included) was compared with the field paths actually
 returned. Each mismatch was then checked against the screens. The hook and
 compare script were local only and are not committed. **Nothing was fixed.**
 
+**Follow-up (2026-11-05).** Every gap below is now closed:
+`NotificationView` gets `templateKey` from the server, and
+`src/server/__tests__/integration/api-response-shapes.integration.test.ts`
+(CI integration job) checks every type listed under "not reached",
+`watchlistMatch` and the item fields of the four empty lists against real
+responses: each typed field is present and no extra field is sent.
+`VisitorProfileView` is checked too. The tables below are the original
+findings, kept as the record.
+
 **Mismatches (typed, but the server never returns them):**
 
 | Type | Field | Server | Screen reads it? | Risk |

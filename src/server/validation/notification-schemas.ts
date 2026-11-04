@@ -84,6 +84,7 @@ export interface NotificationView {
   channel: "whatsapp" | "sms";
   /** Masked on the server (`+254••••••678`); the full number is never sent. */
   targetPhoneMasked: string;
+  templateKey: string;
   status:
     | "queued"
     | "sending"
