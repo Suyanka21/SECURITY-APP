@@ -281,9 +281,9 @@ change is T8, which picks the first channel.
 - signature-check tests: a valid signature, a bad one and a missing one;
 - webhook tests (integration):
   - a callback that arrives before the SID is saved is still applied;
-  - the same holds with the two transactions deliberately interleaved: the
-    webhook commits while the dispatcher's SID transaction is still open, and
-    the reverse;
+  - the same holds with the two transactions deliberately interleaved: each
+    path blocks on the per-SID advisory lock until the other commits, in both
+    orders;
   - a repeated or late callback changes nothing;
   - a `failed` callback queues the SMS fallback exactly once;
 - an integration test that the SMS fallback is dispatched (G2), in the CI

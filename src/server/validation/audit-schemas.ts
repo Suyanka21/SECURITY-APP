@@ -8,35 +8,12 @@
  */
 
 import { z } from "zod";
+import { auditEventTypeEnum } from "@/db/schema";
 
 // ─── Query Schemas ───────────────────────────────────────────────────────────
 
-const AUDIT_EVENT_TYPES = [
-  "entry_created",
-  "entry_blocked",
-  "qr_scan_succeeded",
-  "qr_scan_rejected",
-  "override_authorized",
-  "override_rejected",
-  "visitor_selected",
-  "visitor_search",
-  "batch_sync_completed",
-  "override_flow_entered",
-  "flow_reset",
-  "camera_initialized",
-  "camera_failure",
-  "unit_created",
-  "unit_deactivated",
-  "unit_reactivated",
-  "unit_claim_code_issued",
-  "resident_claimed",
-  "resident_deactivated",
-  "resident_registration_created",
-  "resident_registration_removed",
-  "resident_registration_renewed",
-  "resident_registration_blocked",
-  "resident_registration_block_cleared",
-] as const;
+// Every type the database accepts, so each one can be filtered on.
+const AUDIT_EVENT_TYPES = auditEventTypeEnum.enumValues;
 
 /**
  * GET /api/audit/events query params

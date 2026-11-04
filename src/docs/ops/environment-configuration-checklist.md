@@ -28,6 +28,19 @@ and exits 1 before listening.
 | `ALLOWED_ORIGINS` | Comma-separated browser origins allowed by CORS. | Bare `https://host` origins only — no path, no trailing slash. No localhost in production. |
 | `APP_PUBLIC_ORIGIN` | Origin used to build resident approval links and visitor pass links. | Same rules; this is what appears in SMS/WhatsApp messages. |
 
+Message provider (SMS-only pilot, [Twilio spec](../specs/twilio-provider.md) §4).
+Production refuses `mock`, unknown values and any missing Twilio value below.
+
+| Variable | What it is | Rules |
+|---|---|---|
+| `NOTIFICATIONS_SMS_PROVIDER` | `twilio` in production. | `mock` is refused in production. |
+| `NOTIFICATIONS_WHATSAPP_PROVIDER` | `disabled` for the pilot (decision D2). | `twilio` only after Meta approves the sender and template; then `TWILIO_WHATSAPP_FROM` and `TWILIO_WHATSAPP_CONTENT_SID` are required too. |
+| `TWILIO_ACCOUNT_SID` | Account or subaccount SID (`AC` + 32 hex). | Status callbacks from any other account are refused (`403`). |
+| `TWILIO_API_KEY_SID` / `TWILIO_API_KEY_SECRET` | Standard API key (`SK` + 32 hex) and its secret, used to send. | Server-only. Never logged. Rotate on any suspicion. |
+| `TWILIO_AUTH_TOKEN` | Auth token of the same account; only checks `X-Twilio-Signature` on status callbacks. | Server-only. Unset = callbacks get `503`. Rotating it in Twilio means updating it here at the same time. |
+| `TWILIO_SMS_MESSAGING_SERVICE_SID` | Messaging Service (`MG` + 32 hex) holding the Kenya-approved sender. | |
+| `TWILIO_STATUS_CALLBACK_ORIGIN` | Optional. Only when the API has its own public host. | Default `APP_PUBLIC_ORIGIN`; same `https://` origin rules. |
+
 Optional server settings:
 
 | Variable | Default | Notes |
