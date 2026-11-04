@@ -536,10 +536,8 @@ async function acceptAndApplyStoredCallbacks(
   maxAttempts: number,
 ): Promise<DispatchOutcome> {
   const sid = result.providerMessageId;
-  let outcome: CallbackOutcome;
-  try {
-  outcome = await (db.transaction as (fn: (tx: Tx) => Promise<CallbackOutcome>) => Promise<CallbackOutcome>)(
-    async (tx) => {
+  const run = (withSentEvent: boolean) =>
+    (db.transaction as (fn: (tx: Tx) => Promise<CallbackOutcome>) => Promise<CallbackOutcome>)(async (tx) => {
       await lockMessageSid(tx, sid);
       const now = new Date();
       const attempts = row.attempts + 1;
@@ -555,13 +553,18 @@ async function acceptAndApplyStoredCallbacks(
           lastErrorCode: null,
         })
         .where(eq(notifications.id, row.id));
-      const sentEvent = await emitAuditEvent(
-        "notification_sent",
-        opts.systemGuardId,
-        row.id,
-        { notificationId: row.id, approvalId: row.approvalId, channel: row.channel, providerMessageId: sid },
-        { tx },
-      );
+      const events: AuditEvent[] = [];
+      if (withSentEvent) {
+        events.push(
+          await emitAuditEvent(
+            "notification_sent",
+            opts.systemGuardId,
+            row.id,
+            { notificationId: row.id, approvalId: row.approvalId, channel: row.channel, providerMessageId: sid },
+            { tx },
+          ),
+        );
+      }
       const stored: StoredCallback[] = await tx
         .select({ status: notificationCallbacks.status, errorCode: notificationCallbacks.errorCode })
         .from(notificationCallbacks)
@@ -574,15 +577,24 @@ async function acceptAndApplyStoredCallbacks(
         opts.systemGuardId,
         maxAttempts,
       );
-      return { ...applied, events: [sentEvent, ...applied.events] };
-    },
-  );
+      return { ...applied, events: [...events, ...applied.events] };
+    });
+
+  let outcome: CallbackOutcome;
+  try {
+    outcome = await run(true);
   } catch (err) {
-    // Keep the SID so Twilio's callback can still find the row; never treat
-    // the failed write as a refused send (no SMS fallback here).
-    const saved = await saveAcceptedSidBestEffort(db, row, result);
-    if (!saved) throw err;
-    return { notificationId: row.id, finalStatus: "sent", fallbackEnqueued: false };
+    // Twilio has the message, so a failed local write is never a refused send.
+    // Retry once without the 'sent' audit row (still under the SID lock, still
+    // replaying callbacks that arrived early); if that fails too, at least keep
+    // the SID so Twilio's next callback can find the row.
+    try {
+      outcome = await run(false);
+    } catch {
+      const saved = await saveAcceptedSidBestEffort(db, row, result);
+      if (!saved) throw err;
+      return { notificationId: row.id, finalStatus: "sent", fallbackEnqueued: false };
+    }
   }
   outcome.events.forEach(publishAuditEvent);
   const fallbackEnqueued = await dispatchQueuedFallback(db, outcome.fallbackId, opts);

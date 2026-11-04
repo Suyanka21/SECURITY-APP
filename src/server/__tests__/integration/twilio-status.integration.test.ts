@@ -308,6 +308,61 @@ describe("Twilio status webhook", () => {
     }
   });
 
+  it("Twilio accepted but the 'sent' audit write fails: an early 'undelivered' is still applied and the SMS fallback goes out", async () => {
+    // Real Postgres failure injection on the notification_sent audit insert for one SID.
+    const sid = `SMdead${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+    sids.push(sid);
+    await db.execute(sql`
+      CREATE OR REPLACE FUNCTION gp_test_fail_sent_audit() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.event_type::text = 'notification_sent' AND NEW.payload::text LIKE '%SMdead%' THEN
+          RAISE EXCEPTION 'injected notification_sent audit failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await db.execute(sql`DROP TRIGGER IF EXISTS gp_test_fail_sent_audit ON audit_events`);
+    await db.execute(sql`
+      CREATE TRIGGER gp_test_fail_sent_audit BEFORE INSERT ON audit_events
+      FOR EACH ROW EXECUTE FUNCTION gp_test_fail_sent_audit();
+    `);
+    try {
+      const twilio = fakeTwilio();
+      const providers = smsOnlyProviders(twilio);
+      const fixedSid: typeof fetch = (async () =>
+        new Response(JSON.stringify({ sid, status: "accepted" }), { status: 201 })) as unknown as typeof fetch;
+      providers.whatsapp = new TwilioWhatsAppProvider(
+        {
+          accountSid: `AC${"a".repeat(32)}`,
+          apiKeySid: `SK${"b".repeat(32)}`,
+          apiKeySecret: "fake",
+          statusCallbackUrl: CALLBACK_URL,
+          from: "whatsapp:+254700000001",
+          contentSid: `HX${"d".repeat(32)}`,
+        },
+        { fetch: fixedSid },
+      );
+      setNotificationProviders(providers);
+      const approvalId = await newApproval();
+      const waId = await queue(approvalId, "whatsapp");
+      expect((await callback(status(sid, "undelivered", { ErrorCode: "63016" }))).status).toBe(200);
+
+      const outcome = await dispatchNotification(db, waId, { providers, systemGuardId: guardId });
+      expect(outcome.finalStatus).toBe("failed");
+      expect(outcome.fallbackEnqueued).toBe(true);
+      const wa = await row(waId);
+      expect(wa.status).toBe("failed");
+      expect(wa.providerMessageId).toBe(sid);
+      const rows = await db.select().from(notifications).where(eq(notifications.approvalId, approvalId));
+      expect(rows.filter((r) => r.channel === "sms")).toHaveLength(1);
+      expect(twilio.calls.filter((c) => c.to === PHONE)).toHaveLength(1);
+    } finally {
+      await db.execute(sql`DROP TRIGGER IF EXISTS gp_test_fail_sent_audit ON audit_events`);
+      await db.execute(sql`DROP FUNCTION IF EXISTS gp_test_fail_sent_audit()`);
+    }
+  });
+
   it("WhatsApp 'undelivered' → WhatsApp row failed and the SMS fallback is sent exactly once", async () => {
     const twilio = fakeTwilio();
     const providers = smsOnlyProviders(twilio);
